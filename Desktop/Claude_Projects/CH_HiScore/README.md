@@ -2,7 +2,7 @@
 
 A Discord bot-based high score tracking system for Clone Hero that automatically detects new scores and posts announcements to your Discord server.
 
-## Current Version: v2.2
+## Current Version: v2.4
 
 ## What It Does
 
@@ -37,7 +37,25 @@ A Discord bot-based high score tracking system for Clone Hero that automatically
 
 ## Version History
 
-### v2.2 - System Integration (Latest)
+### v2.4 - Quality of Life (Latest)
+- **Config Persistence**: Bot config now stored in `%APPDATA%` - survives updates
+- **Better Feedback**: Non-highscore plays now show your current PB and point difference
+- **Authoritative Notes Data**: Notes hit/total now from scoredata.bin (no OCR needed)
+- **Discord Update Notification**: Bot notifies channel when client updates are available
+- **currentsong.txt Integration**: Uses Clone Hero's song metadata file for accurate titles
+
+### v2.3.1 - Bug Fixes
+- OCR disabled by default (was overwriting good data)
+- Data source priority fixed
+
+### v2.3 - Auto-Updates & Features
+- Auto-update system for both client and bot
+- `/recent` command to view recent record breaks
+- `/updatesong` command to manually fix song metadata
+- `/mystats` can now view other users' stats
+- Full MD5 hash in Discord announcements for enchor.us lookup
+
+### v2.2 - System Integration
 - **Reset Command**: Clear score history and re-submit all scores to a new server
 - **Minimize to Tray**: Keep tracker running in background
 - **Start with Windows**: Auto-launch on boot
@@ -72,8 +90,8 @@ A Discord bot-based high score tracking system for Clone Hero that automatically
 ```
 CH_HiScore/
 ├── dist/                    # Built executables
-│   ├── CloneHeroScoreTracker_v2.2.exe   # Client for players
-│   └── CloneHeroScoreBot_v2.1.exe       # Bot for server admins
+│   ├── CloneHeroScoreTracker_v2.4.exe   # Client for players
+│   └── CloneHeroScoreBot_v2.4.exe       # Bot for server admins
 │
 ├── client/                  # Client source code
 │   ├── file_watcher.py      # Score detection
@@ -99,8 +117,10 @@ CH_HiScore/
 | `/ping` | Check if bot is online |
 | `/pair <code>` | Link your Clone Hero client to Discord |
 | `/leaderboard [difficulty] [instrument]` | View high scores |
-| `/mystats` | View your personal statistics |
+| `/mystats [user]` | View your or another user's statistics |
+| `/recent [count]` | Show recent record breaks (1-20) |
 | `/lookupsong <query>` | Search for a song |
+| `/updatesong <md5> [title] [artist]` | Update song metadata |
 | `/setartist <md5> <artist>` | Set artist for a song |
 | `/missingartists` | List songs without artist info |
 

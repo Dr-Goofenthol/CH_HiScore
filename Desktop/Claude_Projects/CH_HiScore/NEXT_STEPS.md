@@ -1,8 +1,9 @@
 # Next Steps - Clone Hero High Score System
 
-## Current Status: v2.2 Released
+## Current Status: v2.3.1 Released
 
 All core features complete. System is production-ready with full documentation.
+OCR disabled by default due to data quality issues - currentsong.txt is now the authoritative metadata source.
 
 ---
 
@@ -13,51 +14,40 @@ Work should proceed tier-by-tier, completing items within each tier before movin
 
 ---
 
-## Tier 1: Quick Wins (< 30 min each)
+## Tier 1: Quick Wins (< 30 min each) - COMPLETE
 
 These are simple fixes and improvements that can be completed quickly.
 
 | Item | Status | Effort | Notes |
 |------|--------|--------|-------|
-| Remove OCR debug PNG file | Pending | Trivial | Change `save_debug=True` to `False` in `clone_hero_client.py:507` |
-| Make /mystats visible to all | Pending | Trivial | Remove `ephemeral=True` from command in `bot/bot.py` |
-| Fix [X] display in /mystats | Pending | Investigate | The "X" likely indicates instrument. Verify and fix display format |
-| Improve server IP setup flow | Pending | Easy | Add explicit prompt during first-time setup instead of connection timeout |
-| Verify full MD5 storage | Done | Check | Code stores full 32-char MD5s, displays truncated `[:8]` for readability |
+| Remove OCR debug PNG file | Done | Trivial | Changed `save_debug=True` to `False` |
+| Make /mystats visible to all | Done | Trivial | Removed `ephemeral=True` from command |
+| Fix [X] display in /mystats | Done | Trivial | Changed "X" to "Expert" in difficulty mapping |
+| Improve server IP setup flow | Done | Easy | Added explicit prompt during first-time setup |
+| Verify full MD5 storage | Done | Check | Full MD5 now shown in announcements for enchor.us lookup |
 
-**Estimated Total: 1-2 hours**
+**Completed in v2.3**
 
 ---
 
-## Tier 2: Low-Medium Effort (1-3 hours each)
+## Tier 2: Low-Medium Effort (1-3 hours each) - MOSTLY COMPLETE
 
 These items provide significant value with moderate implementation effort.
 
-### 2.1 Clone Hero Settings Integration
+### 2.1 Clone Hero Settings Integration - DONE
 
 | Item | Status | Effort | Notes |
 |------|--------|--------|-------|
-| Check settings.ini on boot | Pending | Easy | Read `Documents\Clone Hero\settings.ini` on startup |
-| Warn if song_export = 0 | Pending | Easy | Guide user to enable in CH: Settings > Gameplay > Streamer Settings |
-| Warn if auto_screenshot != 1 | Pending | Easy | Same location, needed for screenshot-based OCR |
+| Check settings.ini on boot | Done | Easy | Reads `Documents\Clone Hero\settings.ini` on startup |
+| Warn if song_export = 0 | Done | Easy | Guides user to enable in CH settings |
+| Warn if auto_screenshot != 1 | Done | Easy | Same location |
 
-**File location:** `C:\Users\[User]\Documents\Clone Hero\settings.ini`
-
-**Implementation:**
-```python
-def check_clone_hero_settings():
-    """Check Clone Hero settings.ini for required flags"""
-    settings_path = Path.home() / 'Documents' / 'Clone Hero' / 'settings.ini'
-    # Parse INI, check song_export and auto_screenshot flags
-    # Warn user if not set to 1
-```
-
-### 2.2 currentsong.txt Integration (PRIORITY)
+### 2.2 currentsong.txt Integration - DONE
 
 | Item | Status | Effort | Notes |
 |------|--------|--------|-------|
-| Watch currentsong.txt | Pending | Medium | Most authoritative source for song/artist/charter |
-| Use as primary metadata source | Pending | Medium | Override OCR/filepath parsing when available |
+| Read currentsong.txt | Done | Medium | Authoritative source for song/artist/charter |
+| Use as primary metadata source | Done | Medium | Overrides OCR/filepath when available |
 
 **File location:** `C:\Users\[User]\Documents\Clone Hero\currentsong.txt`
 
@@ -68,13 +58,7 @@ Line 2: Artist
 Line 3: Charter
 ```
 
-**Behavior:**
-- File is blank when no song is playing
-- File populates when song starts
-- File returns to blank when song ends
-- Clear cached data after score submission to prevent mislabeling
-
-### 2.3 Screenshot-Based OCR (PRIORITY)
+### 2.3 Screenshot-Based OCR - DEFERRED
 
 | Item | Status | Effort | Notes |
 |------|--------|--------|-------|
@@ -83,23 +67,88 @@ Line 3: Charter
 
 **Screenshot location:** `C:\Users\[User]\Documents\Clone Hero\Screenshots`
 
-**Benefits over live OCR:**
-- No window focus issues
-- No timing problems
-- Clone Hero handles the screenshot capture
-- More consistent image quality
+**Note:** OCR currently disabled by default due to data quality issues. Plan documented below.
 
-### 2.4 Bug Fixes & Enhancements
+### 2.4 Bug Fixes & Enhancements - MOSTLY DONE
 
 | Item | Status | Effort | Notes |
 |------|--------|--------|-------|
-| Fix minimize to tray | Pending | Debug | `hide_console_window()` may have timing issues with pystray |
-| OCR retry for missing fields | Pending | Medium | Add verification loop, re-capture if best streak missing |
-| /mystats for other users | Pending | Easy | Add optional `user` parameter to slash command |
-| /setartist multi-row update | Pending | Easy | Update all rows matching MD5 (future-proofing for instrument separation) |
-| Add /recent x command | Pending | Easy | Query `record_breaks` table, ORDER BY broken_at DESC LIMIT x |
+| Fix minimize to tray | Done | Debug | Added delay + minimize-then-hide |
+| OCR retry for missing fields | Deferred | Medium | OCR disabled by default for now |
+| /mystats for other users | Done | Easy | Added optional `user` parameter |
+| /updatesong command | Done | Easy | Update title AND/OR artist by MD5 |
+| Add /recent x command | Done | Easy | Shows last x record breaks (1-20) |
 
-**Estimated Total: 8-12 hours**
+### 2.5 Announcement Quality - DONE (v2.4)
+
+| Item | Status | Effort | Notes |
+|------|--------|--------|-------|
+| Use scoredata.bin for notes hit/total | Done | Easy | Notes data is in scoredata.bin, not OCR-dependent |
+| Remove notes from OCR dependency | Done | Easy | Only best streak requires OCR now |
+| Update notification in Discord | Done | Medium | Bot announces when new version released |
+
+**Discovery (Session 9):** The accuracy numerator/denominator in scoredata.bin ARE the notes hit/total values. We've been parsing them all along but labeling them as "accuracy". This data is authoritative and doesn't need OCR verification.
+
+### 2.8 Best Streak OCR - DEFERRED
+
+| Item | Status | Effort | Notes |
+|------|--------|--------|-------|
+| Fix best streak OCR parsing | Deferred | Medium | Only field that truly requires OCR |
+| Screenshot-based OCR for streak | Deferred | Medium | More reliable than live window capture |
+| Verification/sanity checks | Deferred | Easy | Ensure streak <= notes_total |
+
+**Note:** Best streak is the ONLY field that requires OCR. All other score data comes from scoredata.bin reliably. Defer until OCR quality issues are resolved.
+
+### 2.6 Config Persistence - DONE (v2.4)
+
+| Item | Status | Effort | Notes |
+|------|--------|--------|-------|
+| Move bot config to %APPDATA% | Done | Easy | Store in `%APPDATA%\CloneHeroScoreBot\bot_config.json` |
+| Migration from old location | Done | Easy | Check exe directory first, migrate if found |
+
+### 2.7 Non-Highscore Feedback - DONE (v2.4)
+
+| Item | Status | Effort | Notes |
+|------|--------|--------|-------|
+| Show full score data for all scores | Done | Easy | Display song/score/accuracy even if not a PB |
+| Explain why score wasn't submitted | Done | Easy | Shows current PB and point difference |
+
+**Example output for non-highscore:**
+```
+[*] Score detected!
+    Song: Through the Fire and Flames
+    Artist: DragonForce
+    Score: 425,000
+    Accuracy: 92.5%
+    Difficulty: Expert
+    Source: currentsong.txt
+
+[i] Score not submitted - not a personal best
+    Your current PB: 450,000
+```
+
+**Implementation:**
+```python
+def get_config_path():
+    """Get persistent config path in AppData"""
+    if sys.platform == 'win32':
+        appdata = Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming'))
+        config_dir = appdata / 'CloneHeroScoreBot'
+    else:
+        config_dir = Path.home() / '.config' / 'CloneHeroScoreBot'
+    config_dir.mkdir(parents=True, exist_ok=True)
+    return config_dir / 'bot_config.json'
+
+def migrate_old_config():
+    """Check for config next to exe and migrate to AppData"""
+    old_config = Path(__file__).parent / 'bot_config.json'
+    new_config = get_config_path()
+    if old_config.exists() and not new_config.exists():
+        shutil.copy(old_config, new_config)
+        print(f"[+] Migrated config to {new_config}")
+```
+
+**Completed in v2.3/v2.3.1**
 
 ---
 
@@ -143,11 +192,11 @@ These items require schema changes and careful consideration of data integrity.
 
 | Item | Status | Effort | Notes |
 |------|--------|--------|-------|
-| Include full MD5 in announcements | Pending | Easy | Enable enchor.us lookup |
-| Format MD5 for easy copying | Pending | Easy | Use code formatting or smaller text |
+| Include full MD5 in announcements | Done | Easy | Added in v2.3 for enchor.us lookup |
+| Format MD5 for easy copying | Done | Easy | Uses backtick code formatting |
 | Add enchor.us mention on boot | Pending | Trivial | Encourage users to use Bridge app |
 
-**Estimated Total: 16-24 hours**
+**Estimated Total: 12-20 hours** (reduced - some items complete)
 
 ---
 
@@ -155,17 +204,18 @@ These items require schema changes and careful consideration of data integrity.
 
 These are substantial features requiring significant implementation effort.
 
-### 4.1 Auto-Update System
+### 4.1 Auto-Update System - DONE
 
 | Item | Status | Effort | Notes |
 |------|--------|--------|-------|
-| Version check on startup | Pending | Medium | Check GitHub releases API |
-| Notify user of new version | Pending | Easy | Display message with download link |
-| (Optional) Auto-download | Pending | High | Security considerations, may skip |
+| Version check on startup (client) | Done | Medium | Checks GitHub releases API |
+| Notify user of new version (client) | Done | Easy | Shows changelog, prompts to download |
+| Auto-download new exe (client) | Done | Medium | Downloads with progress bar |
+| Version check on startup (bot) | Done | Medium | Same as client |
+| Auto-download new exe (bot) | Done | Medium | Same as client |
+| Discord update notification | Pending | Medium | Bot announces new version to channel |
 
-**Recommended approach:**
-1. Phase 1: Simple version check + notification
-2. Phase 2: (Optional) Installer-based auto-update
+**Completed in v2.3**
 
 ### 4.2 Offline Score Queue
 
@@ -316,6 +366,45 @@ These are nice-to-have features for future consideration.
 | Sound effects for events | Pending | Medium | Toggleable, user-definable |
 | Web dashboard | Pending | Very High | Browser-based leaderboards |
 | Multi-server support | Pending | High | One bot, multiple Discord servers |
+| Bridge/enchor.us integration | Pending | Research | Direct chart download from announcements |
+
+### 6.1 Bridge / Enchor.us Integration (Research Required)
+
+**Goal:** Allow users to easily download charts directly from Discord announcements using MD5 hash.
+
+**Current State:**
+- We include full MD5 in announcements (copy-friendly for manual lookup)
+- No documented public API or URL scheme for enchor.us
+- Bridge app has no documented deep-link or command-line interface
+
+**Research Findings (Session 9):**
+- [Chorus Encore (enchor.us)](https://www.enchor.us/) - Web search engine for CH charts
+- [Bridge](https://github.com/Geomitron/Bridge) - Desktop app (Electron/Angular)
+- [scan-chart](https://github.com/Geomitron/scan-chart) - Chart scanning library
+- Original [Chorus API](https://github.com/Paturages/chorus) had `/api/search` endpoint
+
+**Hash Types (Important):**
+| Hash | Purpose |
+|------|---------|
+| MD5 | All files in chart folder |
+| Chart Hash (blake3) | Chart file + .ini modifiers (used for score tracking) |
+
+**Note:** Clone Hero may use chart hash, not MD5, for score identification. Need to verify our hash matches enchor.us index.
+
+**Next Steps:**
+1. Join [Chorus Encore Discord](https://discord.gg/cqaUXGm) and ask about:
+   - Public API endpoints
+   - URL schemes for direct hash lookup
+   - Bridge deep-link capability
+2. Test URL parameters: `enchor.us/?hash=XXX`, `enchor.us/search?q=XXX`
+3. Consider requesting Bridge protocol handler feature (e.g., `bridge://hash/XXX`)
+
+**Potential Integration Methods:**
+| Method | Feasibility |
+|--------|-------------|
+| Clickable URL in announcement | Needs URL scheme discovery |
+| Discord bot command `/getchart <md5>` | Would open browser to enchor.us |
+| Bridge deep link | Requires Bridge feature request |
 
 ---
 
@@ -379,6 +468,9 @@ These are nice-to-have features for future consideration.
 
 | Version | Key Features |
 |---------|--------------|
+| v2.4 | Config persistence (%APPDATA%), non-highscore feedback with PB, notes from scoredata.bin (no OCR), Discord update notification |
+| v2.3.1 | OCR disabled by default, bug fixes for data truncation |
+| v2.3 | currentsong.txt integration, settings.ini check, /recent, /updatesong, auto-update (both apps), full MD5 in announcements |
 | v2.2 | Reset command, minimize to tray, start with Windows, documentation |
 | v2.1 | Windows OCR, bot executable, config persistence |
 | v2.0 | Artist names, song.ini parsing, lookup commands |
@@ -554,59 +646,56 @@ debug> exit
 
 ## Next Session: Resume Development
 
-### Where We Left Off (Session 8 - 2025-11-23)
+### Where We Left Off (Session 10 - 2025-11-23)
 
-Tier 1 and most of Tier 2 complete. Ready for v2.3 release or continue with more features.
+v2.4 released! Tier 1 complete, Tier 2 mostly complete.
 
-### Completed This Session
+### Session 10 Summary (v2.4)
 
-**Tier 1 Quick Wins** (All Done)
-- [x] Remove OCR debug PNG (`save_debug=True` → `False`)
-- [x] Make /mystats visible to all (removed `ephemeral=True`)
-- [x] Fix /mystats [X] display - changed to show "Expert" instead of "X"
-- [x] Improve server IP setup flow (explicit prompt on first run)
+**Implemented:**
+- [x] Config persistence - bot config now in `%APPDATA%\CloneHeroScoreBot\`
+- [x] Auto-migration from old config location
+- [x] Non-highscore feedback - shows current PB and point difference
+- [x] Notes from scoredata.bin (authoritative, no OCR needed)
+- [x] Discord update notification when new version available
 
-**Tier 2 Features** (5/6 Done)
-- [x] 2.1 Settings Integration - Check settings.ini, warn about song_export/auto_screenshot
-- [x] 2.2 currentsong.txt Integration - Authoritative source for title/artist/charter
-- [ ] 2.3 Screenshot-Based OCR - DEFERRED (needs planning)
-- [x] 2.4a Fix minimize to tray (added delay + minimize-then-hide)
-- [x] 2.4b /mystats user parameter (view other users' stats)
-- [x] 2.4c /recent x command (show last x record breaks)
+**Key Discovery:**
+- scoredata.bin contains notes_hit/notes_total in the accuracy numerator/denominator
+- OCR is now only needed for best streak (deferred)
 
-### Priority for Next Session
+### Priority for Next Session (v2.5)
 
-1. **Tier 2.3 Screenshot-Based OCR** (See plan below)
-   - Watch Screenshots folder for new files
-   - OCR screenshots instead of live capture
-   - More reliable than window capture
+**Tier 2.8 - Best Streak OCR** (DEFERRED)
+- [ ] Fix best streak OCR parsing (only field requiring OCR)
+- [ ] Screenshot-based OCR for reliability
 
-2. **Tier 3 Items**
-   - [ ] Score separation by instrument
-   - [ ] Expert vs non-expert tracking
+**Tier 2.3 - Screenshot-Based OCR** (When OCR re-enabled)
+- [ ] Watch Screenshots folder for new files
+- [ ] OCR screenshots instead of live capture
 
-3. **Other Enhancements**
-   - [ ] Improve enchor.us integration (direct link in announcements?)
-   - [ ] Web dashboard for stats viewing
+**Tier 3 Items**
+- [ ] Score separation by instrument
+- [ ] Expert vs non-expert tracking
 
 ### Screenshot-Based OCR Plan (Tier 2.3)
 
 **Current Flow:**
 1. Score detected in scoredata.bin
-2. Live window capture via Windows OCR
+2. Live window capture via Windows OCR (DISABLED by default)
 3. Parse OCR text for notes/streak
 
 **Proposed Flow:**
 1. Score detected in scoredata.bin
 2. Check Screenshots folder for recent file (within last 5 seconds)
 3. If found: OCR the screenshot file
-4. If not found: Fall back to live window capture
+4. If not found: Fall back to live window capture (if enabled)
 
 **Implementation Steps:**
 1. Add `get_latest_screenshot()` function to find most recent screenshot
 2. Modify score handler to check for screenshot first
 3. Add timestamp comparison (screenshot must be recent)
 4. Reuse existing OCR parsing logic on screenshot image
+5. Add verification: only show notes/streak if values pass sanity checks
 
 **Key Files:**
 - `clone_hero_client.py` - Score handler integration
@@ -619,7 +708,9 @@ Tier 1 and most of Tier 2 complete. Ready for v2.3 release or continue with more
 | `clone_hero_client.py` | Main client, score handler, currentsong.txt |
 | `bot/bot.py` | Discord commands, /mystats, /recent |
 | `bot/database.py` | DB queries, get_recent_record_breaks |
+| `bot/api.py` | HTTP API, announcement embed building |
 | `client/ocr_capture.py` | OCR capture functions |
 | `NEXT_STEPS.md` | This file - development roadmap |
 
-**Target Version:** v2.3
+**Current Version:** v2.4
+**Next Target:** v2.5

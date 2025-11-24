@@ -410,6 +410,17 @@ class Database:
         # Update last seen
         self.update_user_last_seen(user_id)
 
+        # Get the user's personal best for this chart (for feedback)
+        your_best_score = None
+        if not is_new_high_score:
+            self.cursor.execute("""
+                SELECT score FROM scores
+                WHERE chart_md5 = ? AND instrument_id = ? AND difficulty_id = ? AND user_id = ?
+            """, (chart_md5, instrument_id, difficulty_id, user_id))
+            user_score = self.cursor.fetchone()
+            if user_score:
+                your_best_score = user_score['score']
+
         result = {
             'success': True,
             'is_high_score': is_new_high_score,
@@ -418,6 +429,7 @@ class Database:
             'previous_score': current_high_score['score'] if current_high_score else None,
             'previous_holder': previous_holder,
             'previous_holder_discord_id': previous_holder_discord_id,
+            'your_best_score': your_best_score,  # User's PB for feedback when not a high score
             'user_id': user_id,
             'username': user['discord_username'],
             'discord_id': user['discord_id']

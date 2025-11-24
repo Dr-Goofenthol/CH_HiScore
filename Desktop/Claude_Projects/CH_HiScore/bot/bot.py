@@ -11,9 +11,59 @@ import asyncio
 import sys
 from pathlib import Path
 
+try:
+    import requests
+    HAS_REQUESTS = True
+except ImportError:
+    HAS_REQUESTS = False
+
 from .config import Config
 from .api import ScoreAPI
 from .database import Database
+
+# Version and update check
+BOT_VERSION = "2.4"
+GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
+
+
+def check_for_client_update():
+    """Check GitHub for latest client version and return info if newer than bot version"""
+    if not HAS_REQUESTS:
+        return None
+
+    try:
+        response = requests.get(
+            f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+            timeout=10,
+            headers={"Accept": "application/vnd.github.v3+json"}
+        )
+
+        if response.status_code != 200:
+            return None
+
+        release = response.json()
+        latest_version = release["tag_name"].lstrip("v")
+
+        # Check if there's a client update available
+        # Find the client asset
+        client_url = None
+        for asset in release.get("assets", []):
+            if "Tracker" in asset["name"] and asset["name"].endswith(".exe"):
+                client_url = asset["browser_download_url"]
+                break
+
+        if client_url and latest_version > BOT_VERSION:
+            return {
+                "version": latest_version,
+                "download_url": client_url,
+                "release_notes": release.get("body", ""),
+                "release_url": release["html_url"]
+            }
+
+        return None
+
+    except Exception:
+        return None
 
 
 class CloneHeroBot(commands.Bot):
@@ -72,6 +122,75 @@ class CloneHeroBot(commands.Bot):
 
         # Start HTTP API
         await self.api.start()
+
+        # Check for updates and notify Discord channel
+        await self.check_and_notify_update()
+
+    async def check_and_notify_update(self):
+        """Check for client updates and send one-time notification to Discord"""
+        try:
+            # Only notify once per bot session
+            if hasattr(self, '_update_notified') and self._update_notified:
+                return
+
+            update_info = check_for_client_update()
+            if not update_info:
+                print("[*] No client updates available")
+                return
+
+            # Get announcement channel
+            channel_id = Config.DISCORD_CHANNEL_ID
+            if not channel_id:
+                return
+
+            channel = self.get_channel(int(channel_id))
+            if not channel:
+                return
+
+            # Create update announcement embed
+            embed = discord.Embed(
+                title="🔄 Client Update Available!",
+                description=f"A new version of the Clone Hero Score Tracker is available.",
+                color=discord.Color.blue()
+            )
+
+            embed.add_field(
+                name="New Version",
+                value=f"v{update_info['version']}",
+                inline=True
+            )
+
+            embed.add_field(
+                name="Current Bot Version",
+                value=f"v{BOT_VERSION}",
+                inline=True
+            )
+
+            # Add release notes if available (truncated)
+            if update_info.get("release_notes"):
+                notes = update_info["release_notes"].strip()
+                if len(notes) > 500:
+                    notes = notes[:500] + "..."
+                embed.add_field(
+                    name="What's New",
+                    value=notes,
+                    inline=False
+                )
+
+            embed.add_field(
+                name="Download",
+                value=f"[Get the latest version]({update_info['release_url']})",
+                inline=False
+            )
+
+            embed.set_footer(text="Players should update their clients to get the latest features and fixes.")
+
+            await channel.send(embed=embed)
+            self._update_notified = True
+            print(f"[+] Update notification sent to #{channel.name}")
+
+        except Exception as e:
+            print(f"[!] Error sending update notification: {e}")
 
 
 # Create bot instance

@@ -4,7 +4,7 @@ Clone Hero High Score Bot Launcher
 Standalone executable for the Discord bot with first-time setup.
 """
 
-VERSION = "2.3.1"
+VERSION = "2.4"
 
 # GitHub repository for auto-updates
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
@@ -14,6 +14,7 @@ import sys
 import json
 import zipfile
 import tempfile
+import shutil
 from pathlib import Path
 
 try:
@@ -22,8 +23,51 @@ try:
 except ImportError:
     HAS_REQUESTS = False
 
-# Config file location (same directory as exe)
-CONFIG_FILE = Path(__file__).parent / 'bot_config.json'
+
+# ============================================================================
+# CONFIG PERSISTENCE - Store in %APPDATA% for persistence across updates
+# ============================================================================
+
+def get_config_dir() -> Path:
+    """Get persistent config directory in AppData"""
+    if sys.platform == 'win32':
+        appdata = Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming'))
+        config_dir = appdata / 'CloneHeroScoreBot'
+    else:
+        config_dir = Path.home() / '.config' / 'CloneHeroScoreBot'
+    config_dir.mkdir(parents=True, exist_ok=True)
+    return config_dir
+
+
+def get_config_path() -> Path:
+    """Get persistent config file path"""
+    return get_config_dir() / 'bot_config.json'
+
+
+def migrate_old_config():
+    """Check for config next to exe and migrate to AppData"""
+    # Check for old config location (next to exe)
+    if getattr(sys, 'frozen', False):
+        old_config = Path(sys.executable).parent / 'bot_config.json'
+    else:
+        old_config = Path(__file__).parent / 'bot_config.json'
+
+    new_config = get_config_path()
+
+    if old_config.exists() and not new_config.exists():
+        try:
+            shutil.copy(old_config, new_config)
+            print(f"[+] Migrated config to: {new_config}")
+            # Optionally remove old config after successful migration
+            # old_config.unlink()
+        except Exception as e:
+            print(f"[!] Could not migrate config: {e}")
+    elif old_config.exists() and new_config.exists():
+        print(f"[*] Config already exists in AppData, using that location")
+
+
+# Config file location (persistent in AppData)
+CONFIG_FILE = get_config_path()
 
 
 # ============================================================================
@@ -372,7 +416,7 @@ If you don't have these yet:
     confirm = input("\nSave this configuration? (yes/no): ").strip().lower()
     if confirm == 'yes' or confirm == 'y':
         save_config(config)
-        print("\n[+] Configuration saved!")
+        print(f"\n[+] Configuration saved to: {CONFIG_FILE}")
         return config
     else:
         print("\n[!] Configuration not saved. Please run setup again.")
@@ -397,6 +441,9 @@ def main():
     # Check for updates on startup
     print("\n[*] Checking for updates...")
     check_and_prompt_update(silent_if_current=True)
+
+    # Migrate old config if needed (from exe directory to AppData)
+    migrate_old_config()
 
     # Check for existing config
     config = load_config()

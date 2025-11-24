@@ -4,7 +4,7 @@ Clone Hero High Score Client
 Monitors your Clone Hero scores and submits them to the Discord scoreboard.
 """
 
-VERSION = "2.3.1"
+VERSION = "2.4"
 
 DEBUG_PASSWORD = "admin123"
 
@@ -619,9 +619,12 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
         song_artist = ""
         song_charter = None
 
-        # OCR-enriched fields (only set if OCR successful)
-        notes_hit = None
-        notes_total = None
+        # Notes data from scoredata.bin (authoritative - no OCR needed)
+        # The accuracy numerator/denominator in scoredata.bin ARE the notes hit/total
+        notes_hit = score.notes_hit if hasattr(score, 'notes_hit') and score.notes_hit > 0 else None
+        notes_total = score.notes_total if hasattr(score, 'notes_total') and score.notes_total > 0 else None
+
+        # Best streak only available via OCR (deferred feature)
         best_streak = None
 
         # =====================================================
@@ -679,10 +682,8 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
                     if ocr_result.artist:
                         song_artist = ocr_result.artist
 
-                # Always use OCR for notes/streak (not in currentsong.txt)
-                if ocr_result.notes_hit is not None:
-                    notes_hit = ocr_result.notes_hit
-                    notes_total = ocr_result.notes_total
+                # Notes come from scoredata.bin now (authoritative)
+                # Only use OCR for best streak (not available in scoredata.bin)
                 if ocr_result.streak is not None:
                     best_streak = ocr_result.streak
             else:
@@ -761,6 +762,10 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
                     print(f"[+] New personal best! (First score on this chart)")
                 else:
                     print(f"[-] Not a new high score")
+                    if result.get('your_best_score'):
+                        print(f"    Your current PB: {result['your_best_score']:,}")
+                        diff = result['your_best_score'] - score.score
+                        print(f"    You were {diff:,} points short")
             elif response.status_code == 401:
                 print(f"[!] Authentication failed - you may need to re-pair")
             else:

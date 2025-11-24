@@ -150,7 +150,8 @@ class ScoreAPI:
                 'is_high_score': result['is_high_score'],
                 'is_record_broken': result['is_record_broken'],
                 'previous_score': result.get('previous_score'),
-                'previous_holder': result.get('previous_holder')
+                'previous_holder': result.get('previous_holder'),
+                'your_best_score': result.get('your_best_score')  # User's PB for feedback
             })
 
         except json.JSONDecodeError:
