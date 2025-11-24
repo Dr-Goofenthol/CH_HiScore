@@ -79,25 +79,32 @@ Line 3: Charter
 | /updatesong command | Done | Easy | Update title AND/OR artist by MD5 |
 | Add /recent x command | Done | Easy | Shows last x record breaks (1-20) |
 
-### 2.5 Announcement Quality - DONE (v2.4)
+### 2.5 Announcement Quality - PARTIAL (v2.4/v2.4.1)
 
 | Item | Status | Effort | Notes |
 |------|--------|--------|-------|
-| Use scoredata.bin for notes hit/total | Done | Easy | Notes data is in scoredata.bin, not OCR-dependent |
-| Remove notes from OCR dependency | Done | Easy | Only best streak requires OCR now |
+| Use scoredata.bin for notes hit/total | **REVERTED** | - | Data was WRONG (showed 356/100 instead of 78/78) |
+| Remove notes from OCR dependency | **REVERTED** | - | Notes still need OCR |
 | Update notification in Discord | Done | Medium | Bot announces when new version released |
 
-**Discovery (Session 9):** The accuracy numerator/denominator in scoredata.bin ARE the notes hit/total values. We've been parsing them all along but labeling them as "accuracy". This data is authoritative and doesn't need OCR verification.
+**CORRECTION (Session 10):** The accuracy numerator/denominator in scoredata.bin are NOT notes hit/total. They appear to be some other metric. Notes data is only available via OCR.
 
-### 2.8 Best Streak OCR - DEFERRED
+### 2.8 Best Streak & Notes OCR - DEFERRED
 
 | Item | Status | Effort | Notes |
 |------|--------|--------|-------|
-| Fix best streak OCR parsing | Deferred | Medium | Only field that truly requires OCR |
-| Screenshot-based OCR for streak | Deferred | Medium | More reliable than live window capture |
+| Fix notes hit/total OCR parsing | Deferred | Medium | Notes only available via OCR |
+| Fix best streak OCR parsing | Deferred | Medium | Only available via OCR |
+| Screenshot-based OCR | Deferred | Medium | More reliable than live window capture |
 | Verification/sanity checks | Deferred | Easy | Ensure streak <= notes_total |
 
-**Note:** Best streak is the ONLY field that requires OCR. All other score data comes from scoredata.bin reliably. Defer until OCR quality issues are resolved.
+**Note:** Both notes and best streak require OCR. The scoredata.bin numerator/denominator fields are NOT notes data. Defer until OCR quality issues are resolved.
+
+### 2.9 Reset Command Split - NEW
+
+| Item | Status | Effort | Notes |
+|------|--------|--------|-------|
+| Split reset into 2 functions | Pending | Easy | User requested separation |
 
 ### 2.6 Config Persistence - DONE (v2.4)
 
@@ -468,7 +475,8 @@ These are nice-to-have features for future consideration.
 
 | Version | Key Features |
 |---------|--------------|
-| v2.4 | Config persistence (%APPDATA%), non-highscore feedback with PB, notes from scoredata.bin (no OCR), Discord update notification |
+| v2.4.1 | Fixed currentsong.txt caching (song metadata now appears), reverted notes from scoredata.bin (data was wrong) |
+| v2.4 | Config persistence (%APPDATA%), non-highscore feedback with PB, Discord update notification |
 | v2.3.1 | OCR disabled by default, bug fixes for data truncation |
 | v2.3 | currentsong.txt integration, settings.ini check, /recent, /updatesong, auto-update (both apps), full MD5 in announcements |
 | v2.2 | Reset command, minimize to tray, start with Windows, documentation |
@@ -646,22 +654,29 @@ debug> exit
 
 ## Next Session: Resume Development
 
-### Where We Left Off (Session 10 - 2025-11-23)
+### Where We Left Off (Session 10 - 2025-11-24)
 
-v2.4 released! Tier 1 complete, Tier 2 mostly complete.
+v2.4.1 released! Fixed currentsong.txt caching issue.
 
-### Session 10 Summary (v2.4)
+### Session 10 Summary (v2.4 & v2.4.1)
 
-**Implemented:**
+**v2.4 Implemented:**
 - [x] Config persistence - bot config now in `%APPDATA%\CloneHeroScoreBot\`
 - [x] Auto-migration from old config location
 - [x] Non-highscore feedback - shows current PB and point difference
-- [x] Notes from scoredata.bin (authoritative, no OCR needed)
 - [x] Discord update notification when new version available
 
-**Key Discovery:**
-- scoredata.bin contains notes_hit/notes_total in the accuracy numerator/denominator
-- OCR is now only needed for best streak (deferred)
+**v2.4.1 Bug Fixes:**
+- [x] Fixed currentsong.txt not being read - added background polling/caching
+- [x] Reverted notes from scoredata.bin - the numerator/denominator are NOT notes hit/total
+
+**Key Discovery (CORRECTED):**
+- scoredata.bin numerator/denominator are NOT notes hit/total (values were wrong like 356/100)
+- Notes data only available via OCR (when enabled)
+- Clone Hero clears currentsong.txt when song ends, but scoredata.bin written AFTER - need to cache song info while playing
+
+**Pending:**
+- [ ] Split reset command into 2 functions
 
 ### Priority for Next Session (v2.5)
 
@@ -712,5 +727,5 @@ v2.4 released! Tier 1 complete, Tier 2 mostly complete.
 | `client/ocr_capture.py` | OCR capture functions |
 | `NEXT_STEPS.md` | This file - development roadmap |
 
-**Current Version:** v2.4
+**Current Version:** v2.4.1
 **Next Target:** v2.5

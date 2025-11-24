@@ -22,7 +22,7 @@ from .api import ScoreAPI
 from .database import Database
 
 # Version and update check
-BOT_VERSION = "2.4"
+BOT_VERSION = "2.4.1"
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
 
 

@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['bot_launcher.py'],
+    ['clone_hero_client.py'],
     pathex=[],
     binaries=[],
     datas=[],
@@ -22,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='CloneHeroScoreBot_v2.4',
+    name='CloneHeroScoreTracker_v2.4.1',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

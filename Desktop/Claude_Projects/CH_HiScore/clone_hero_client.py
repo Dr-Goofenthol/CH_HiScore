@@ -4,7 +4,7 @@ Clone Hero High Score Client
 Monitors your Clone Hero scores and submits them to the Discord scoreboard.
 """
 
-VERSION = "2.4"
+VERSION = "2.4.1"
 
 DEBUG_PASSWORD = "admin123"
 
@@ -41,6 +41,18 @@ except ImportError:
 
 # Default configuration
 DEFAULT_BOT_URL = "http://localhost:8080"
+
+# Cached song info - Clone Hero clears currentsong.txt when song ends,
+# but scoredata.bin is written AFTER the song ends, so we need to cache
+# the song info while playing so it's available when we detect the score.
+_cached_song_info = {
+    'title': None,
+    'artist': None,
+    'charter': None,
+    'last_updated': None
+}
+_song_cache_thread = None
+_song_cache_running = False
 
 # Config files will be stored in Clone Hero directory for persistence
 CONFIG_FILE = None  # Set after finding CH directory
@@ -511,9 +523,15 @@ def read_current_song():
     """
     Read the currentsong.txt file for authoritative song metadata.
 
+    Clone Hero clears currentsong.txt when a song ends, but scoredata.bin is written
+    AFTER the song ends. So we cache the song info while playing and return the
+    cached values if the file is empty when we need it.
+
     Returns:
         dict with 'title', 'artist', 'charter' keys (values may be None if not available)
     """
+    global _cached_song_info
+
     result = {
         'title': None,
         'artist': None,
@@ -522,10 +540,24 @@ def read_current_song():
 
     ch_docs = get_clone_hero_documents_dir()
     if not ch_docs:
+        # Return cached info if available
+        if _cached_song_info['title']:
+            return {
+                'title': _cached_song_info['title'],
+                'artist': _cached_song_info['artist'],
+                'charter': _cached_song_info['charter']
+            }
         return result
 
     currentsong_path = ch_docs / 'currentsong.txt'
     if not currentsong_path.exists():
+        # Return cached info if available
+        if _cached_song_info['title']:
+            return {
+                'title': _cached_song_info['title'],
+                'artist': _cached_song_info['artist'],
+                'charter': _cached_song_info['charter']
+            }
         return result
 
     try:
@@ -540,10 +572,83 @@ def read_current_song():
         if len(lines) >= 3 and lines[2].strip():
             result['charter'] = lines[2].strip()
 
+        # Cache the values if we got valid data
+        if result['title']:
+            _cached_song_info['title'] = result['title']
+            _cached_song_info['artist'] = result['artist']
+            _cached_song_info['charter'] = result['charter']
+            _cached_song_info['last_updated'] = time.time()
+        elif _cached_song_info['title']:
+            # File is empty but we have cached data - use it
+            # (This happens when Clone Hero clears the file after song ends)
+            return {
+                'title': _cached_song_info['title'],
+                'artist': _cached_song_info['artist'],
+                'charter': _cached_song_info['charter']
+            }
+
     except Exception:
+        # Return cached info if available
+        if _cached_song_info['title']:
+            return {
+                'title': _cached_song_info['title'],
+                'artist': _cached_song_info['artist'],
+                'charter': _cached_song_info['charter']
+            }
         pass  # Silent fail - file may be in use
 
     return result
+
+
+def clear_song_cache():
+    """Clear the cached song info after a score is processed"""
+    global _cached_song_info
+    _cached_song_info = {
+        'title': None,
+        'artist': None,
+        'charter': None,
+        'last_updated': None
+    }
+
+
+def start_song_cache_polling():
+    """
+    Start a background thread that periodically polls currentsong.txt
+    to keep the cache updated while a song is playing.
+    """
+    global _song_cache_thread, _song_cache_running
+    import threading
+
+    def poll_currentsong():
+        global _song_cache_running
+        while _song_cache_running:
+            # Read currentsong.txt to update cache (the read function handles caching)
+            try:
+                ch_docs = get_clone_hero_documents_dir()
+                if ch_docs:
+                    currentsong_path = ch_docs / 'currentsong.txt'
+                    if currentsong_path.exists():
+                        with open(currentsong_path, 'r', encoding='utf-8') as f:
+                            lines = f.readlines()
+                        # Only cache if we have valid data
+                        if len(lines) >= 1 and lines[0].strip():
+                            _cached_song_info['title'] = lines[0].strip()
+                            _cached_song_info['artist'] = lines[1].strip() if len(lines) >= 2 and lines[1].strip() else None
+                            _cached_song_info['charter'] = lines[2].strip() if len(lines) >= 3 and lines[2].strip() else None
+                            _cached_song_info['last_updated'] = time.time()
+            except Exception:
+                pass  # Silent fail
+            time.sleep(1)  # Poll every second
+
+    _song_cache_running = True
+    _song_cache_thread = threading.Thread(target=poll_currentsong, daemon=True)
+    _song_cache_thread.start()
+
+
+def stop_song_cache_polling():
+    """Stop the background song cache polling thread"""
+    global _song_cache_running
+    _song_cache_running = False
 
 
 def check_clone_hero_settings():
@@ -619,10 +724,10 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
         song_artist = ""
         song_charter = None
 
-        # Notes data from scoredata.bin (authoritative - no OCR needed)
-        # The accuracy numerator/denominator in scoredata.bin ARE the notes hit/total
-        notes_hit = score.notes_hit if hasattr(score, 'notes_hit') and score.notes_hit > 0 else None
-        notes_total = score.notes_total if hasattr(score, 'notes_total') and score.notes_total > 0 else None
+        # Notes data - only available via OCR (scoredata.bin numerator/denominator is NOT notes)
+        # The values in scoredata.bin appear to be a different metric, not notes hit/total
+        notes_hit = None
+        notes_total = None
 
         # Best streak only available via OCR (deferred feature)
         best_streak = None
@@ -777,6 +882,9 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
             print("    Make sure the bot is running!")
         except Exception as e:
             print(f"[!] Error sending score to API: {e}")
+
+        # Clear the song cache after processing - next song will re-populate it
+        clear_song_cache()
 
     return on_new_score
 
@@ -1673,6 +1781,9 @@ def main():
         import threading
 
         watcher.start()
+
+        # Start background polling of currentsong.txt for song metadata caching
+        start_song_cache_polling()
 
         # Show ready message with available commands
         print("\n" + "=" * 50)
