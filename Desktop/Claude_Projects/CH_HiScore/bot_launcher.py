@@ -4,7 +4,7 @@ Clone Hero High Score Bot Launcher
 Standalone executable for the Discord bot with first-time setup.
 """
 
-VERSION = "2.4.1"
+VERSION = "2.4.2"
 
 # GitHub repository for auto-updates
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
@@ -466,6 +466,18 @@ def main():
 
     # Set environment variables
     setup_environment(config)
+
+    # Run database migrations before starting the bot
+    print("\n[*] Running database migrations...")
+    try:
+        from bot.migrations import run_migrations
+        db_path = get_config_dir() / 'scores.db'
+        run_migrations(db_path)
+    except Exception as e:
+        print(f"[!] Migration failed: {e}")
+        print("[!] Bot may not function correctly")
+        import traceback
+        traceback.print_exc()
 
     # Start the bot
     print("\n[*] Starting Discord bot...")

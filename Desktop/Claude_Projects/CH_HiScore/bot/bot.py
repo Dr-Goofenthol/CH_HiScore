@@ -22,7 +22,7 @@ from .api import ScoreAPI
 from .database import Database
 
 # Version and update check
-BOT_VERSION = "2.4.1"
+BOT_VERSION = "2.4.2"
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
 
 
@@ -323,7 +323,7 @@ async def leaderboard(
         for i, score in enumerate(scores, 1):
             inst = instruments.get(score['instrument_id'], '?')
             diff = difficulties.get(score['difficulty_id'], '?')
-            song = score.get('song_title', f"[{score['chart_md5'][:8]}]")
+            song = score.get('song_title', f"[{score['chart_hash'][:8]}]")
             artist = score.get('song_artist')
             if artist:
                 song = f"{song} - {artist}"
@@ -411,7 +411,7 @@ async def mystats(interaction: discord.Interaction, user: discord.Member = None)
             for rec in records:
                 inst = instruments.get(rec['instrument_id'], '?')
                 diff = difficulties.get(rec['difficulty_id'], '?')
-                song = rec.get('song_title', f"[{rec['chart_md5'][:8]}]")
+                song = rec.get('song_title', f"[{rec['chart_hash'][:8]}]")
                 artist = rec.get('song_artist')
                 if artist:
                     song = f"{song} - {artist}"
@@ -473,10 +473,10 @@ async def lookupsong(interaction: discord.Interaction, query: str):
     for i, song in enumerate(songs, 1):
         title = song.get('title', '[Unknown]')
         artist = song.get('artist') or '*No artist*'
-        md5_short = song['chart_md5'][:8]
+        hash_short = song['chart_hash'][:8]
         results_text += f"**{i}.** {title}\n"
         results_text += f"    Artist: {artist}\n"
-        results_text += f"    MD5: `{md5_short}`\n\n"
+        results_text += f"    Chart Hash: `{hash_short}`\n\n"
 
     embed.add_field(
         name=f"Found {len(songs)} song(s)",
@@ -484,54 +484,54 @@ async def lookupsong(interaction: discord.Interaction, query: str):
         inline=False
     )
 
-    embed.set_footer(text="Use /setartist <md5> <artist> to update artist info")
+    embed.set_footer(text="Use /setartist <hash> <artist> to update artist info")
 
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="setartist", description="Manually set the artist for a song")
 @app_commands.describe(
-    md5_prefix="First 8+ characters of the song's MD5 hash",
+    hash_prefix="First 8+ characters of the song's chart hash",
     artist="The artist name to set"
 )
-async def setartist(interaction: discord.Interaction, md5_prefix: str, artist: str):
+async def setartist(interaction: discord.Interaction, hash_prefix: str, artist: str):
     """Manually set artist for a song"""
     await interaction.response.defer(ephemeral=True)
 
     # Clean inputs
-    md5_prefix = md5_prefix.lower().strip()
+    hash_prefix = hash_prefix.lower().strip()
     artist = artist.strip()
 
-    if len(md5_prefix) < 8:
+    if len(hash_prefix) < 8:
         await interaction.followup.send(
-            "Please provide at least 8 characters of the MD5 hash.\n"
-            "Use `/lookupsong <title>` to find the MD5 for a song.",
+            "Please provide at least 8 characters of the chart hash.\n"
+            "Use `/lookupsong <title>` to find the chart hash for a song.",
             ephemeral=True
         )
         return
 
-    # Search for songs with matching MD5 prefix
+    # Search for songs with matching hash prefix
     songs = bot.db.search_songs('', limit=100)  # Get all songs
-    matching_songs = [s for s in songs if s['chart_md5'].startswith(md5_prefix)]
+    matching_songs = [s for s in songs if s['chart_hash'].startswith(hash_prefix)]
 
-    # Also try direct lookup if it's a full MD5
-    if len(md5_prefix) == 32:
-        song = bot.db.get_song_info(md5_prefix)
+    # Also try direct lookup if it's a full hash
+    if len(hash_prefix) == 32:
+        song = bot.db.get_song_info(hash_prefix)
         if song:
             matching_songs = [song]
 
     if not matching_songs:
-        # Try searching by MD5 in the database directly
+        # Try searching by chart hash in the database directly
         bot.db.cursor.execute("""
-            SELECT * FROM songs WHERE chart_md5 LIKE ?
-        """, (f'{md5_prefix}%',))
+            SELECT * FROM songs WHERE chart_hash LIKE ?
+        """, (f'{hash_prefix}%',))
         rows = bot.db.cursor.fetchall()
         matching_songs = [dict(row) for row in rows]
 
     if not matching_songs:
         await interaction.followup.send(
-            f"No song found with MD5 starting with `{md5_prefix}`.\n\n"
-            f"Use `/lookupsong <title>` to find the correct MD5.",
+            f"No song found with chart hash starting with `{hash_prefix}`.\n\n"
+            f"Use `/lookupsong <title>` to find the correct chart hash.",
             ephemeral=True
         )
         return
@@ -539,22 +539,22 @@ async def setartist(interaction: discord.Interaction, md5_prefix: str, artist: s
     if len(matching_songs) > 1:
         # Multiple matches - show them
         songs_list = "\n".join([
-            f"• `{s['chart_md5'][:12]}...` - {s.get('title', '[Unknown]')}"
+            f"• `{s['chart_hash'][:12]}...` - {s.get('title', '[Unknown]')}"
             for s in matching_songs[:5]
         ])
         await interaction.followup.send(
-            f"Multiple songs match `{md5_prefix}`:\n{songs_list}\n\n"
-            f"Please provide more characters of the MD5 to be specific.",
+            f"Multiple songs match `{hash_prefix}`:\n{songs_list}\n\n"
+            f"Please provide more characters of the chart hash to be specific.",
             ephemeral=True
         )
         return
 
     # Single match - update the artist
     song = matching_songs[0]
-    chart_md5 = song['chart_md5']
+    chart_hash = song['chart_hash']
     old_artist = song.get('artist') or '*None*'
 
-    success = bot.db.update_song_artist(chart_md5, artist)
+    success = bot.db.update_song_artist(chart_hash, artist)
 
     if success:
         await interaction.followup.send(
@@ -575,16 +575,16 @@ async def setartist(interaction: discord.Interaction, md5_prefix: str, artist: s
 
 @bot.tree.command(name="updatesong", description="Manually update song title and/or artist")
 @app_commands.describe(
-    md5_prefix="First 8+ characters of the song's MD5 hash",
+    hash_prefix="First 8+ characters of the song's chart hash",
     title="The song title to set (optional)",
     artist="The artist name to set (optional)"
 )
-async def updatesong(interaction: discord.Interaction, md5_prefix: str, title: str = None, artist: str = None):
+async def updatesong(interaction: discord.Interaction, hash_prefix: str, title: str = None, artist: str = None):
     """Manually update song title and/or artist"""
     await interaction.response.defer(ephemeral=True)
 
     # Clean inputs
-    md5_prefix = md5_prefix.lower().strip()
+    hash_prefix = hash_prefix.lower().strip()
     if title:
         title = title.strip()
     if artist:
@@ -598,25 +598,25 @@ async def updatesong(interaction: discord.Interaction, md5_prefix: str, title: s
         )
         return
 
-    if len(md5_prefix) < 8:
+    if len(hash_prefix) < 8:
         await interaction.followup.send(
-            "Please provide at least 8 characters of the MD5 hash.\n"
-            "Use `/lookupsong <title>` to find the MD5 for a song.",
+            "Please provide at least 8 characters of the chart hash.\n"
+            "Use `/lookupsong <title>` to find the chart hash for a song.",
             ephemeral=True
         )
         return
 
-    # Search for songs with matching MD5 prefix
+    # Search for songs with matching chart hash prefix
     bot.db.cursor.execute("""
-        SELECT * FROM songs WHERE chart_md5 LIKE ?
-    """, (f'{md5_prefix}%',))
+        SELECT * FROM songs WHERE chart_hash LIKE ?
+    """, (f'{hash_prefix}%',))
     rows = bot.db.cursor.fetchall()
     matching_songs = [dict(row) for row in rows]
 
     if not matching_songs:
         await interaction.followup.send(
-            f"No song found with MD5 starting with `{md5_prefix}`.\n\n"
-            f"Use `/lookupsong <title>` to find the correct MD5.",
+            f"No song found with chart hash starting with `{hash_prefix}`.\n\n"
+            f"Use `/lookupsong <title>` to find the correct chart hash.",
             ephemeral=True
         )
         return
@@ -624,23 +624,23 @@ async def updatesong(interaction: discord.Interaction, md5_prefix: str, title: s
     if len(matching_songs) > 1:
         # Multiple matches - show them
         songs_list = "\n".join([
-            f"• `{s['chart_md5'][:12]}...` - {s.get('title', '[Unknown]')}"
+            f"• `{s['chart_hash'][:12]}...` - {s.get('title', '[Unknown]')}"
             for s in matching_songs[:5]
         ])
         await interaction.followup.send(
-            f"Multiple songs match `{md5_prefix}`:\n{songs_list}\n\n"
-            f"Please provide more characters of the MD5 to be specific.",
+            f"Multiple songs match `{hash_prefix}`:\n{songs_list}\n\n"
+            f"Please provide more characters of the chart hash to be specific.",
             ephemeral=True
         )
         return
 
     # Single match - update the metadata
     song = matching_songs[0]
-    chart_md5 = song['chart_md5']
+    chart_hash = song['chart_hash']
     old_title = song.get('title') or '*None*'
     old_artist = song.get('artist') or '*None*'
 
-    success = bot.db.update_song_metadata(chart_md5, title=title, artist=artist)
+    success = bot.db.update_song_metadata(chart_hash, title=title, artist=artist)
 
     if success:
         response = "**Song metadata updated!**\n\n"
@@ -654,11 +654,11 @@ async def updatesong(interaction: discord.Interaction, md5_prefix: str, title: s
         else:
             response += f"**Artist:** {old_artist} (unchanged)\n"
 
-        response += f"\n**MD5:** `{chart_md5[:8]}...`\n"
+        response += f"\n**Chart Hash:** `{chart_hash[:8]}...`\n"
         response += "\n*Future displays will show the updated info.*"
 
         await interaction.followup.send(response, ephemeral=True)
-        print(f"[Bot] Song updated: {chart_md5[:8]} - title={title}, artist={artist} (by {interaction.user.display_name})")
+        print(f"[Bot] Song updated: {chart_hash[:8]} - title={title}, artist={artist} (by {interaction.user.display_name})")
     else:
         await interaction.followup.send(
             f"Failed to update song. The song may have been removed.",
@@ -689,9 +689,9 @@ async def missingartists(interaction: discord.Interaction):
     results_text = ""
     for song in songs:
         title = song.get('title', '[Unknown]')
-        md5_short = song['chart_md5'][:8]
+        hash_short = song['chart_hash'][:8]
         score_count = song.get('score_count', 0)
-        results_text += f"• **{title}** ({score_count} scores)\n  MD5: `{md5_short}`\n"
+        results_text += f"• **{title}** ({score_count} scores)\n  Chart Hash: `{hash_short}`\n"
 
     embed.add_field(
         name=f"{len(songs)} song(s) without artist",
@@ -699,7 +699,7 @@ async def missingartists(interaction: discord.Interaction):
         inline=False
     )
 
-    embed.set_footer(text="Use /setartist <md5> <artist> to add artist info")
+    embed.set_footer(text="Use /setartist <hash> <artist> to add artist info")
 
     await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -731,7 +731,7 @@ async def recent(interaction: discord.Interaction, count: int = 5):
         for rec in records:
             inst = instruments.get(rec['instrument_id'], '?')
             diff = difficulties.get(rec['difficulty_id'], '?')
-            song = rec.get('song_title', f"[{rec['chart_md5'][:8]}]")
+            song = rec.get('song_title', f"[{rec['chart_hash'][:8]}]")
             artist = rec.get('song_artist')
             if artist:
                 song = f"{song} - {artist}"

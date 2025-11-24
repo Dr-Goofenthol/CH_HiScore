@@ -12,7 +12,7 @@ from dataclasses import dataclass
 @dataclass
 class ScoreEntry:
     """Represents a single score entry from Clone Hero"""
-    chart_md5: str
+    chart_hash: str  # blake3 hash from Clone Hero
     instrument_id: int
     instrument_name: str
     difficulty: int
@@ -28,7 +28,7 @@ class ScoreEntry:
 @dataclass
 class SongMetadata:
     """Represents song metadata from songcache.bin"""
-    chart_md5: str
+    chart_hash: str  # blake3 hash from Clone Hero
     title: str
     artist: str
     album: str
@@ -80,9 +80,9 @@ class ScoreDataParser:
 
             # Parse each song
             for _ in range(song_count):
-                # Read MD5 checksum (16 bytes)
-                md5_bytes = f.read(16)
-                chart_md5 = md5_bytes.hex()
+                # Read chart hash (16 bytes, blake3)
+                hash_bytes = f.read(16)
+                chart_hash = hash_bytes.hex()
 
                 # Read instrument count (1 byte)
                 instrument_count = struct.unpack('B', f.read(1))[0]
@@ -115,7 +115,7 @@ class ScoreDataParser:
 
                     # Create score entry
                     entry = ScoreEntry(
-                        chart_md5=chart_md5,
+                        chart_hash=chart_hash,
                         instrument_id=instrument_id,
                         instrument_name=self.INSTRUMENT_NAMES.get(instrument_id, f"Unknown ({instrument_id})"),
                         difficulty=difficulty,
@@ -159,20 +159,20 @@ class SongCacheParser:
 
     def parse(self) -> Dict[str, SongMetadata]:
         """
-        Parse the songcache.bin file and return song metadata indexed by MD5
+        Parse the songcache.bin file and return song metadata indexed by chart hash
 
         Uses filepath extraction for reliable song names since lookup table
         indices can be misaligned.
 
         Returns:
-            Dictionary mapping chart MD5 to SongMetadata
+            Dictionary mapping chart hash to SongMetadata
         """
         songs = {}
 
         with open(self.filepath, 'rb') as f:
             file_data = f.read()
 
-        # Pattern: 0x0a "Clone Hero" 0x00 followed by 16-byte MD5
+        # Pattern: 0x0a "Clone Hero" 0x00 followed by 16-byte hash
         clone_hero_marker = b'\x0aClone Hero\x00'
 
         pos = 0
@@ -182,22 +182,22 @@ class SongCacheParser:
             if marker_pos == -1:
                 break
 
-            # MD5 is right after the marker
-            md5_pos = marker_pos + len(clone_hero_marker)
-            if md5_pos + 16 > len(file_data):
+            # Chart hash is right after the marker
+            hash_pos = marker_pos + len(clone_hero_marker)
+            if hash_pos + 16 > len(file_data):
                 break
 
-            md5_bytes = file_data[md5_pos:md5_pos + 16]
-            chart_md5 = md5_bytes.hex()
+            hash_bytes = file_data[hash_pos:hash_pos + 16]
+            chart_hash = hash_bytes.hex()
 
-            # Extract filepath from AFTER the MD5
-            # Filepath is stored as a variable-length string after the MD5
+            # Extract filepath from AFTER the hash
+            # Filepath is stored as a variable-length string after the hash
             filepath = ""
-            after_md5 = file_data[md5_pos + 16:md5_pos + 16 + 500]
+            after_hash = file_data[hash_pos + 16:hash_pos + 16 + 500]
 
             # Look for filepath patterns (drive letter or path separators)
             for pattern in [b':\\', b'Songs\\', b'songs\\']:
-                pattern_idx = after_md5.find(pattern)
+                pattern_idx = after_hash.find(pattern)
                 if pattern_idx != -1:
                     # Find start of path (look for drive letter)
                     start = pattern_idx
@@ -205,20 +205,20 @@ class SongCacheParser:
                         start = max(0, pattern_idx - 1)  # Include drive letter
 
                     # Find end of path (look for .sng, .chart, etc or null byte)
-                    end = len(after_md5)
+                    end = len(after_hash)
                     for end_marker in [b'.sng', b'.chart', b'.mid']:
-                        end_idx = after_md5.find(end_marker, start)
+                        end_idx = after_hash.find(end_marker, start)
                         if end_idx != -1:
                             end = end_idx + len(end_marker)
                             break
 
                     # Also check for null terminator
-                    null_idx = after_md5.find(b'\x00', start)
+                    null_idx = after_hash.find(b'\x00', start)
                     if null_idx != -1 and null_idx < end:
                         end = null_idx
 
                     try:
-                        filepath = after_md5[start:end].decode('utf-8', errors='ignore')
+                        filepath = after_hash[start:end].decode('utf-8', errors='ignore')
                         break
                     except:
                         pass
@@ -228,7 +228,7 @@ class SongCacheParser:
 
             # Create metadata entry
             metadata = SongMetadata(
-                chart_md5=chart_md5,
+                chart_hash=chart_hash,
                 title=title,
                 artist="",  # Artist not reliably extractable from filepath
                 album="",
@@ -239,9 +239,9 @@ class SongCacheParser:
                 filepath=filepath
             )
 
-            songs[chart_md5] = metadata
+            songs[chart_hash] = metadata
 
-            pos = md5_pos + 16
+            pos = hash_pos + 16
 
         return songs
 
@@ -406,20 +406,20 @@ def get_scores_with_metadata(scoredata_path: str, songcache_path: str = None) ->
             cache_parser = SongCacheParser(songcache_path)
             songs = cache_parser.parse()
         except Exception as e:
-            # Songcache parsing failed, continue with just MD5 hashes
+            # Songcache parsing failed, continue with just chart hashes
             print(f"Warning: Could not parse songcache.bin: {e}")
             songs = {}
 
     # Combine data
     combined = []
     for score in scores:
-        metadata = songs.get(score.chart_md5)
+        metadata = songs.get(score.chart_hash)
 
-        # Use short MD5 hash as fallback display name
-        short_hash = score.chart_md5[:8]
+        # Use short hash as fallback display name
+        short_hash = score.chart_hash[:8]
 
         entry = {
-            'chart_md5': score.chart_md5,
+            'chart_hash': score.chart_hash,
             'instrument': score.instrument_name,
             'instrument_id': score.instrument_id,
             'difficulty': score.difficulty_name,

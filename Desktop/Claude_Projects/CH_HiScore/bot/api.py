@@ -63,7 +63,7 @@ class ScoreAPI:
         Expected JSON body:
         {
             "auth_token": "user's auth token from pairing",
-            "chart_md5": "ecd1c69af09ebeec96a4ad24754f3eed",
+            "chart_hash": "ecd1c69af09ebeec96a4ad24754f3eed",
             "instrument_id": 0,
             "difficulty_id": 3,
             "score": 147392,
@@ -75,7 +75,7 @@ class ScoreAPI:
             data = await request.json()
 
             # Validate required fields
-            required = ['auth_token', 'chart_md5', 'instrument_id', 'difficulty_id', 'score']
+            required = ['auth_token', 'chart_hash', 'instrument_id', 'difficulty_id', 'score']
             missing = [field for field in required if field not in data]
             if missing:
                 return web.json_response({
@@ -86,7 +86,7 @@ class ScoreAPI:
             # Submit score to database
             result = self.bot.db.submit_score(
                 auth_token=data['auth_token'],
-                chart_md5=data['chart_md5'],
+                chart_hash=data['chart_hash'],
                 instrument_id=data['instrument_id'],
                 difficulty_id=data['difficulty_id'],
                 score=data['score'],
@@ -109,7 +109,7 @@ class ScoreAPI:
             diff_name = difficulties.get(data['difficulty_id'], f"Diff{data['difficulty_id']}")
 
             # Log the submission with all fields
-            song_title = data.get('song_title', f"[{data['chart_md5'][:8]}]")
+            song_title = data.get('song_title', f"[{data['chart_hash'][:8]}]")
             song_artist = data.get('song_artist', '')
             score_type = data.get('score_type', 'raw')  # "raw" or "rich"
             notes_hit = data.get('notes_hit')
@@ -119,7 +119,7 @@ class ScoreAPI:
 
             # If we got an OCR artist and the song doesn't have one, update the DB
             if ocr_artist and not song_artist:
-                self.bot.db.update_song_artist(data['chart_md5'], ocr_artist)
+                self.bot.db.update_song_artist(data['chart_hash'], ocr_artist)
                 song_artist = ocr_artist
 
             song_display = song_title
@@ -128,7 +128,7 @@ class ScoreAPI:
 
             print(f"\n[API] Score received from {result['username']} [{score_type.upper()}]:")
             print(f"  Song: {song_display}")
-            print(f"  MD5: {data['chart_md5']}")
+            print(f"  Chart Hash: {data['chart_hash']}")
             print(f"  Score: {data['score']:,} | {diff_name} {inst_name}")
             if notes_hit is not None and notes_total is not None:
                 print(f"  Notes: {notes_hit}/{notes_total} ({data.get('completion_percent', 0):.1f}%)")
@@ -202,7 +202,7 @@ class ScoreAPI:
                 if song_artist:
                     chart_display = f"{song_title} - {song_artist}"
             else:
-                chart_display = f"[{score_data['chart_md5'][:8]}]"
+                chart_display = f"[{score_data['chart_hash'][:8]}]"
 
             # Accuracy/Notes display
             accuracy = score_data.get('completion_percent', 0)
@@ -275,11 +275,11 @@ class ScoreAPI:
                     inline=True
                 )
 
-            # Add full MD5 hash for enchor.us lookup (copy-friendly format)
-            chart_md5 = score_data['chart_md5']
+            # Add full chart hash for lookup (copy-friendly format)
+            chart_hash = score_data['chart_hash']
             embed.add_field(
-                name="Chart MD5 (for enchor.us lookup)",
-                value=f"`{chart_md5}`",
+                name="Chart Hash",
+                value=f"`{chart_hash}`",
                 inline=False
             )
 

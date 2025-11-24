@@ -4,7 +4,7 @@ Clone Hero High Score Client
 Monitors your Clone Hero scores and submits them to the Discord scoreboard.
 """
 
-VERSION = "2.4.1"
+VERSION = "2.4.2"
 
 DEBUG_PASSWORD = "admin123"
 
@@ -714,13 +714,13 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
         Callback function that gets called when a new score is detected
 
         Sends the score to the Discord bot API.
-        Score types: "raw" (MD5 only) or "rich" (has metadata from currentsong.txt or OCR)
+        Score types: "raw" (chart hash only) or "rich" (has metadata from currentsong.txt or OCR)
         """
-        # Track score type - "raw" (MD5 only) or "rich" (has metadata)
+        # Track score type - "raw" (chart hash only) or "rich" (has metadata)
         score_type = "raw"
 
-        # Default to MD5 code as fallback
-        song_title = f"[{score.chart_md5[:8]}]"
+        # Default to chart hash as fallback
+        song_title = f"[{score.chart_hash[:8]}]"
         song_artist = ""
         song_charter = None
 
@@ -794,7 +794,7 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
             else:
                 print(f"[-] OCR extraction failed: {ocr_result.error}")
                 if not currentsong_used:
-                    print("    (Score will be 'raw' with MD5 identifier only)")
+                    print("    (Score will be 'raw' with chart hash identifier only)")
 
         # Determine data source for display
         if currentsong_used:
@@ -802,7 +802,7 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
         elif ocr_result and ocr_result.success:
             data_source = "OCR"
         else:
-            data_source = "MD5 only"
+            data_source = "Chart hash only"
 
         print("\n" + "=" * 50)
         print(f"NEW SCORE DETECTED! [{score_type.upper()}]")
@@ -811,7 +811,7 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
         if song_charter:
             print(f"Charter: {song_charter}")
         print(f"Source: {data_source}")
-        print(f"Chart MD5: {score.chart_md5}")
+        print(f"Chart Hash: {score.chart_hash}")
         print(f"Instrument: {score.instrument_name}")
         print(f"Difficulty: {score.difficulty_name}")
         print(f"Score: {score.score:,}")
@@ -829,7 +829,7 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
 
             payload = {
                 "auth_token": auth_token,
-                "chart_md5": score.chart_md5,
+                "chart_hash": score.chart_hash,
                 "instrument_id": score.instrument_id,
                 "difficulty_id": score.difficulty,
                 "score": score.score,
@@ -891,13 +891,13 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
 
 def send_test_score(auth_token, song="Test Song", artist="", charter="", score=10000,
                     instrument=0, difficulty=3, stars=5, accuracy=95.0,
-                    notes_hit=None, notes_total=None, best_streak=None, md5=None):
+                    notes_hit=None, notes_total=None, best_streak=None, chart_hash=None):
     """Send a test score to the bot API with full metadata support"""
-    # Use provided MD5 or generate one based on song name
-    if md5:
-        chart_md5 = md5
+    # Use provided chart hash or generate one based on song name
+    if chart_hash:
+        hash_value = chart_hash
     else:
-        chart_md5 = hashlib.md5(f"test_{song}".encode()).hexdigest()
+        hash_value = hashlib.md5(f"test_{song}".encode()).hexdigest()
 
     instrument_names = {0: "Lead Guitar", 1: "Bass", 2: "Rhythm", 3: "Keys", 4: "Drums"}
     difficulty_names = {0: "Easy", 1: "Medium", 2: "Hard", 3: "Expert"}
@@ -908,7 +908,7 @@ def send_test_score(auth_token, song="Test Song", artist="", charter="", score=1
     print(f"Song: {song}" + (f" - {artist}" if artist else ""))
     if charter:
         print(f"Charter: {charter}")
-    print(f"Chart MD5: {chart_md5}")
+    print(f"Chart Hash: {hash_value}")
     print(f"Instrument: {instrument_names.get(instrument, f'Unknown ({instrument})')}")
     print(f"Difficulty: {difficulty_names.get(difficulty, f'Unknown ({difficulty})')}")
     print(f"Score: {score:,}")
@@ -925,7 +925,7 @@ def send_test_score(auth_token, song="Test Song", artist="", charter="", score=1
 
         payload = {
             "auth_token": auth_token,
-            "chart_md5": chart_md5,
+            "chart_hash": hash_value,
             "instrument_id": instrument,
             "difficulty_id": difficulty,
             "score": score,
@@ -994,7 +994,7 @@ def debug_mode(auth_token):
     print("    -notes_hit 500        - Notes hit")
     print("    -notes_total 520      - Total notes")
     print("    -best_streak 200      - Best streak")
-    print("    -md5 \"abc123...\"      - Use specific MD5 hash")
+    print("    -chart_hash \"abc123...\" - Use specific chart hash")
     print("")
     print("  testocr                 - Test OCR capture on Clone Hero window")
     print("  help                    - Show this help")
@@ -1028,7 +1028,7 @@ def debug_mode(auth_token):
                 print("  send_test_score [options]")
                 print("    -song \"Song Name\" -artist \"Artist\" -charter \"Charter\"")
                 print("    -score 12345 -instrument 0 -difficulty 3 -stars 5 -accuracy 95.0")
-                print("    -notes_hit 500 -notes_total 520 -best_streak 200 -md5 \"abc...\"")
+                print("    -notes_hit 500 -notes_total 520 -best_streak 200 -chart_hash \"abc...\"")
                 print("  testocr                 - Test OCR capture on Clone Hero window")
                 print("  help                    - Show this help")
                 print("  exit                    - Exit debug mode")
@@ -1090,7 +1090,7 @@ def debug_mode(auth_token):
                     "notes_hit": None,
                     "notes_total": None,
                     "best_streak": None,
-                    "md5": None
+                    "chart_hash": None
                 }
 
                 i = 1
@@ -1122,8 +1122,8 @@ def debug_mode(auth_token):
                             kwargs["notes_total"] = int(value)
                         elif key == "best_streak":
                             kwargs["best_streak"] = int(value)
-                        elif key == "md5":
-                            kwargs["md5"] = value
+                        elif key == "chart_hash":
+                            kwargs["chart_hash"] = value
                         else:
                             print(f"[!] Unknown argument: {arg}")
 
@@ -1725,7 +1725,7 @@ def main():
             print(f"[+] Loaded {len(song_cache)} songs from cache")
         except Exception as e:
             print(f"[!] Could not load song cache: {e}")
-            print("    Song names will show as MD5 hashes")
+            print("    Song names will show as chart hashes")
 
     # Check OCR availability
     ocr_enabled = settings.get('ocr_enabled', False)

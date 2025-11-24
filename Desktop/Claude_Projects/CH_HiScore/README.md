@@ -2,7 +2,7 @@
 
 A Discord bot-based high score tracking system for Clone Hero that automatically detects new scores and posts announcements to your Discord server.
 
-## Current Version: v2.4.1
+## Current Version: v2.4.2
 
 ## What It Does
 
@@ -37,7 +37,12 @@ A Discord bot-based high score tracking system for Clone Hero that automatically
 
 ## Version History
 
-### v2.4.1 - Bug Fixes (Latest)
+### v2.4.2 - Terminology Fix (Latest)
+- **Chart Hash Terminology**: Renamed all references from "MD5" to "Chart Hash" for accuracy
+- **Automatic Database Migration**: Bot now automatically migrates existing databases on first run
+- **Technical**: The identifier stored is actually a blake3 chart hash from Clone Hero, not an MD5
+
+### v2.4.1 - Bug Fixes
 - **Fixed song metadata not appearing**: Added background caching of currentsong.txt (Clone Hero clears this file when song ends, but we need it after)
 - **Fixed notes display**: Reverted notes from scoredata.bin (data was incorrect)
 
@@ -93,8 +98,8 @@ A Discord bot-based high score tracking system for Clone Hero that automatically
 ```
 CH_HiScore/
 ├── dist/                    # Built executables
-│   ├── CloneHeroScoreTracker_v2.4.1.exe   # Client for players
-│   └── CloneHeroScoreBot_v2.4.1.exe       # Bot for server admins
+│   ├── CloneHeroScoreTracker_v2.4.2.exe   # Client for players
+│   └── CloneHeroScoreBot_v2.4.2.exe       # Bot for server admins
 │
 ├── client/                  # Client source code
 │   ├── file_watcher.py      # Score detection

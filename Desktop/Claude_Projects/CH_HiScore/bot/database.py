@@ -57,6 +57,7 @@ class Database:
         """)
 
         # Scores table
+        # Note: chart_md5 column will be renamed to chart_hash by migration
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS scores (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,7 +74,8 @@ class Database:
             )
         """)
 
-        # Songs table (for when songcache parser is fixed)
+        # Songs table
+        # Note: md5_hash column will be renamed to chart_hash by migration
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS songs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -102,6 +104,7 @@ class Database:
         """)
 
         # Record breaks tracking table
+        # Note: chart_md5 column will be renamed to chart_hash by migration
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS record_breaks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -305,7 +308,7 @@ class Database:
     # SCORE OPERATIONS
     # ========================================================================
 
-    def submit_score(self, auth_token: str, chart_md5: str, instrument_id: int,
+    def submit_score(self, auth_token: str, chart_hash: str, instrument_id: int,
                     difficulty_id: int, score: int, completion_percent: float,
                     stars: int, song_title: str = "", song_artist: str = "") -> Dict:
         """
@@ -313,7 +316,7 @@ class Database:
 
         Args:
             auth_token: User's auth token
-            chart_md5: Chart identifier
+            chart_hash: Chart hash identifier (blake3 from Clone Hero)
             instrument_id: Instrument (0=lead, 1=bass, etc)
             difficulty_id: Difficulty (0=easy, 1=medium, 2=hard, 3=expert)
             score: Score value
@@ -334,19 +337,19 @@ class Database:
 
         # Save/update song info if provided
         if song_title:
-            self.save_song_info(chart_md5, song_title, song_artist)
+            self.save_song_info(chart_hash, song_title, song_artist)
 
         # Get current high score for this chart/instrument/difficulty
         self.cursor.execute("""
             SELECT s.*, u.discord_username as holder_name
             FROM scores s
             JOIN users u ON s.user_id = u.id
-            WHERE s.chart_md5 = ?
+            WHERE s.chart_hash = ?
             AND s.instrument_id = ?
             AND s.difficulty_id = ?
             ORDER BY s.score DESC
             LIMIT 1
-        """, (chart_md5, instrument_id, difficulty_id))
+        """, (chart_hash, instrument_id, difficulty_id))
 
         current_high = self.cursor.fetchone()
         current_high_score = dict(current_high) if current_high else None
@@ -381,23 +384,23 @@ class Database:
 
         # Insert or update user's score
         self.cursor.execute("""
-            INSERT INTO scores (user_id, chart_md5, instrument_id, difficulty_id,
+            INSERT INTO scores (user_id, chart_hash, instrument_id, difficulty_id,
                               score, completion_percent, stars)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(chart_md5, instrument_id, difficulty_id, user_id)
+            ON CONFLICT(chart_hash, instrument_id, difficulty_id, user_id)
             DO UPDATE SET
                 score = excluded.score,
                 completion_percent = excluded.completion_percent,
                 stars = excluded.stars,
                 submitted_at = CURRENT_TIMESTAMP
-        """, (user_id, chart_md5, instrument_id, difficulty_id, score,
+        """, (user_id, chart_hash, instrument_id, difficulty_id, score,
               completion_percent, stars))
 
         # Record the record break if applicable
         if is_record_broken:
             self.record_break(
                 user_id=user_id,
-                chart_md5=chart_md5,
+                chart_hash=chart_hash,
                 instrument_id=instrument_id,
                 difficulty_id=difficulty_id,
                 new_score=score,
@@ -415,8 +418,8 @@ class Database:
         if not is_new_high_score:
             self.cursor.execute("""
                 SELECT score FROM scores
-                WHERE chart_md5 = ? AND instrument_id = ? AND difficulty_id = ? AND user_id = ?
-            """, (chart_md5, instrument_id, difficulty_id, user_id))
+                WHERE chart_hash = ? AND instrument_id = ? AND difficulty_id = ? AND user_id = ?
+            """, (chart_hash, instrument_id, difficulty_id, user_id))
             user_score = self.cursor.fetchone()
             if user_score:
                 your_best_score = user_score['score']
@@ -440,48 +443,48 @@ class Database:
 
         return result
 
-    def save_song_info(self, chart_md5: str, title: str, artist: str = ""):
+    def save_song_info(self, chart_hash: str, title: str, artist: str = ""):
         """Save or update song information"""
         self.cursor.execute("""
-            INSERT INTO songs (chart_md5, title, artist)
+            INSERT INTO songs (chart_hash, title, artist)
             VALUES (?, ?, ?)
-            ON CONFLICT(chart_md5) DO UPDATE SET
+            ON CONFLICT(chart_hash) DO UPDATE SET
                 title = COALESCE(NULLIF(excluded.title, ''), songs.title),
                 artist = COALESCE(NULLIF(excluded.artist, ''), songs.artist)
-        """, (chart_md5, title, artist))
+        """, (chart_hash, title, artist))
         self.conn.commit()
 
-    def record_break(self, user_id: int, chart_md5: str, instrument_id: int,
+    def record_break(self, user_id: int, chart_hash: str, instrument_id: int,
                     difficulty_id: int, new_score: int, previous_score: int = None,
                     previous_holder_id: int = None):
         """Record a record break event"""
         self.cursor.execute("""
-            INSERT INTO record_breaks (user_id, chart_md5, instrument_id, difficulty_id,
+            INSERT INTO record_breaks (user_id, chart_hash, instrument_id, difficulty_id,
                                       new_score, previous_score, previous_holder_id)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (user_id, chart_md5, instrument_id, difficulty_id, new_score,
+        """, (user_id, chart_hash, instrument_id, difficulty_id, new_score,
               previous_score, previous_holder_id))
 
-    def get_song_title(self, chart_md5: str) -> str:
-        """Get song title by MD5, returns short MD5 if not found"""
-        self.cursor.execute("SELECT title FROM songs WHERE chart_md5 = ?", (chart_md5,))
+    def get_song_title(self, chart_hash: str) -> str:
+        """Get song title by chart hash, returns short hash if not found"""
+        self.cursor.execute("SELECT title FROM songs WHERE chart_hash = ?", (chart_hash,))
         row = self.cursor.fetchone()
         if row and row['title']:
             return row['title']
-        return f"[{chart_md5[:8]}]"
+        return f"[{chart_hash[:8]}]"
 
-    def get_high_score(self, chart_md5: str, instrument_id: int, difficulty_id: int) -> Optional[Dict]:
+    def get_high_score(self, chart_hash: str, instrument_id: int, difficulty_id: int) -> Optional[Dict]:
         """Get the current high score for a specific chart/instrument/difficulty"""
         self.cursor.execute("""
             SELECT s.*, u.discord_username, u.discord_id
             FROM scores s
             JOIN users u ON s.user_id = u.id
-            WHERE s.chart_md5 = ?
+            WHERE s.chart_hash = ?
             AND s.instrument_id = ?
             AND s.difficulty_id = ?
             ORDER BY s.score DESC
             LIMIT 1
-        """, (chart_md5, instrument_id, difficulty_id))
+        """, (chart_hash, instrument_id, difficulty_id))
 
         row = self.cursor.fetchone()
         return dict(row) if row else None
@@ -501,15 +504,15 @@ class Database:
         """
         query = """
             SELECT s.*, u.discord_username, u.discord_id,
-                   COALESCE(songs.title, '[' || SUBSTR(s.chart_md5, 1, 8) || ']') as song_title,
+                   COALESCE(songs.title, '[' || SUBSTR(s.chart_hash, 1, 8) || ']') as song_title,
                    songs.artist as song_artist,
                    ROW_NUMBER() OVER (
-                       PARTITION BY s.chart_md5, s.instrument_id, s.difficulty_id
+                       PARTITION BY s.chart_hash, s.instrument_id, s.difficulty_id
                        ORDER BY s.score DESC
                    ) as rank
             FROM scores s
             JOIN users u ON s.user_id = u.id
-            LEFT JOIN songs ON s.chart_md5 = songs.chart_md5
+            LEFT JOIN songs ON s.chart_hash = songs.chart_hash
         """
 
         conditions = []
@@ -565,7 +568,7 @@ class Database:
             AND s1.score = (
                 SELECT MAX(s2.score)
                 FROM scores s2
-                WHERE s2.chart_md5 = s1.chart_md5
+                WHERE s2.chart_hash = s1.chart_hash
                 AND s2.instrument_id = s1.instrument_id
                 AND s2.difficulty_id = s1.difficulty_id
             )
@@ -621,16 +624,16 @@ class Database:
         user_id = user['id']
 
         self.cursor.execute("""
-            SELECT s.chart_md5, s.instrument_id, s.difficulty_id, s.score, s.stars,
-                   COALESCE(songs.title, '[' || SUBSTR(s.chart_md5, 1, 8) || ']') as song_title,
+            SELECT s.chart_hash, s.instrument_id, s.difficulty_id, s.score, s.stars,
+                   COALESCE(songs.title, '[' || SUBSTR(s.chart_hash, 1, 8) || ']') as song_title,
                    songs.artist as song_artist
             FROM scores s
-            LEFT JOIN songs ON s.chart_md5 = songs.chart_md5
+            LEFT JOIN songs ON s.chart_hash = songs.chart_hash
             WHERE s.user_id = ?
             AND s.score = (
                 SELECT MAX(s2.score)
                 FROM scores s2
-                WHERE s2.chart_md5 = s.chart_md5
+                WHERE s2.chart_hash = s.chart_hash
                 AND s2.instrument_id = s.instrument_id
                 AND s2.difficulty_id = s.difficulty_id
             )
@@ -640,11 +643,11 @@ class Database:
 
         return [dict(row) for row in self.cursor.fetchall()]
 
-    def get_song_info(self, chart_md5: str) -> Optional[Dict]:
-        """Get complete song info by MD5"""
+    def get_song_info(self, chart_hash: str) -> Optional[Dict]:
+        """Get complete song info by chart hash"""
         self.cursor.execute("""
-            SELECT * FROM songs WHERE chart_md5 = ?
-        """, (chart_md5,))
+            SELECT * FROM songs WHERE chart_hash = ?
+        """, (chart_hash,))
         row = self.cursor.fetchone()
         return dict(row) if row else None
 
@@ -658,20 +661,20 @@ class Database:
         """, (f'%{query}%', limit))
         return [dict(row) for row in self.cursor.fetchall()]
 
-    def update_song_artist(self, chart_md5: str, artist: str) -> bool:
-        """Update artist for a song by MD5"""
+    def update_song_artist(self, chart_hash: str, artist: str) -> bool:
+        """Update artist for a song by chart hash"""
         self.cursor.execute("""
-            UPDATE songs SET artist = ? WHERE chart_md5 = ?
-        """, (artist, chart_md5))
+            UPDATE songs SET artist = ? WHERE chart_hash = ?
+        """, (artist, chart_hash))
         self.conn.commit()
         return self.cursor.rowcount > 0
 
-    def update_song_metadata(self, chart_md5: str, title: str = None, artist: str = None) -> bool:
+    def update_song_metadata(self, chart_hash: str, title: str = None, artist: str = None) -> bool:
         """
-        Update song title and/or artist by MD5
+        Update song title and/or artist by chart hash
 
         Args:
-            chart_md5: Chart identifier
+            chart_hash: Chart hash identifier
             title: New title (None = don't change)
             artist: New artist (None = don't change)
 
@@ -691,10 +694,10 @@ class Database:
         if not updates:
             return False
 
-        params.append(chart_md5)
+        params.append(chart_hash)
 
         self.cursor.execute(f"""
-            UPDATE songs SET {', '.join(updates)} WHERE chart_md5 = ?
+            UPDATE songs SET {', '.join(updates)} WHERE chart_hash = ?
         """, params)
         self.conn.commit()
         return self.cursor.rowcount > 0
@@ -702,12 +705,12 @@ class Database:
     def get_songs_without_artist(self, limit: int = 20) -> List[Dict]:
         """Get songs that don't have artist info"""
         self.cursor.execute("""
-            SELECT s.chart_md5, s.title,
+            SELECT s.chart_hash, s.title,
                    COUNT(sc.id) as score_count
             FROM songs s
-            LEFT JOIN scores sc ON s.chart_md5 = sc.chart_md5
+            LEFT JOIN scores sc ON s.chart_hash = sc.chart_hash
             WHERE s.artist IS NULL OR s.artist = ''
-            GROUP BY s.chart_md5
+            GROUP BY s.chart_hash
             ORDER BY score_count DESC
             LIMIT ?
         """, (limit,))
@@ -730,12 +733,12 @@ class Database:
                    u.discord_username as breaker_name,
                    u.discord_id as breaker_discord_id,
                    prev.discord_username as previous_holder_name,
-                   COALESCE(songs.title, '[' || SUBSTR(rb.chart_md5, 1, 8) || ']') as song_title,
+                   COALESCE(songs.title, '[' || SUBSTR(rb.chart_hash, 1, 8) || ']') as song_title,
                    songs.artist as song_artist
             FROM record_breaks rb
             JOIN users u ON rb.user_id = u.id
             LEFT JOIN users prev ON rb.previous_holder_id = prev.id
-            LEFT JOIN songs ON rb.chart_md5 = songs.chart_md5
+            LEFT JOIN songs ON rb.chart_hash = songs.chart_hash
             ORDER BY rb.broken_at DESC
             LIMIT ?
         """, (limit,))
