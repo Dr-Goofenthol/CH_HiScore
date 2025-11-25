@@ -80,21 +80,45 @@ def migration_001_chart_hash_rename(cursor):
         logger.error(f"Migration 001 failed: {e}")
         raise
 
-def migration_002_fix_indexes(cursor):
+def migration_002_complete_chart_hash_rename(cursor):
     """
-    Migration 002: Recreate indexes to use chart_hash instead of chart_md5
+    Migration 002: Complete the chart_hash rename that migration 001 may have missed
 
-    After renaming columns, we need to recreate indexes that reference the old column names.
+    Migration 001 sometimes only partially completed, migrating scores but not songs/record_breaks.
+    This migration ensures ALL tables are migrated before proceeding with indexes.
     """
-    logger.info("Running migration 002: Fixing indexes for chart_hash")
+    logger.info("Running migration 002: Completing chart_hash rename")
 
     try:
-        # Drop old indexes if they exist (they may reference chart_md5)
+        # Check and migrate songs table if needed
+        cursor.execute("PRAGMA table_info(songs)")
+        songs_columns = {row[1] for row in cursor.fetchall()}
+
+        if 'chart_md5' in songs_columns and 'chart_hash' not in songs_columns:
+            logger.info("  [FIX] Found songs.chart_md5, renaming to chart_hash...")
+            cursor.execute("ALTER TABLE songs RENAME COLUMN chart_md5 TO chart_hash")
+            logger.info("  [OK] Renamed songs.chart_md5 → chart_hash")
+        elif 'chart_hash' in songs_columns:
+            logger.info("  [OK] songs.chart_hash already exists")
+
+        # Check and migrate record_breaks table if needed
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='record_breaks'")
+        if cursor.fetchone():
+            cursor.execute("PRAGMA table_info(record_breaks)")
+            rb_columns = {row[1] for row in cursor.fetchall()}
+
+            if 'chart_md5' in rb_columns and 'chart_hash' not in rb_columns:
+                logger.info("  [FIX] Found record_breaks.chart_md5, renaming to chart_hash...")
+                cursor.execute("ALTER TABLE record_breaks RENAME COLUMN chart_md5 TO chart_hash")
+                logger.info("  [OK] Renamed record_breaks.chart_md5 → chart_hash")
+            elif 'chart_hash' in rb_columns:
+                logger.info("  [OK] record_breaks.chart_hash already exists")
+
+        # Now recreate indexes with correct column names
+        logger.info("  [*] Recreating indexes...")
         cursor.execute("DROP INDEX IF EXISTS idx_scores_chart")
         cursor.execute("DROP INDEX IF EXISTS idx_songs_md5")
-        logger.info("  [OK] Dropped old indexes")
 
-        # Recreate indexes with correct column names
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_scores_chart
             ON scores(chart_hash, instrument_id, difficulty_id)
@@ -103,7 +127,7 @@ def migration_002_fix_indexes(cursor):
             CREATE INDEX IF NOT EXISTS idx_songs_hash
             ON songs(chart_hash)
         """)
-        logger.info("  [OK] Recreated indexes with chart_hash")
+        logger.info("  [OK] Indexes recreated")
 
         logger.info("Migration 002 complete")
 
@@ -129,7 +153,7 @@ def run_migrations(db_path):
         # List of all migrations in order
         migrations = [
             (1, migration_001_chart_hash_rename),
-            (2, migration_002_fix_indexes),
+            (2, migration_002_complete_chart_hash_rename),
             # Future migrations go here:
             # (3, migration_003_description),
         ]

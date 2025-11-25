@@ -24,9 +24,9 @@ class ScoreState:
         self.known_scores: Dict[str, int] = {}  # key -> score value
         self.load_state()
 
-    def _score_key(self, chart_md5: str, instrument_id: int, difficulty: int) -> str:
+    def _score_key(self, chart_hash: str, instrument_id: int, difficulty: int) -> str:
         """Generate unique key for a score"""
-        return f"{chart_md5}:{instrument_id}:{difficulty}"
+        return f"{chart_hash}:{instrument_id}:{difficulty}"
 
     def load_state(self):
         """Load known scores from state file"""
@@ -66,7 +66,7 @@ class ScoreState:
         except Exception as e:
             print(f"[!] Could not save state file: {e}")
 
-    def is_new_or_improved_score(self, chart_md5: str, instrument_id: int, difficulty: int, score: int) -> bool:
+    def is_new_or_improved_score(self, chart_hash: str, instrument_id: int, difficulty: int, score: int) -> bool:
         """
         Check if this score should be submitted
 
@@ -74,22 +74,22 @@ class ScoreState:
         - We've never seen this chart/instrument/difficulty combo, OR
         - The score is higher than what we've seen before
         """
-        key = self._score_key(chart_md5, instrument_id, difficulty)
+        key = self._score_key(chart_hash, instrument_id, difficulty)
         if key not in self.known_scores:
             return True
         # Submit if score has improved
         return score > self.known_scores[key]
 
-    def mark_score_seen(self, chart_md5: str, instrument_id: int, difficulty: int, score: int):
+    def mark_score_seen(self, chart_hash: str, instrument_id: int, difficulty: int, score: int):
         """Mark a score as seen with its value"""
-        key = self._score_key(chart_md5, instrument_id, difficulty)
+        key = self._score_key(chart_hash, instrument_id, difficulty)
         self.known_scores[key] = score
         self.save_state()
 
     def initialize_from_scores(self, scores: List):
         """Initialize state from existing scores (on first run)"""
         for score in scores:
-            key = self._score_key(score.chart_md5, score.instrument_id, score.difficulty)
+            key = self._score_key(score.chart_hash, score.instrument_id, score.difficulty)
             self.known_scores[key] = score.score
         self.save_state()
         print(f"[+] Initialized state with {len(self.known_scores)} scores")
@@ -136,10 +136,10 @@ class ScoreFileHandler(FileSystemEventHandler):
 
             new_scores = []
             for score in scores:
-                if self.state.is_new_or_improved_score(score.chart_md5, score.instrument_id,
+                if self.state.is_new_or_improved_score(score.chart_hash, score.instrument_id,
                                                        score.difficulty, score.score):
                     new_scores.append(score)
-                    self.state.mark_score_seen(score.chart_md5, score.instrument_id,
+                    self.state.mark_score_seen(score.chart_hash, score.instrument_id,
                                               score.difficulty, score.score)
 
             if new_scores:
@@ -204,10 +204,10 @@ class CloneHeroWatcher:
 
             new_scores = []
             for score in scores:
-                if self.state.is_new_or_improved_score(score.chart_md5, score.instrument_id,
+                if self.state.is_new_or_improved_score(score.chart_hash, score.instrument_id,
                                                        score.difficulty, score.score):
                     new_scores.append(score)
-                    self.state.mark_score_seen(score.chart_md5, score.instrument_id,
+                    self.state.mark_score_seen(score.chart_hash, score.instrument_id,
                                               score.difficulty, score.score)
 
             if new_scores:

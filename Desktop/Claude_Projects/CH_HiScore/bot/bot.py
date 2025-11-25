@@ -22,7 +22,7 @@ from .api import ScoreAPI
 from .database import Database
 
 # Version and update check
-BOT_VERSION = "2.4.5"
+BOT_VERSION = "2.4.8"
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
 
 
@@ -341,9 +341,11 @@ async def leaderboard(
                 song_display = f"{song_title}"
                 if artist:
                     song_display += f" - {artist}"
-                song_display += f"\n   Hash: `{chart_hash}`"
+                # Truncate hash to first 8 chars to avoid embed length limits
+                song_display += f"\n   Hash: `{chart_hash[:8]}...`"
             else:
-                song_display = f"Chart Hash: `{chart_hash}`"
+                # Truncate hash to first 8 chars
+                song_display = f"Chart Hash: `{chart_hash[:8]}...`"
 
             leaderboard_text += f"**{i}.** {score['discord_username']}\n"
             leaderboard_text += f"   {score['score']:,} pts | {diff} {inst}\n"
@@ -440,10 +442,11 @@ async def mystats(interaction: discord.Interaction, user: discord.Member = None)
                     if artist:
                         song_display += f" - {artist}"
                 else:
-                    song_display = f"Hash: `{chart_hash}`"
+                    # Truncate hash to first 8 chars
+                    song_display = f"Hash: `{chart_hash[:8]}...`"
 
                 records_text += f"• {song_display} ({diff} {inst})\n"
-                records_text += f"  {rec['score']:,} pts | Hash: `{chart_hash}`\n"
+                records_text += f"  {rec['score']:,} pts | Hash: `{chart_hash[:8]}...`\n"
 
             embed.add_field(
                 name="Top Records Held",
