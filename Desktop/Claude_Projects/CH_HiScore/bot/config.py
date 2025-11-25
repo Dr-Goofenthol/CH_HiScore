@@ -5,12 +5,25 @@ Loads settings from .env file
 """
 
 import os
+import sys
 from pathlib import Path
 from dotenv import load_dotenv
 
 # Load .env file
 env_path = Path(__file__).parent.parent / '.env'
 load_dotenv(env_path)
+
+
+def get_default_db_path() -> str:
+    """Get default database path in AppData"""
+    if sys.platform == 'win32':
+        appdata = Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming'))
+        config_dir = appdata / 'CloneHeroScoreBot'
+    else:
+        config_dir = Path.home() / '.config' / 'CloneHeroScoreBot'
+
+    config_dir.mkdir(parents=True, exist_ok=True)
+    return str(config_dir / 'scores.db')
 
 
 class Config:
@@ -27,8 +40,8 @@ class Config:
     API_PORT = int(os.getenv('API_PORT', 8080))
     API_SECRET_KEY = os.getenv('API_SECRET_KEY', 'change_this_in_production')
 
-    # Database
-    DATABASE_PATH = os.getenv('DATABASE_PATH', 'bot/scores.db')
+    # Database - defaults to AppData/Roaming/CloneHeroScoreBot/scores.db
+    DATABASE_PATH = os.getenv('DATABASE_PATH', get_default_db_path())
 
     @classmethod
     def validate(cls):

@@ -2,7 +2,7 @@
 
 A Discord bot-based high score tracking system for Clone Hero that automatically detects new scores and posts announcements to your Discord server.
 
-## Current Version: v2.4.2
+## Current Version: v2.4.3
 
 ## What It Does
 
@@ -37,10 +37,17 @@ A Discord bot-based high score tracking system for Clone Hero that automatically
 
 ## Version History
 
-### v2.4.2 - Terminology Fix (Latest)
+### v2.4.3 - Migration Fix (Latest)
+- **Fixed Migration**: Now properly migrates the `record_breaks` table (fixes "table record_breaks has no column named chart_hash" error)
+- **Database Location**: Bot now defaults to storing database in `%APPDATA%\Roaming\CloneHeroScoreBot\scores.db` for better persistence across updates
+- **Improved Migration Script**: Standalone migration script now checks all three tables (scores, songs, record_breaks)
+- **Upgrade Note**: Simply download and run v2.4.3 - it will automatically migrate your existing database
+
+### v2.4.2 - Terminology Fix
 - **Chart Hash Terminology**: Renamed all references from "MD5" to "Chart Hash" for accuracy
 - **Automatic Database Migration**: Bot now automatically migrates existing databases on first run
 - **Technical**: The identifier stored is actually a blake3 chart hash from Clone Hero, not an MD5
+- **Known Issue**: record_breaks table was not migrated (fixed in v2.4.3)
 
 ### v2.4.1 - Bug Fixes
 - **Fixed song metadata not appearing**: Added background caching of currentsong.txt (Clone Hero clears this file when song ends, but we need it after)

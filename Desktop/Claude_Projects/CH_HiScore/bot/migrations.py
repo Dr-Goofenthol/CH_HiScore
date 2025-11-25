@@ -62,6 +62,18 @@ def migration_001_chart_hash_rename(cursor):
             elif 'chart_hash' in song_columns:
                 logger.info("  ✓ songs.chart_hash already exists (migration already applied)")
 
+        # Check if record_breaks table exists and has chart_md5 column
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='record_breaks'")
+        if cursor.fetchone():
+            cursor.execute("PRAGMA table_info(record_breaks)")
+            record_columns = {row[1] for row in cursor.fetchall()}
+
+            if 'chart_md5' in record_columns and 'chart_hash' not in record_columns:
+                cursor.execute("ALTER TABLE record_breaks RENAME COLUMN chart_md5 TO chart_hash")
+                logger.info("  ✓ Renamed record_breaks.chart_md5 → chart_hash")
+            elif 'chart_hash' in record_columns:
+                logger.info("  ✓ record_breaks.chart_hash already exists (migration already applied)")
+
         logger.info("Migration 001 complete")
 
     except sqlite3.OperationalError as e:
