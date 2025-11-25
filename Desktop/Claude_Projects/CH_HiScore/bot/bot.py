@@ -22,7 +22,7 @@ from .api import ScoreAPI
 from .database import Database
 
 # Version and update check
-BOT_VERSION = "2.4.3"
+BOT_VERSION = "2.4.4"
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
 
 
@@ -323,13 +323,23 @@ async def leaderboard(
         for i, score in enumerate(scores, 1):
             inst = instruments.get(score['instrument_id'], '?')
             diff = difficulties.get(score['difficulty_id'], '?')
-            song = score.get('song_title', f"[{score['chart_hash'][:8]}]")
+
+            # Show full chart hash if title is available, or just hash if not
+            song_title = score.get('song_title')
             artist = score.get('song_artist')
-            if artist:
-                song = f"{song} - {artist}"
+            chart_hash = score['chart_hash']
+
+            if song_title:
+                song_display = f"{song_title}"
+                if artist:
+                    song_display += f" - {artist}"
+                song_display += f"\n   Hash: `{chart_hash}`"
+            else:
+                song_display = f"Chart Hash: `{chart_hash}`"
 
             leaderboard_text += f"**{i}.** {score['discord_username']}\n"
-            leaderboard_text += f"   {score['score']:,} pts | {song} | {diff} {inst}\n"
+            leaderboard_text += f"   {score['score']:,} pts | {diff} {inst}\n"
+            leaderboard_text += f"   {song_display}\n"
 
         embed.add_field(
             name="Top Scores",
@@ -411,11 +421,21 @@ async def mystats(interaction: discord.Interaction, user: discord.Member = None)
             for rec in records:
                 inst = instruments.get(rec['instrument_id'], '?')
                 diff = difficulties.get(rec['difficulty_id'], '?')
-                song = rec.get('song_title', f"[{rec['chart_hash'][:8]}]")
+
+                # Show full chart hash with title/artist if available
+                song_title = rec.get('song_title')
                 artist = rec.get('song_artist')
-                if artist:
-                    song = f"{song} - {artist}"
-                records_text += f"• {song} ({diff} {inst}) - {rec['score']:,}\n"
+                chart_hash = rec['chart_hash']
+
+                if song_title:
+                    song_display = f"{song_title}"
+                    if artist:
+                        song_display += f" - {artist}"
+                else:
+                    song_display = f"Hash: `{chart_hash}`"
+
+                records_text += f"• {song_display} ({diff} {inst})\n"
+                records_text += f"  {rec['score']:,} pts | Hash: `{chart_hash}`\n"
 
             embed.add_field(
                 name="Top Records Held",

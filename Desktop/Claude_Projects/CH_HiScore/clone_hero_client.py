@@ -4,7 +4,7 @@ Clone Hero High Score Client
 Monitors your Clone Hero scores and submits them to the Discord scoreboard.
 """
 
-VERSION = "2.4.3"
+VERSION = "2.4.4"
 
 DEBUG_PASSWORD = "admin123"
 
