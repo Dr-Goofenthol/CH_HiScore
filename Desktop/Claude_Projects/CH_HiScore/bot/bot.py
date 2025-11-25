@@ -22,7 +22,7 @@ from .api import ScoreAPI
 from .database import Database
 
 # Version and update check
-BOT_VERSION = "2.4.4"
+BOT_VERSION = "2.4.5"
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
 
 
@@ -88,6 +88,14 @@ class CloneHeroBot(commands.Bot):
     async def setup_hook(self):
         """Called when bot is starting up"""
         print("[*] Setting up bot...")
+
+        # Run migrations before initializing schema
+        print("[*] Running database migrations...")
+        try:
+            from .migrations import run_migrations
+            run_migrations(self.db.db_path)
+        except Exception as e:
+            print(f"[!] Migration warning: {e}")
 
         # Initialize database
         self.db.connect()
