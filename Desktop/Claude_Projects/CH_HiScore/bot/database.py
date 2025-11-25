@@ -57,12 +57,11 @@ class Database:
         """)
 
         # Scores table
-        # Note: chart_md5 column will be renamed to chart_hash by migration
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS scores (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
-                chart_md5 TEXT NOT NULL,
+                chart_hash TEXT NOT NULL,
                 instrument_id INTEGER NOT NULL,
                 difficulty_id INTEGER NOT NULL,
                 score INTEGER NOT NULL,
@@ -70,16 +69,15 @@ class Database:
                 stars INTEGER NOT NULL,
                 submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id),
-                UNIQUE(chart_md5, instrument_id, difficulty_id, user_id)
+                UNIQUE(chart_hash, instrument_id, difficulty_id, user_id)
             )
         """)
 
         # Songs table
-        # Note: md5_hash column will be renamed to chart_hash by migration
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS songs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                chart_md5 TEXT UNIQUE NOT NULL,
+                chart_hash TEXT UNIQUE NOT NULL,
                 title TEXT,
                 artist TEXT,
                 album TEXT,
@@ -104,12 +102,11 @@ class Database:
         """)
 
         # Record breaks tracking table
-        # Note: chart_md5 column will be renamed to chart_hash by migration
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS record_breaks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
-                chart_md5 TEXT NOT NULL,
+                chart_hash TEXT NOT NULL,
                 instrument_id INTEGER NOT NULL,
                 difficulty_id INTEGER NOT NULL,
                 new_score INTEGER NOT NULL,
@@ -124,7 +121,7 @@ class Database:
         # Create indexes for performance
         self.cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_scores_chart
-            ON scores(chart_md5, instrument_id, difficulty_id)
+            ON scores(chart_hash, instrument_id, difficulty_id)
         """)
 
         self.cursor.execute("""
@@ -138,8 +135,8 @@ class Database:
         """)
 
         self.cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_songs_md5
-            ON songs(chart_md5)
+            CREATE INDEX IF NOT EXISTS idx_songs_hash
+            ON songs(chart_hash)
         """)
 
         self.conn.commit()

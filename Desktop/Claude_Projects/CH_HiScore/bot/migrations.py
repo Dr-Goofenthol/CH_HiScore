@@ -80,6 +80,38 @@ def migration_001_chart_hash_rename(cursor):
         logger.error(f"Migration 001 failed: {e}")
         raise
 
+def migration_002_fix_indexes(cursor):
+    """
+    Migration 002: Recreate indexes to use chart_hash instead of chart_md5
+
+    After renaming columns, we need to recreate indexes that reference the old column names.
+    """
+    logger.info("Running migration 002: Fixing indexes for chart_hash")
+
+    try:
+        # Drop old indexes if they exist (they may reference chart_md5)
+        cursor.execute("DROP INDEX IF EXISTS idx_scores_chart")
+        cursor.execute("DROP INDEX IF EXISTS idx_songs_md5")
+        logger.info("  [OK] Dropped old indexes")
+
+        # Recreate indexes with correct column names
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_scores_chart
+            ON scores(chart_hash, instrument_id, difficulty_id)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_songs_hash
+            ON songs(chart_hash)
+        """)
+        logger.info("  [OK] Recreated indexes with chart_hash")
+
+        logger.info("Migration 002 complete")
+
+    except sqlite3.OperationalError as e:
+        logger.error(f"Migration 002 failed: {e}")
+        raise
+
+
 def run_migrations(db_path):
     """
     Run all pending migrations on the database
@@ -97,8 +129,9 @@ def run_migrations(db_path):
         # List of all migrations in order
         migrations = [
             (1, migration_001_chart_hash_rename),
+            (2, migration_002_fix_indexes),
             # Future migrations go here:
-            # (2, migration_002_description),
+            # (3, migration_003_description),
         ]
 
         # Run pending migrations
