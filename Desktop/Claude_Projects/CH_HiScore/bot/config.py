@@ -40,6 +40,9 @@ class Config:
     API_PORT = int(os.getenv('API_PORT', 8080))
     API_SECRET_KEY = os.getenv('API_SECRET_KEY', 'change_this_in_production')
 
+    # Debug settings
+    DEBUG_PASSWORD = os.getenv('DEBUG_PASSWORD', 'admin123')
+
     # Database - defaults to AppData/Roaming/CloneHeroScoreBot/scores.db
     DATABASE_PATH = os.getenv('DATABASE_PATH', get_default_db_path())
 

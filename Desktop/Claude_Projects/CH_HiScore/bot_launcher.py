@@ -4,7 +4,7 @@ Clone Hero High Score Bot Launcher
 Standalone executable for the Discord bot with first-time setup.
 """
 
-VERSION = "2.4.8"
+VERSION = "2.4.11"
 
 # GitHub repository for auto-updates
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
@@ -22,6 +22,19 @@ try:
     HAS_REQUESTS = True
 except ImportError:
     HAS_REQUESTS = False
+
+from shared.console import print_success, print_info, print_warning, print_error, print_header
+from shared.logger import get_bot_logger, log_exception
+
+# Initialize colorama for Windows
+try:
+    import colorama
+    colorama.init()
+except ImportError:
+    pass
+
+# Initialize logger
+logger = get_bot_logger()
 
 
 # ============================================================================
@@ -57,13 +70,13 @@ def migrate_old_config():
     if old_config.exists() and not new_config.exists():
         try:
             shutil.copy(old_config, new_config)
-            print(f"[+] Migrated config to: {new_config}")
+            print_success(f"Migrated config to: {new_config}")
             # Optionally remove old config after successful migration
             # old_config.unlink()
         except Exception as e:
-            print(f"[!] Could not migrate config: {e}")
+            print_warning(f"Could not migrate config: {e}")
     elif old_config.exists() and new_config.exists():
-        print(f"[*] Config already exists in AppData, using that location")
+        print_info("Config already exists in AppData, using that location")
 
 
 # Config file location (persistent in AppData)
@@ -157,10 +170,10 @@ def download_update(update_info: dict):
 
         # Don't re-download if already exists
         if new_exe_path.exists():
-            print(f"[+] Update already downloaded: {new_exe_path.name}")
+            print_success(f"Update already downloaded: {new_exe_path.name}")
             return new_exe_path
 
-        print(f"[*] Downloading v{update_info['version']}...")
+        print_info(f"Downloading v{update_info['version']}...")
 
         # Download file
         response = requests.get(
@@ -214,7 +227,7 @@ def download_update(update_info: dict):
 
             print(f"\r[*] Downloading... Done!      ")
 
-        print(f"[+] Download complete: {new_exe_path.name}")
+        print_success(f"Download complete: {new_exe_path.name}")
         return new_exe_path
 
     except Exception as e:
@@ -327,7 +340,9 @@ Welcome! This wizard will help you configure the bot.
 You'll need:
 1. A Discord Bot Token (from Discord Developer Portal)
 2. Your Discord Application ID
-3. The Channel ID where scores should be announced
+3. Your Discord Server ID (Guild ID) - OPTIONAL but recommended
+4. The Channel ID where scores should be announced
+5. A debug password for client testing features
 
 If you don't have these yet:
 1. Go to https://discord.com/developers/applications
@@ -335,8 +350,9 @@ If you don't have these yet:
 3. Go to "Bot" section and create a bot
 4. Copy the bot token
 5. Copy the Application ID from "General Information"
-6. In Discord, enable Developer Mode (Settings > Advanced)
-7. Right-click your announcement channel and "Copy ID"
+6. In Discord, enable Developer Mode (Settings > Advanced > Developer Mode)
+7. Right-click your server icon and "Copy Server ID"
+8. Right-click your announcement channel and "Copy Channel ID"
 """)
     print("=" * 60)
     input("\nPress Enter to continue...")
@@ -368,12 +384,33 @@ If you don't have these yet:
             break
         print("[!] Application ID should be a number.")
 
+    # Guild ID (Server ID)
+    print("\n" + "-" * 50)
+    print("STEP 3: Discord Server ID (Guild ID) - OPTIONAL")
+    print("-" * 50)
+    print("This is your Discord server's ID (right-click server icon > Copy Server ID).")
+    print("")
+    print("WHY THIS MATTERS:")
+    print("  - WITH Guild ID: New commands appear INSTANTLY after bot restart")
+    print("  - WITHOUT Guild ID: New commands take up to 1 HOUR to appear")
+    print("")
+    print("Recommended: Enter your Guild ID for faster command updates!")
+    guild_id = input("\nEnter Guild ID (or press Enter to skip): ").strip()
+    if guild_id:
+        if guild_id.isdigit():
+            config['DISCORD_GUILD_ID'] = guild_id
+            print("[+] Guild ID set - commands will sync instantly!")
+        else:
+            print("[!] Invalid Guild ID (should be a number). Skipping...")
+    else:
+        print("[*] Skipped - commands will sync globally (slower)")
+
     # Channel ID
     print("\n" + "-" * 50)
-    print("STEP 3: Announcement Channel ID")
+    print("STEP 4: Announcement Channel ID")
     print("-" * 50)
     print("This is the channel where high score announcements will be posted.")
-    print("Right-click the channel in Discord and select 'Copy ID'.")
+    print("Right-click the channel in Discord and select 'Copy Channel ID'.")
     while True:
         channel_id = input("\nEnter the Channel ID: ").strip()
         if channel_id and channel_id.isdigit():
@@ -381,9 +418,25 @@ If you don't have these yet:
             break
         print("[!] Channel ID should be a number.")
 
+    # Debug Password
+    print("\n" + "-" * 50)
+    print("STEP 5: Client Debug Password")
+    print("-" * 50)
+    print("This password is required when clients want to enter debug mode.")
+    print("Debug mode allows testing features like sending test scores.")
+    print("")
+    print("Security tip: Use a strong password if your bot is public!")
+    debug_password = input("\nEnter debug password [admin123]: ").strip()
+    if debug_password:
+        config['DEBUG_PASSWORD'] = debug_password
+        print("[+] Custom debug password set")
+    else:
+        config['DEBUG_PASSWORD'] = 'admin123'
+        print("[*] Using default password: admin123")
+
     # API Port
     print("\n" + "-" * 50)
-    print("STEP 4: API Port")
+    print("STEP 6: API Port")
     print("-" * 50)
     print("The port that clients will connect to (default: 8080).")
     print("Make sure to forward this port on your router if hosting externally.")
@@ -392,7 +445,7 @@ If you don't have these yet:
 
     # External URL (optional)
     print("\n" + "-" * 50)
-    print("STEP 5: External URL (Optional)")
+    print("STEP 7: External URL (Optional)")
     print("-" * 50)
     print("If hosting on a home server with a domain, enter the URL clients should use.")
     print("Example: http://myhome.duckdns.org:8080")
@@ -407,7 +460,12 @@ If you don't have these yet:
     print("=" * 60)
     print(f"  Discord App ID: {config['DISCORD_APP_ID']}")
     print(f"  Discord Token: {'*' * 20}...")
+    if config.get('DISCORD_GUILD_ID'):
+        print(f"  Guild ID: {config['DISCORD_GUILD_ID']} (fast command sync)")
+    else:
+        print(f"  Guild ID: (not set - global sync, slower)")
     print(f"  Channel ID: {config['DISCORD_CHANNEL_ID']}")
+    print(f"  Debug Password: {'*' * len(config.get('DEBUG_PASSWORD', 'admin123'))}")
     print(f"  API Port: {config['API_PORT']}")
     if config.get('EXTERNAL_URL'):
         print(f"  External URL: {config['EXTERNAL_URL']}")
@@ -430,6 +488,13 @@ def setup_environment(config):
     os.environ['DISCORD_CHANNEL_ID'] = config.get('DISCORD_CHANNEL_ID', '')
     os.environ['API_PORT'] = str(config.get('API_PORT', 8080))
     os.environ['API_HOST'] = '0.0.0.0'  # Listen on all interfaces
+
+    # Optional: Guild ID for fast command sync
+    if config.get('DISCORD_GUILD_ID'):
+        os.environ['DISCORD_GUILD_ID'] = config.get('DISCORD_GUILD_ID')
+
+    # Debug password for client authorization
+    os.environ['DEBUG_PASSWORD'] = config.get('DEBUG_PASSWORD', 'admin123')
 
 
 def main():
@@ -459,6 +524,8 @@ def main():
     # Show current config
     print("\n[+] Configuration loaded")
     print(f"    App ID: {config.get('DISCORD_APP_ID')}")
+    if config.get('DISCORD_GUILD_ID'):
+        print(f"    Guild ID: {config.get('DISCORD_GUILD_ID')} (fast sync)")
     print(f"    Channel: {config.get('DISCORD_CHANNEL_ID')}")
     print(f"    API Port: {config.get('API_PORT', 8080)}")
     if config.get('EXTERNAL_URL'):
@@ -474,7 +541,7 @@ def main():
         db_path = get_config_dir() / 'scores.db'
         run_migrations(db_path)
     except Exception as e:
-        print(f"[!] Migration failed: {e}")
+        print_error(f"Migration failed: {e}")
         print("[!] Bot may not function correctly")
         import traceback
         traceback.print_exc()

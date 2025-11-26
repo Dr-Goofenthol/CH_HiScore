@@ -4,9 +4,7 @@ Clone Hero High Score Client
 Monitors your Clone Hero scores and submits them to the Discord scoreboard.
 """
 
-VERSION = "2.4.8"
-
-DEBUG_PASSWORD = "admin123"
+VERSION = "2.4.11"
 
 # GitHub repository for auto-updates
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
@@ -21,11 +19,27 @@ import json
 import time
 import uuid
 import configparser
+import getpass
 from pathlib import Path
 import requests
 from client.file_watcher import CloneHeroWatcher
 from shared.parsers import SongCacheParser, get_artist_for_song
 from client.ocr_capture import capture_and_extract, check_ocr_available, OCRResult
+from shared.console import (
+    print_success, print_info, print_warning, print_error,
+    print_header, print_plain, print_section, format_key_value
+)
+from shared.logger import get_client_logger, log_exception
+
+# Initialize colorama for Windows
+try:
+    import colorama
+    colorama.init()
+except ImportError:
+    pass
+
+# Initialize logger
+logger = get_client_logger()
 
 # Windows startup management
 if sys.platform == 'win32':
@@ -123,7 +137,7 @@ def save_settings(settings):
                 json.dump(settings, f, indent=2)
             return True
         except Exception as e:
-            print(f"[!] Could not save settings: {e}")
+            print_error(f"Could not save settings: {e}")
     return False
 
 
@@ -140,7 +154,7 @@ def get_executable_path():
 def set_windows_startup(enable: bool) -> bool:
     """Add or remove the program from Windows startup"""
     if sys.platform != 'win32':
-        print("[!] Windows startup is only available on Windows")
+        print_warning("Windows startup is only available on Windows")
         return False
 
     app_name = "CloneHeroScoreTracker"
@@ -158,12 +172,12 @@ def set_windows_startup(enable: bool) -> bool:
         if enable:
             # Add to startup
             winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, f'"{exe_path}"')
-            print(f"[+] Added to Windows startup: {exe_path}")
+            print_success(f"Added to Windows startup: {exe_path}")
         else:
             # Remove from startup
             try:
                 winreg.DeleteValue(key, app_name)
-                print(f"[+] Removed from Windows startup")
+                print_success("Removed from Windows startup")
             except FileNotFoundError:
                 # Already not in startup
                 pass
@@ -172,10 +186,10 @@ def set_windows_startup(enable: bool) -> bool:
         return True
 
     except PermissionError:
-        print("[!] Permission denied - try running as administrator")
+        print_error("Permission denied - try running as administrator")
         return False
     except Exception as e:
-        print(f"[!] Failed to modify Windows startup: {e}")
+        print_error(f"Failed to modify Windows startup: {e}")
         return False
 
 
@@ -233,7 +247,7 @@ def start_tray_icon():
     global _tray_icon
 
     if not HAS_TRAY_SUPPORT:
-        print("[!] System tray not available (install pystray and Pillow)")
+        print_warning("System tray not available (install pystray and Pillow)")
         return False
 
     try:
@@ -254,11 +268,11 @@ def start_tray_icon():
         tray_thread = threading.Thread(target=_tray_icon.run, daemon=True)
         tray_thread.start()
 
-        print("[+] System tray icon started")
+        print_success("System tray icon started")
         return True
 
     except Exception as e:
-        print(f"[!] Failed to start tray icon: {e}")
+        print_error(f"Failed to start tray icon: {e}")
         return False
 
 
@@ -300,7 +314,7 @@ def save_config(config):
             with open(config_path, 'w') as f:
                 json.dump(config, f, indent=2)
         except Exception as e:
-            print(f"[!] Could not save config: {e}")
+            print_error(f"Could not save config: {e}")
 
 
 def get_or_create_client_id():
@@ -340,10 +354,11 @@ def request_pairing():
             data = response.json()
             return data.get('pairing_code')
     except requests.exceptions.ConnectionError:
-        print("[!] Could not connect to bot API")
-        print("    Make sure the bot is running first!")
+        print_error("Could not connect to bot API")
+        print_warning("Make sure the bot is running first!", indent=1)
     except Exception as e:
-        print(f"[!] Error requesting pairing: {e}")
+        print_error(f"Error requesting pairing")
+        log_exception(logger, "Failed to request pairing code", e)
 
     return None
 
@@ -374,9 +389,7 @@ def poll_for_pairing(timeout=300):
 
 def first_time_setup():
     """Show first-time setup prompt and return user type"""
-    print("\n" + "=" * 50)
-    print("FIRST TIME SETUP")
-    print("=" * 50)
+    print_header("FIRST TIME SETUP", width=50)
     print("\nWelcome to Clone Hero High Score Tracker!")
     print("\nIs this a new installation?")
     print()
@@ -397,15 +410,12 @@ def first_time_setup():
 
 def do_pairing(is_existing_user=False):
     """Complete the pairing flow"""
-    print("\n" + "=" * 50)
     if is_existing_user:
-        print("CONNECT EXISTING ACCOUNT")
-        print("=" * 50)
+        print_header("CONNECT EXISTING ACCOUNT", width=50)
         print("\nLet's link this machine to your existing Discord account.")
         print("Your scores will be merged with your existing record.")
     else:
-        print("NEW USER SETUP")
-        print("=" * 50)
+        print_header("NEW USER SETUP", width=50)
         print("\nLet's link your Clone Hero client to Discord.")
         print("This allows your scores to be tracked and announced!")
 
@@ -414,8 +424,8 @@ def do_pairing(is_existing_user=False):
     pairing_code = request_pairing()
 
     if not pairing_code:
-        print("[!] Failed to get pairing code.")
-        print("    Make sure the bot is running and try again.")
+        print_error("Failed to get pairing code.")
+        print_warning("Make sure the bot is running and try again.", indent=1)
         return None
 
     # Get server info for display
@@ -438,9 +448,8 @@ def do_pairing(is_existing_user=False):
 
     if auth_token:
         save_auth_token(auth_token)
-        print("\n" + "=" * 50)
-        print("[+] PAIRING SUCCESSFUL!")
-        print("=" * 50)
+        print()
+        print_header("PAIRING SUCCESSFUL!", width=50)
         if is_existing_user:
             print("This machine is now connected to your account.")
             print("All scores will sync to your existing record!")
@@ -493,8 +502,8 @@ def find_clone_hero_directory():
         if custom.exists():
             return custom
         else:
-            print(f"[!] Custom Clone Hero path not found: {custom_path}")
-            print("[*] Falling back to auto-detection...")
+            print_error(f"Custom Clone Hero path not found: {custom_path}")
+            print_info("Falling back to auto-detection...")
 
     # Auto-detect
     return find_clone_hero_directory_internal()
@@ -739,7 +748,7 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
         currentsong_used = False
 
         if current_song['title']:
-            print(f"\n[+] currentsong.txt data found:")
+            print_success("currentsong.txt data found:")
             print(f"    - Title: {current_song['title']}")
             if current_song['artist']:
                 print(f"    - Artist: {current_song['artist']}")
@@ -759,11 +768,11 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
         ocr_result = None
 
         if ocr_enabled:
-            print("\n[*] Attempting OCR capture of results screen...")
+            print_info("Attempting OCR capture of results screen...")
             ocr_result = capture_and_extract(delay_ms=500, save_debug=False)
 
             if ocr_result.success:
-                print(f"[+] OCR extraction successful")
+                print_success("OCR extraction successful")
 
                 # Show what OCR found
                 print(f"    OCR parsed fields:")
@@ -792,7 +801,7 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
                 if ocr_result.streak is not None:
                     best_streak = ocr_result.streak
             else:
-                print(f"[-] OCR extraction failed: {ocr_result.error}")
+                print_warning(f"OCR extraction failed: {ocr_result.error}")
                 if not currentsong_used:
                     print("    (Score will be 'raw' with chart hash identifier only)")
 
@@ -857,31 +866,31 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
 
             if response.status_code == 200:
                 result = response.json()
-                print(f"[+] Score submitted successfully!")
+                print_success("Score submitted successfully!")
                 if result.get('is_record_broken'):
-                    print(f"[+] RECORD BROKEN! Check Discord for the announcement!")
+                    print_success("RECORD BROKEN! Check Discord for the announcement!")
                     if result.get('previous_score'):
                         diff = score.score - result['previous_score']
                         print(f"    Beat previous record by {diff:,} points!")
                 elif result.get('is_high_score'):
-                    print(f"[+] New personal best! (First score on this chart)")
+                    print_success("New personal best! (First score on this chart)")
                 else:
-                    print(f"[-] Not a new high score")
+                    print_info("Not a new high score")
                     if result.get('your_best_score'):
                         print(f"    Your current PB: {result['your_best_score']:,}")
                         diff = result['your_best_score'] - score.score
                         print(f"    You were {diff:,} points short")
             elif response.status_code == 401:
-                print(f"[!] Authentication failed - you may need to re-pair")
+                print_error("Authentication failed - you may need to re-pair")
             else:
-                print(f"[!] Error submitting score: {response.status_code}")
+                print_error(f"Error submitting score: {response.status_code}")
                 print(f"    {response.text}")
 
         except requests.exceptions.ConnectionError:
-            print("[!] Could not connect to bot API")
+            print_error("Could not connect to bot API")
             print("    Make sure the bot is running!")
         except Exception as e:
-            print(f"[!] Error sending score to API: {e}")
+            print_error(f"Error sending score to API: {e}")
 
         # Clear the song cache after processing - next song will re-populate it
         clear_song_cache()
@@ -953,53 +962,67 @@ def send_test_score(auth_token, song="Test Song", artist="", charter="", score=1
 
         if response.status_code == 200:
             result = response.json()
-            print(f"[+] Test score submitted successfully!")
+            print_success("Test score submitted successfully!")
             if result.get('is_record_broken'):
-                print(f"[+] RECORD BROKEN! Check Discord for the announcement!")
+                print_success("RECORD BROKEN! Check Discord for the announcement!")
                 if result.get('previous_score'):
                     diff = score - result['previous_score']
                     print(f"    Beat previous record by {diff:,} points!")
             elif result.get('is_high_score'):
-                print(f"[+] New personal best! (First score on this chart)")
+                print_success("New personal best! (First score on this chart)")
             else:
-                print(f"[-] Not a new high score")
+                print_info("Not a new high score")
         elif response.status_code == 401:
-            print(f"[!] Authentication failed - you may need to re-pair")
+            print_error("Authentication failed - you may need to re-pair")
         else:
-            print(f"[!] Error submitting score: {response.status_code}")
+            print_error(f"Error submitting score: {response.status_code}")
             print(f"    {response.text}")
 
     except requests.exceptions.ConnectionError:
-        print("[!] Could not connect to bot API")
+        print_error("Could not connect to bot API")
         print("    Make sure the bot is running!")
     except Exception as e:
-        print(f"[!] Error sending test score: {e}")
+        print_error(f"Error sending test score: {e}")
 
 
 def debug_mode(auth_token):
     """Interactive debug mode for testing"""
-    print("\n" + "=" * 50)
-    print("DEBUG MODE ACTIVE")
-    print("=" * 50)
-    print("\nAvailable commands:")
-    print("  send_test_score [options]")
-    print("    -song \"Song Name\"     - Song title (default: Test Song)")
-    print("    -artist \"Artist\"      - Artist name")
-    print("    -charter \"Charter\"    - Charter name")
-    print("    -score 12345          - Score value (default: 10000)")
-    print("    -instrument 0         - 0=Lead, 1=Bass, 2=Rhythm, 3=Keys, 4=Drums")
-    print("    -difficulty 3         - 0=Easy, 1=Medium, 2=Hard, 3=Expert")
-    print("    -stars 5              - Star rating (default: 5)")
-    print("    -accuracy 95.0        - Accuracy % (default: 95.0)")
-    print("    -notes_hit 500        - Notes hit")
-    print("    -notes_total 520      - Total notes")
-    print("    -best_streak 200      - Best streak")
-    print("    -chart_hash \"abc123...\" - Use specific chart hash")
-    print("")
-    print("  testocr                 - Test OCR capture on Clone Hero window")
-    print("  help                    - Show this help")
-    print("  exit                    - Exit debug mode")
-    print("=" * 50 + "\n")
+    print_header("DEBUG MODE ACTIVE", width=60)
+
+    print_plain("Available commands:")
+    print_plain("")
+    print_info("send_test_score [options]")
+    print_plain("  -song \"Song Name\"     Song title (default: Test Song)", indent=1)
+    print_plain("  -artist \"Artist\"      Artist name", indent=1)
+    print_plain("  -charter \"Charter\"    Charter name", indent=1)
+    print_plain("  -score 12345          Score value (default: 10000)", indent=1)
+    print_plain("  -instrument 0         0=Lead, 1=Bass, 2=Rhythm, 3=Keys, 4=Drums", indent=1)
+    print_plain("  -difficulty 3         0=Easy, 1=Medium, 2=Hard, 3=Expert", indent=1)
+    print_plain("  -stars 5              Star rating (default: 5)", indent=1)
+    print_plain("  -accuracy 95.0        Accuracy % (default: 95.0)", indent=1)
+    print_plain("  -notes_hit 500        Notes hit", indent=1)
+    print_plain("  -notes_total 520      Total notes", indent=1)
+    print_plain("  -best_streak 200      Best streak", indent=1)
+    print_plain("  -chart_hash \"abc...\"  Use specific chart hash", indent=1)
+    print_plain("")
+    print_info("testocr")
+    print_plain("  Test OCR capture on Clone Hero window", indent=1)
+    print_plain("")
+    print_info("help")
+    print_plain("  Show this help", indent=1)
+    print_plain("")
+    print_info("status")
+    print_plain("  Show current settings and connection status", indent=1)
+    print_plain("")
+    print_info("paths")
+    print_plain("  Show file paths and locations", indent=1)
+    print_plain("")
+    print_info("sysinfo")
+    print_plain("  Show system information", indent=1)
+    print_plain("")
+    print_info("exit")
+    print_plain("  Exit debug mode", indent=1)
+    print("\n" + "=" * 60 + "\n")
 
     while True:
         try:
@@ -1011,7 +1034,7 @@ def debug_mode(auth_token):
             try:
                 parts = shlex.split(cmd_input)
             except ValueError as e:
-                print(f"[!] Parse error: {e}")
+                print_error(f"Parse error: {e}")
                 continue
 
             if not parts:
@@ -1020,7 +1043,7 @@ def debug_mode(auth_token):
             cmd = parts[0].lower()
 
             if cmd == "exit" or cmd == "quit":
-                print("[*] Exiting debug mode...")
+                print_info("Exiting debug mode...")
                 break
 
             elif cmd == "help":
@@ -1030,14 +1053,148 @@ def debug_mode(auth_token):
                 print("    -score 12345 -instrument 0 -difficulty 3 -stars 5 -accuracy 95.0")
                 print("    -notes_hit 500 -notes_total 520 -best_streak 200 -chart_hash \"abc...\"")
                 print("  testocr                 - Test OCR capture on Clone Hero window")
+                print("  status                  - Show current settings and connection")
+                print("  paths                   - Show file paths and locations")
+                print("  sysinfo                 - Show system information")
                 print("  help                    - Show this help")
                 print("  exit                    - Exit debug mode")
                 print("\nInstruments: 0=Lead, 1=Bass, 2=Rhythm, 3=Keys, 4=Drums")
                 print("Difficulties: 0=Easy, 1=Medium, 2=Hard, 3=Expert\n")
 
+            elif cmd == "status":
+                print()
+                print_header("CURRENT STATUS", width=60)
+
+                # Connection status
+                bot_url = get_bot_url()
+                print_plain("Connection:")
+                print_plain(f"  Server URL: {bot_url}", indent=1)
+                try:
+                    import requests as req_module
+                    response = req_module.get(f"{bot_url}/health", timeout=5)
+                    if response.status_code == 200:
+                        print_success("Connected", indent=1)
+                    else:
+                        print_warning(f"Error (HTTP {response.status_code})", indent=1)
+                except Exception as e:
+                    print_error(f"Disconnected", indent=1)
+
+                # Auth status
+                print_plain("\nAuthentication:")
+                if auth_token:
+                    print_success("Paired", indent=1)
+                else:
+                    print_warning("Not paired", indent=1)
+
+                # Settings
+                settings = load_settings()
+                print_plain("\nSettings:")
+                ch_path = settings.get('clone_hero_path')
+                if ch_path:
+                    print_plain(f"  Clone Hero Path: {ch_path}", indent=1)
+                else:
+                    print_plain(f"  Clone Hero Path: Auto-detect", indent=1)
+                ocr_enabled = settings.get('ocr_enabled', False)  # Default False
+                print_plain(f"  OCR Enabled: {ocr_enabled}", indent=1)
+                minimize = settings.get('minimize_to_tray', False)
+                print_plain(f"  Minimize to Tray: {minimize}", indent=1)
+
+                # Version
+                print_plain("\nVersion:")
+                print_plain(f"  Client: v{VERSION}", indent=1)
+
+                print("=" * 60 + "\n")
+
+            elif cmd == "paths":
+                print()
+                print_header("FILE PATHS", width=60)
+
+                # Settings file
+                try:
+                    settings_path = get_settings_path()
+                    print_plain("Configuration:")
+                    print_plain(f"  Settings: {settings_path}", indent=1)
+                except Exception as e:
+                    print_plain("Configuration:")
+                    print_error(f"Error: {e}", indent=1)
+
+                # Clone Hero paths
+                try:
+                    ch_dir = find_clone_hero_directory_internal()
+                    print_plain("\nClone Hero:")
+                    if ch_dir:
+                        print_plain(f"  Data Directory: {ch_dir}", indent=1)
+                        print_plain(f"  scoredata.bin: {ch_dir / 'scoredata.bin'}", indent=1)
+                        print_plain(f"  currentsong.txt: {ch_dir / 'currentsong.txt'}", indent=1)
+                        print_plain(f"  settings.ini: {ch_dir / 'settings.ini'}", indent=1)
+                        print_plain(f"  songcache.bin: {ch_dir / 'songcache.bin'}", indent=1)
+                    else:
+                        print_warning("Not found", indent=1)
+                except Exception as e:
+                    print_plain("\nClone Hero:")
+                    print_error(f"Error: {e}", indent=1)
+
+                # Log file
+                print_plain("\nLogs:")
+                if sys.platform == 'win32':
+                    log_path = Path.home() / 'Documents' / 'Clone Hero' / 'score_tracker.log'
+                else:
+                    log_path = Path.home() / '.clone_hero' / 'score_tracker.log'
+                print_plain(f"  Log File: {log_path}", indent=1)
+
+                print("=" * 60 + "\n")
+
+            elif cmd == "sysinfo":
+                print()
+                print_header("SYSTEM INFORMATION", width=60)
+
+                # Python version
+                print_plain("Python:")
+                print_plain(f"  Version: {sys.version.split()[0]}", indent=1)
+                print_plain(f"  Executable: {sys.executable}", indent=1)
+
+                # Platform
+                print_plain("\nPlatform:")
+                print_plain(f"  OS: {sys.platform}", indent=1)
+                import platform
+                print_plain(f"  System: {platform.system()} {platform.release()}", indent=1)
+                print_plain(f"  Machine: {platform.machine()}", indent=1)
+
+                # Client info
+                print_plain("\nClient:")
+                print_plain(f"  Version: v{VERSION}", indent=1)
+                if getattr(sys, 'frozen', False):
+                    print_plain(f"  Mode: Standalone executable", indent=1)
+                    print_plain(f"  Exe Path: {sys.executable}", indent=1)
+                else:
+                    print_plain(f"  Mode: Python script", indent=1)
+                    print_plain(f"  Script: {__file__}", indent=1)
+
+                # Dependencies status
+                print_plain("\nDependencies:")
+                try:
+                    import watchdog
+                    print_success(f"watchdog: {watchdog.__version__}", indent=1)
+                except:
+                    print_warning("watchdog: Not installed", indent=1)
+
+                try:
+                    import requests
+                    print_success(f"requests: {requests.__version__}", indent=1)
+                except:
+                    print_warning("requests: Not installed", indent=1)
+
+                try:
+                    import winocr
+                    print_success("winocr: Installed", indent=1)
+                except:
+                    print_warning("winocr: Not installed (OCR unavailable)", indent=1)
+
+                print("=" * 60 + "\n")
+
             elif cmd == "testocr":
                 print("\n[*] Testing OCR capture...")
-                print("[*] Make sure Clone Hero is visible on screen")
+                print_info("Make sure Clone Hero is visible on screen")
                 result = capture_and_extract(delay_ms=0, save_debug=True)
 
                 print(f"\n  OCR Result:")
@@ -1125,7 +1282,7 @@ def debug_mode(auth_token):
                         elif key == "chart_hash":
                             kwargs["chart_hash"] = value
                         else:
-                            print(f"[!] Unknown argument: {arg}")
+                            print_error(f"Unknown argument: {arg}")
 
                         i += 2
                     else:
@@ -1134,14 +1291,14 @@ def debug_mode(auth_token):
                 send_test_score(**kwargs)
 
             else:
-                print(f"[!] Unknown command: {cmd}")
+                print_error(f"Unknown command: {cmd}")
                 print("    Type 'help' for available commands")
 
         except KeyboardInterrupt:
             print("\n[*] Exiting debug mode...")
             break
         except Exception as e:
-            print(f"[!] Error: {e}")
+            print_error(f"Error: {e}")
 
 
 def settings_menu():
@@ -1160,16 +1317,34 @@ def settings_menu():
         if current_ocr and not ocr_ok:
             ocr_status = f"Enabled ({ocr_msg})"
 
+        print_header("SETTINGS", width=50)
+
+        print_plain(f"[1] Bot Server URL")
+        print_plain(f"    {current_bot_url}", indent=1)
+
+        print_plain(f"\n[2] Clone Hero Path")
+        print_plain(f"    {current_ch_path or 'Auto-detect'}", indent=1)
+
+        print_plain(f"\n[3] OCR Capture")
+        if current_ocr:
+            print_success(f"{ocr_status}", indent=1)
+        else:
+            print_plain(f"    {ocr_status} (Recommended)", indent=1)
+
+        print_plain(f"\n[4] Minimize to Tray")
+        if current_tray:
+            print_success("Enabled", indent=1)
+        else:
+            print_plain("    Disabled", indent=1)
+
+        print_plain(f"\n[5] Start with Windows")
+        if current_startup:
+            print_success("Enabled", indent=1)
+        else:
+            print_plain("    Disabled", indent=1)
+
+        print_plain(f"\n[0] Back to main menu")
         print("\n" + "=" * 50)
-        print("SETTINGS")
-        print("=" * 50)
-        print(f"\n  1. Bot Server URL: {current_bot_url}")
-        print(f"  2. Clone Hero Path: {current_ch_path or 'Auto-detect'}")
-        print(f"  3. OCR Capture: {ocr_status}")
-        print(f"  4. Minimize to Tray: {'Enabled' if current_tray else 'Disabled'}")
-        print(f"  5. Start with Windows: {'Enabled' if current_startup else 'Disabled'}")
-        print(f"\n  0. Back to main menu")
-        print()
 
         choice = input("Select option (0-5): ").strip()
 
@@ -1187,28 +1362,28 @@ def settings_menu():
                     new_url = 'http://' + new_url
 
                 # Test connection
-                print(f"\n[*] Testing connection to {new_url}...")
+                print_info(f"Testing connection to {new_url}...")
                 try:
                     response = requests.get(f"{new_url}/health", timeout=5)
                     if response.status_code == 200:
-                        print("[+] Connection successful!")
+                        print_success("Connection successful!")
                         settings['bot_url'] = new_url
                         save_settings(settings)
-                        print("[+] Settings saved!")
+                        print_success("Settings saved!")
                     else:
-                        print(f"[!] Server responded with status {response.status_code}")
+                        print_warning(f"Server responded with status {response.status_code}")
                         confirm = input("Save anyway? (y/n): ").strip().lower()
                         if confirm == 'y':
                             settings['bot_url'] = new_url
                             save_settings(settings)
-                            print("[+] Settings saved!")
+                            print_success("Settings saved!")
                 except requests.exceptions.ConnectionError:
-                    print("[!] Could not connect to server")
+                    print_error("Could not connect to server")
                     confirm = input("Save anyway? (y/n): ").strip().lower()
                     if confirm == 'y':
                         settings['bot_url'] = new_url
                         save_settings(settings)
-                        print("[+] Settings saved!")
+                        print_success("Settings saved!")
 
         elif choice == '2':
             print(f"\nCurrent Clone Hero Path: {current_ch_path or 'Auto-detect'}")
@@ -1227,22 +1402,22 @@ def settings_menu():
                     if (path / 'scoredata.bin').exists() or (path / 'songcache.bin').exists():
                         settings['clone_hero_path'] = str(path)
                         save_settings(settings)
-                        print("[+] Settings saved!")
+                        print_success("Settings saved!")
                     else:
-                        print("[!] This doesn't look like a Clone Hero data directory")
+                        print_warning("This doesn't look like a Clone Hero data directory")
                         print("    (No scoredata.bin or songcache.bin found)")
                         confirm = input("Save anyway? (y/n): ").strip().lower()
                         if confirm == 'y':
                             settings['clone_hero_path'] = str(path)
                             save_settings(settings)
-                            print("[+] Settings saved!")
+                            print_success("Settings saved!")
                 else:
-                    print(f"[!] Path does not exist: {new_path}")
+                    print_error(f"Path does not exist: {new_path}")
             else:
                 # Reset to auto-detect
                 settings['clone_hero_path'] = None
                 save_settings(settings)
-                print("[+] Reset to auto-detect")
+                print_success("Reset to auto-detect")
 
         elif choice == '3':
             current_ocr = settings.get('ocr_enabled', False)
@@ -1263,11 +1438,11 @@ def settings_menu():
             if ocr_choice == '1':
                 settings['ocr_enabled'] = True
                 save_settings(settings)
-                print("[+] OCR enabled")
+                print_success("OCR enabled")
             elif ocr_choice == '2':
                 settings['ocr_enabled'] = False
                 save_settings(settings)
-                print("[+] OCR disabled")
+                print_success("OCR disabled")
 
         elif choice == '4':
             current_tray = settings.get('minimize_to_tray', False)
@@ -1284,11 +1459,11 @@ def settings_menu():
             if tray_choice == '1':
                 settings['minimize_to_tray'] = True
                 save_settings(settings)
-                print("[+] Minimize to Tray enabled (restart required)")
+                print_success("Minimize to Tray enabled (restart required)")
             elif tray_choice == '2':
                 settings['minimize_to_tray'] = False
                 save_settings(settings)
-                print("[+] Minimize to Tray disabled")
+                print_success("Minimize to Tray disabled")
 
         elif choice == '5':
             current_startup = settings.get('start_with_windows', False)
@@ -1305,20 +1480,20 @@ def settings_menu():
                 if success:
                     settings['start_with_windows'] = True
                     save_settings(settings)
-                    print("[+] Start with Windows enabled")
+                    print_success("Start with Windows enabled")
                 else:
-                    print("[!] Failed to enable startup - see error above")
+                    print_error("Failed to enable startup - see error above")
             elif startup_choice == '2':
                 success = set_windows_startup(False)
                 if success:
                     settings['start_with_windows'] = False
                     save_settings(settings)
-                    print("[+] Start with Windows disabled")
+                    print_success("Start with Windows disabled")
                 else:
-                    print("[!] Failed to disable startup - see error above")
+                    print_error("Failed to disable startup - see error above")
 
         else:
-            print("[!] Invalid option")
+            print_warning("Invalid option")
 
 
 # ============================================================================
@@ -1405,10 +1580,10 @@ def download_update(update_info: dict):
 
         # Don't re-download if already exists
         if new_exe_path.exists():
-            print(f"[+] Update already downloaded: {new_exe_path.name}")
+            print_success(f"Update already downloaded: {new_exe_path.name}")
             return new_exe_path
 
-        print(f"[*] Downloading v{update_info['version']}...")
+        print_info(f"Downloading v{update_info['version']}...")
 
         # Download file
         response = requests.get(
@@ -1433,7 +1608,7 @@ def download_update(update_info: dict):
                         print(f"\r[*] Downloading... {percent}%", end="", flush=True)
 
             print(f"\r[*] Downloading... Done!      ")
-            print("[*] Extracting...")
+            print_info("Extracting...")
 
             with zipfile.ZipFile(tmp_path, 'r') as zip_ref:
                 exe_files = [f for f in zip_ref.namelist() if f.endswith('.exe')]
@@ -1462,11 +1637,11 @@ def download_update(update_info: dict):
 
             print(f"\r[*] Downloading... Done!      ")
 
-        print(f"[+] Download complete: {new_exe_path.name}")
+        print_success(f"Download complete: {new_exe_path.name}")
         return new_exe_path
 
     except Exception as e:
-        print(f"\n[!] Download failed: {e}")
+        print_error(f"Download failed: {e}")
         return None
 
 
@@ -1477,9 +1652,7 @@ def prompt_for_update(update_info: dict) -> bool:
     Returns:
         True if user wants to update, False otherwise
     """
-    print("\n" + "=" * 50)
-    print("UPDATE AVAILABLE")
-    print("=" * 50)
+    print_header("UPDATE AVAILABLE", width=50)
     print(f"\n  Current version: v{VERSION}")
     print(f"  New version:     v{update_info['version']}")
 
@@ -1524,7 +1697,7 @@ def check_and_prompt_update(silent_if_current: bool = False) -> bool:
         True if update was downloaded, False otherwise
     """
     if not silent_if_current:
-        print("[*] Checking for updates...")
+        print_info("Checking for updates...")
 
     update_info = check_for_updates()
 
@@ -1535,9 +1708,9 @@ def check_and_prompt_update(silent_if_current: bool = False) -> bool:
                 show_update_complete_message(new_exe)
                 return True
             else:
-                print("[!] Update download failed. Continuing with current version.")
+                print_warning("Update download failed. Continuing with current version.")
     elif not silent_if_current:
-        print("[+] You're running the latest version!")
+        print_success("You're running the latest version!")
 
     return False
 
@@ -1568,7 +1741,7 @@ def check_connection_with_retry(bot_url, max_retries=3):
     """Check bot connection with visible retry mechanism"""
     for attempt in range(1, max_retries + 1):
         try:
-            print(f"[*] Connecting to server... (attempt {attempt}/{max_retries})")
+            print_info(f"Connecting to server... (attempt {attempt}/{max_retries})")
             response = requests.get(f"{bot_url}/health", timeout=5)
             if response.status_code == 200:
                 return True, None
@@ -1590,13 +1763,10 @@ def check_connection_with_retry(bot_url, max_retries=3):
 
 
 def main():
-    print()
-    print("=" * 50)
-    print(f"   Clone Hero High Score Tracker v{VERSION}")
-    print("=" * 50)
+    print_header(f"Clone Hero High Score Tracker v{VERSION}", width=50)
 
     # Check for updates on startup
-    print("\n[*] Checking for updates...")
+    print_info("Checking for updates...")
     check_and_prompt_update(silent_if_current=True)
 
     # Check if first run - show welcome message
@@ -1623,14 +1793,14 @@ def main():
                 new_url = 'http://' + new_url
             settings['bot_url'] = new_url
             save_settings(settings)
-            print(f"[+] Server URL saved: {new_url}")
+            print_success(f"Server URL saved: {new_url}")
         else:
-            print(f"[*] Using default: {DEFAULT_BOT_URL}")
+            print_info(f"Using default: {DEFAULT_BOT_URL}")
         print()
 
     # Show current settings
     bot_url = settings.get('bot_url', DEFAULT_BOT_URL)
-    print(f"[*] Server: {bot_url}")
+    print_info(f"Server: {bot_url}")
 
     # Check if bot is running with retry
     connected, error = check_connection_with_retry(bot_url)
@@ -1658,7 +1828,7 @@ def main():
             return main()
         return
 
-    print("[+] Connected to bot server!")
+    print_success("Connected to bot server!")
 
     # Check for existing auth token or start pairing
     auth_token = get_auth_token()
@@ -1670,11 +1840,11 @@ def main():
 
         auth_token = do_pairing(is_existing_user=is_existing)
         if not auth_token:
-            print("[!] Pairing failed. Exiting.")
+            print_error("Pairing failed. Exiting.")
             input("\nPress Enter to exit...")
             return
     else:
-        print(f"[+] Already paired (auth token found)")
+        print_success("Already paired (auth token found)")
 
     # Find Clone Hero directory
     ch_dir = find_clone_hero_directory()
@@ -1701,17 +1871,16 @@ def main():
             return main()
         return
 
-    print(f"[+] Found Clone Hero directory: {ch_dir}")
+    print_success(f"Found Clone Hero directory: {ch_dir}")
 
     # Check Clone Hero settings
     ch_settings = check_clone_hero_settings()
     if ch_settings['warnings']:
-        print("\n" + "-" * 50)
-        print("CLONE HERO SETTINGS WARNING")
-        print("-" * 50)
+        print()
+        print_header("CLONE HERO SETTINGS WARNING", width=50)
         for warning in ch_settings['warnings']:
-            print(f"  [!] {warning}")
-        print("-" * 50)
+            print_warning(warning, indent=1)
+        print("=" * 50)
         print()
 
     # Load song cache for metadata
@@ -1719,22 +1888,23 @@ def main():
     songcache_path = ch_dir / 'songcache.bin'
     if songcache_path.exists():
         try:
-            print("[*] Loading song cache...")
+            print_info("Loading song cache...")
             parser = SongCacheParser(str(songcache_path))
             song_cache = parser.parse()
-            print(f"[+] Loaded {len(song_cache)} songs from cache")
+            print_success(f"Loaded {len(song_cache)} songs from cache")
         except Exception as e:
-            print(f"[!] Could not load song cache: {e}")
-            print("    Song names will show as chart hashes")
+            print_warning("Could not load song cache")
+            print_plain("Song names will show as chart hashes", indent=1)
+            log_exception(logger, "Failed to load song cache", e)
 
     # Check OCR availability
     ocr_enabled = settings.get('ocr_enabled', False)
     if ocr_enabled:
         ocr_ok, ocr_msg = check_ocr_available()
         if ocr_ok:
-            print(f"[+] OCR enabled: {ocr_msg}")
+            print_success(f"OCR enabled: {ocr_msg}")
         else:
-            print(f"[!] OCR disabled: {ocr_msg}")
+            print_warning(f"OCR disabled: {ocr_msg}")
             ocr_enabled = False
 
     # Start system tray if enabled
@@ -1743,7 +1913,7 @@ def main():
         if HAS_TRAY_SUPPORT:
             start_tray_icon()
         else:
-            print("[!] Minimize to tray enabled but pystray not installed")
+            print_warning("Minimize to tray enabled but pystray not installed")
             tray_enabled = False
 
     # State file to track which scores we've already seen
@@ -1764,16 +1934,16 @@ def main():
         # Check if this is first run, migration needed, or returning
         if not state_file.exists():
             print("\n[*] First run detected!")
-            print("[*] Initializing with existing scores...")
-            print("[*] Only NEW scores from this point forward will be detected.\n")
+            print_info("Initializing with existing scores...")
+            print_info("Only NEW scores from this point forward will be detected.\n")
             watcher.initialize_state()
         elif watcher.needs_state_migration():
             # Old format state file - re-initialize silently without submitting
-            print("[*] Migrating state file to new format...")
+            print_info("Migrating state file to new format...")
             watcher.initialize_state(silent=True)
-            print("[*] Only NEW scores from this point forward will be detected.\n")
+            print_info("Only NEW scores from this point forward will be detected.\n")
         else:
-            print(f"[+] Loaded existing state")
+            print_success("Loaded existing state")
             # Scan for any scores made while tracker was offline
             watcher.catch_up_scan()
 
@@ -1801,33 +1971,35 @@ def main():
                     continue
 
                 elif cmd == "help" or cmd == "?":
-                    print("\n  Available Commands:")
-                    print("  " + "-" * 40)
-                    print("  help      - Show this help message")
-                    print("  status    - Check connection status")
-                    print("  resync    - Scan for missed scores")
-                    print("  reset     - Clear state and re-submit ALL scores")
-                    print("  settings  - Open settings menu")
-                    print("  update    - Check for and download updates")
-                    print("  unpair    - Disconnect and reset pairing")
+                    print_header("AVAILABLE COMMANDS", width=50)
+                    print_plain("  help      Show this help message")
+                    print_plain("  status    Check connection and score tracking status")
+                    print_plain("  resync    Scan for scores made while offline")
+                    print_plain("  reset     Clear state and re-submit ALL scores")
+                    print_plain("  settings  Configure bot URL, paths, and options")
+                    print_plain("  update    Check for and download updates")
+                    print_plain("  unpair    Disconnect from Discord account")
                     if tray_enabled:
-                        print("  minimize  - Minimize to system tray")
-                    print("  debug     - Enter debug mode (requires password)")
-                    print("  quit      - Exit the tracker")
-                    print()
+                        print_plain("  minimize  Minimize to system tray")
+                    print_plain("  debug     Enter debug mode (password required)")
+                    print_plain("  quit      Exit the tracker")
+                    print("\n" + "=" * 50)
+                    print("Type any command at the > prompt")
+                    print("=" * 50 + "\n")
 
                 elif cmd == "status":
                     bot_url = get_bot_url()
-                    print(f"\n  Server: {bot_url}")
+                    print_header("CONNECTION STATUS", width=50)
+                    print_plain(f"  Server: {bot_url}")
                     try:
                         response = requests.get(f"{bot_url}/health", timeout=5)
                         if response.status_code == 200:
-                            print("  Status: Connected")
+                            print_success("Connected", indent=1)
                         else:
-                            print(f"  Status: Error (HTTP {response.status_code})")
+                            print_warning(f"Error (HTTP {response.status_code})", indent=1)
                     except:
-                        print("  Status: Disconnected")
-                    print(f"  Tracking: {len(watcher.state.known_scores)} scores")
+                        print_error("Disconnected", indent=1)
+                    print_plain(f"  Tracking: {len(watcher.state.known_scores)} scores")
                     print()
 
                 elif cmd == "resync":
@@ -1851,7 +2023,7 @@ def main():
                         # Clear the known scores
                         watcher.state.known_scores = {}
                         watcher.state.save_state()
-                        print("[+] State cleared!")
+                        print_success("State cleared!")
                         print("\n[*] Re-submitting all scores...")
                         # Now catch_up_scan will submit everything as "new"
                         watcher.catch_up_scan()
@@ -1878,7 +2050,7 @@ def main():
                         config.pop('auth_token', None)
                         save_config(config)
                         print("\n[+] Unpaired successfully!")
-                        print("[*] Restart the tracker to pair again.")
+                        print_info("Restart the tracker to pair again.")
                         watcher.stop()
                         input("\nPress Enter to exit...")
                         return
@@ -1889,7 +2061,7 @@ def main():
                 elif cmd == "minimize":
                     if tray_enabled:
                         print("\n[*] Minimizing to system tray...")
-                        print("[*] Right-click the tray icon to restore or exit.")
+                        print_info("Right-click the tray icon to restore or exit.")
                         hide_console_window()
                     else:
                         print("\n[!] Minimize to tray is not enabled.")
@@ -1897,15 +2069,33 @@ def main():
                     print()
 
                 elif cmd == "debug":
-                    password = input("  Enter debug password: ").strip()
-                    if password == DEBUG_PASSWORD:
-                        watcher.stop()
-                        stop_tray_icon()
-                        debug_mode(auth_token)
-                        print("\n[*] Restarting tracker...")
-                        return main()
-                    else:
-                        print("  Invalid password.")
+                    password = getpass.getpass("  Enter debug password: ").strip()
+
+                    # Send password to server for authorization
+                    try:
+                        response = requests.post(
+                            f"{get_bot_url()}/api/debug/authorize",
+                            json={"password": password},
+                            timeout=5
+                        )
+
+                        if response.status_code == 200:
+                            data = response.json()
+                            if data.get('authorized'):
+                                watcher.stop()
+                                stop_tray_icon()
+                                debug_mode(auth_token)
+                                print_info("Restarting tracker...")
+                                return main()
+                            else:
+                                print_error("Invalid password.")
+                        else:
+                            print_error("Authorization failed. Check server connection.")
+                    except requests.exceptions.ConnectionError:
+                        print_error("Could not connect to server for authorization.")
+                    except Exception as e:
+                        print_error(f"Authorization error: {e}")
+                        log_exception(logger, "Debug authorization failed", e)
                     print()
 
                 elif cmd == "quit" or cmd == "exit":

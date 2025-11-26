@@ -2,7 +2,7 @@
 
 A Discord bot-based high score tracking system for Clone Hero that automatically detects new scores and posts announcements to your Discord server.
 
-## Current Version: v2.4.3
+## Current Version: v2.4.8
 
 ## What It Does
 
@@ -37,11 +37,16 @@ A Discord bot-based high score tracking system for Clone Hero that automatically
 
 ## Version History
 
-### v2.4.3 - Migration Fix (Latest)
-- **Fixed Migration**: Now properly migrates the `record_breaks` table (fixes "table record_breaks has no column named chart_hash" error)
-- **Database Location**: Bot now defaults to storing database in `%APPDATA%\Roaming\CloneHeroScoreBot\scores.db` for better persistence across updates
+### v2.4.8 - Bug Fixes (Latest)
+- **Fixed `/leaderboard` and `/mystats` commands**: Discord embed errors resolved by truncating chart hashes to 8 characters
+- **Fixed client catch-up scan**: Resolved `'ScoreEntry' object has no attribute 'chart_md5'` error
+- **Fixed real-time score detection**: Completed chart_md5 → chart_hash migration in file watcher
+- **Technical**: All production code now uses consistent `chart_hash` terminology
+
+### v2.4.3 - Migration Fix
+- **Fixed Migration**: Now properly migrates the `record_breaks` table
+- **Database Location**: Bot now defaults to storing database in `%APPDATA%\Roaming\CloneHeroScoreBot\scores.db`
 - **Improved Migration Script**: Standalone migration script now checks all three tables (scores, songs, record_breaks)
-- **Upgrade Note**: Simply download and run v2.4.3 - it will automatically migrate your existing database
 
 ### v2.4.2 - Terminology Fix
 - **Chart Hash Terminology**: Renamed all references from "MD5" to "Chart Hash" for accuracy
@@ -105,8 +110,8 @@ A Discord bot-based high score tracking system for Clone Hero that automatically
 ```
 CH_HiScore/
 ├── dist/                    # Built executables
-│   ├── CloneHeroScoreTracker_v2.4.2.exe   # Client for players
-│   └── CloneHeroScoreBot_v2.4.2.exe       # Bot for server admins
+│   ├── CloneHeroScoreTracker_v2.4.8.exe   # Client for players
+│   └── CloneHeroScoreBot_v2.4.8.exe       # Bot for server admins
 │
 ├── client/                  # Client source code
 │   ├── file_watcher.py      # Score detection
@@ -115,14 +120,16 @@ CH_HiScore/
 ├── bot/                     # Bot source code
 │   ├── bot.py               # Discord commands
 │   ├── api.py               # HTTP API
-│   └── database.py          # SQLite operations
+│   ├── database.py          # SQLite operations
+│   └── migrations.py        # Database migrations
 │
 ├── shared/                  # Shared utilities
 │   └── parsers.py           # Clone Hero file parsers
 │
 ├── clone_hero_client.py     # Client entry point
 ├── bot_launcher.py          # Bot entry point
-└── *.spec                   # PyInstaller configs
+├── run_migration.py         # Standalone migration tool
+└── *.spec                   # PyInstaller build configs
 ```
 
 ## Discord Commands

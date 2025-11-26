@@ -20,9 +20,21 @@ except ImportError:
 from .config import Config
 from .api import ScoreAPI
 from .database import Database
+from shared.console import print_success, print_info, print_warning, print_error, print_header
+from shared.logger import get_bot_logger, log_exception
+
+# Initialize colorama for Windows
+try:
+    import colorama
+    colorama.init()
+except ImportError:
+    pass
+
+# Initialize logger
+logger = get_bot_logger()
 
 # Version and update check
-BOT_VERSION = "2.4.8"
+BOT_VERSION = "2.4.9"
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
 
 
@@ -87,15 +99,15 @@ class CloneHeroBot(commands.Bot):
 
     async def setup_hook(self):
         """Called when bot is starting up"""
-        print("[*] Setting up bot...")
+        print_info("Setting up bot...")
 
         # Run migrations before initializing schema
-        print("[*] Running database migrations...")
+        print_info("Running database migrations...")
         try:
             from .migrations import run_migrations
             run_migrations(self.db.db_path)
         except Exception as e:
-            print(f"[!] Migration warning: {e}")
+            print_warning(f"Migration warning: {e}")
 
         # Initialize database
         self.db.connect()
@@ -108,17 +120,17 @@ class CloneHeroBot(commands.Bot):
             guild = discord.Object(id=int(Config.DISCORD_GUILD_ID))
             self.tree.copy_global_to(guild=guild)
             await self.tree.sync(guild=guild)
-            print(f"[+] Commands synced to guild {Config.DISCORD_GUILD_ID}")
+            print_success(f"Commands synced to guild {Config.DISCORD_GUILD_ID}")
         else:
             await self.tree.sync()
-            print("[+] Commands synced globally")
+            print_success("Commands synced globally")
 
     async def on_ready(self):
         """Called when bot successfully connects to Discord"""
         print("\n" + "=" * 50)
-        print(f"[+] Bot is online and connected!")
-        print(f"[+] Logged in as: {self.user.name} (ID: {self.user.id})")
-        print(f"[+] Connected to {len(self.guilds)} server(s)")
+        print_success("Bot is online and connected!")
+        print_success(f"Logged in as: {self.user.name} (ID: {self.user.id})")
+        print_success(f"Connected to {len(self.guilds)} server(s)")
         print("=" * 50 + "\n")
 
         # List servers
@@ -143,7 +155,7 @@ class CloneHeroBot(commands.Bot):
 
             update_info = check_for_client_update()
             if not update_info:
-                print("[*] No client updates available")
+                print_info("No client updates available")
                 return
 
             # Get announcement channel
@@ -195,10 +207,10 @@ class CloneHeroBot(commands.Bot):
 
             await channel.send(embed=embed)
             self._update_notified = True
-            print(f"[+] Update notification sent to #{channel.name}")
+            print_success(f"Update notification sent to #{channel.name}")
 
         except Exception as e:
-            print(f"[!] Error sending update notification: {e}")
+            print_error(f"Error sending update notification: {e}")
 
 
 # Create bot instance
@@ -258,7 +270,7 @@ async def pair(interaction: discord.Interaction, code: str):
             f"*Your client should now show 'Paired' status.*",
             ephemeral=True
         )
-        print(f"[+] User paired: {discord_username} ({discord_id})")
+        print_success(f"User paired: {discord_username} ({discord_id})")
     else:
         await interaction.followup.send(
             f"**Pairing failed!**\n\n"
@@ -596,7 +608,7 @@ async def setartist(interaction: discord.Interaction, hash_prefix: str, artist: 
             f"*Future leaderboard displays will show the new artist.*",
             ephemeral=True
         )
-        print(f"[Bot] Artist updated: {song.get('title')} -> {artist} (by {interaction.user.display_name})")
+        print_info(f"Artist updated: {song.get('title')} -> {artist} (by {interaction.user.display_name})")
     else:
         await interaction.followup.send(
             f"Failed to update artist. The song may have been removed.",
@@ -689,7 +701,7 @@ async def updatesong(interaction: discord.Interaction, hash_prefix: str, title: 
         response += "\n*Future displays will show the updated info.*"
 
         await interaction.followup.send(response, ephemeral=True)
-        print(f"[Bot] Song updated: {chart_hash[:8]} - title={title}, artist={artist} (by {interaction.user.display_name})")
+        print_info(f"Song updated: {chart_hash[:8]} - title={title}, artist={artist} (by {interaction.user.display_name})")
     else:
         await interaction.followup.send(
             f"Failed to update song. The song may have been removed.",
@@ -796,6 +808,73 @@ async def recent(interaction: discord.Interaction, count: int = 5):
     await interaction.followup.send(embed=embed)
 
 
+@bot.tree.command(name="server_status", description="Show server statistics and information")
+async def server_status(interaction: discord.Interaction):
+    """Show comprehensive server statistics"""
+    await interaction.response.defer()
+
+    stats = bot.db.get_server_stats()
+
+    embed = discord.Embed(
+        title="🎸 Clone Hero Server Status",
+        color=discord.Color.blue()
+    )
+
+    # Users & Activity
+    embed.add_field(
+        name="👥 Community",
+        value=f"**Total Users:** {stats['total_users']}\n"
+              f"**Record Holders:** {stats['total_record_holders']}",
+        inline=True
+    )
+
+    # Scores & Records
+    embed.add_field(
+        name="🏆 Scores",
+        value=f"**Total Scores:** {stats['total_scores']:,}\n"
+              f"**Charts Played:** {stats['total_charts_played']}\n"
+              f"**Records Broken:** {stats['total_record_breaks']}",
+        inline=True
+    )
+
+    # System Info
+    embed.add_field(
+        name="⚙️ System",
+        value=f"**Bot Version:** v{BOT_VERSION}\n"
+              f"**Database Size:** {stats['db_size_mb']} MB",
+        inline=True
+    )
+
+    # Most Active User
+    if stats.get('most_active_user'):
+        user = stats['most_active_user']
+        embed.add_field(
+            name="🔥 Most Active Player",
+            value=f"**{user['discord_username']}**\n"
+                  f"{user['score_count']:,} scores submitted",
+            inline=False
+        )
+
+    # Most Competitive Song
+    if stats.get('most_competitive_song'):
+        song = stats['most_competitive_song']
+        song_title = song.get('title') or f"[{song['chart_hash'][:8]}]"
+        embed.add_field(
+            name="⚔️ Most Competitive Song",
+            value=f"**{song_title}**\n"
+                  f"Record broken {song['break_count']} times",
+            inline=False
+        )
+
+    # Server Install Date
+    if stats.get('first_activity'):
+        from datetime import datetime
+        install_date = datetime.fromisoformat(stats['first_activity']).strftime("%B %d, %Y")
+        embed.set_footer(text=f"Server tracking since {install_date}")
+
+    await interaction.followup.send(embed=embed)
+
+
 # ============================================================================
 # ERROR HANDLING
 # ============================================================================
@@ -813,7 +892,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
             f"❌ An error occurred: {str(error)}",
             ephemeral=True
         )
-        print(f"[!] Command error: {error}")
+        print_error(f"Command error: {error}")
 
 
 # ============================================================================
@@ -830,7 +909,7 @@ def main():
         Config.validate()
         Config.print_config()
     except ValueError as e:
-        print(f"[!] Configuration Error:\n{e}")
+        print_error(f"Configuration Error:\n{e}")
         return
 
     # Check if guild/channel IDs are set
@@ -844,8 +923,8 @@ def main():
         print("   High score announcements will not be posted")
         print("   Get your channel ID and add it to .env\n")
 
-    print("[*] Starting bot...")
-    print("[*] Press Ctrl+C to stop\n")
+    print_info("Starting bot...")
+    print_info("Press Ctrl+C to stop\n")
 
     try:
         bot.run(Config.DISCORD_TOKEN)

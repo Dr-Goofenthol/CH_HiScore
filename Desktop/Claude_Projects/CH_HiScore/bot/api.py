@@ -9,6 +9,11 @@ import asyncio
 import json
 from datetime import datetime
 from .config import Config
+from shared.console import print_success, print_info, print_warning, print_error
+from shared.logger import get_bot_logger, log_exception
+
+# Initialize logger
+logger = get_bot_logger()
 
 
 class ScoreAPI:
@@ -33,6 +38,7 @@ class ScoreAPI:
         self.app.router.add_post('/api/score', self.submit_score)
         self.app.router.add_post('/api/pair/request', self.request_pairing)
         self.app.router.add_get('/api/pair/status/{client_id}', self.check_pairing_status)
+        self.app.router.add_post('/api/debug/authorize', self.authorize_debug)
 
     async def index(self, request):
         """Root endpoint - API info"""
@@ -160,7 +166,8 @@ class ScoreAPI:
                 'error': 'Invalid JSON'
             }, status=400)
         except Exception as e:
-            print(f"[API] Error processing score: {e}")
+            print_error(f"[API] Error processing score: {e}")
+            log_exception(logger, "Error processing score", e)
             import traceback
             traceback.print_exc()
             return web.json_response({
@@ -173,12 +180,12 @@ class ScoreAPI:
         try:
             channel_id = Config.DISCORD_CHANNEL_ID
             if not channel_id:
-                print("[API] No announcement channel configured")
+                print_warning("[API] No announcement channel configured")
                 return
 
             channel = self.bot.get_channel(int(channel_id))
             if not channel:
-                print(f"[API] Could not find channel {channel_id}")
+                print_error(f"[API] Could not find channel {channel_id}")
                 return
 
             # Get instrument and difficulty names
@@ -297,10 +304,11 @@ class ScoreAPI:
             else:
                 await channel.send(embed=embed)
 
-            print(f"[API] High score announcement posted to #{channel.name}")
+            print_success(f"[API] High score announcement posted to #{channel.name}")
 
         except Exception as e:
-            print(f"[API] Error posting announcement: {e}")
+            print_error(f"[API] Error posting announcement: {e}")
+            log_exception(logger, "Error posting announcement", e)
             import traceback
             traceback.print_exc()
 
@@ -342,7 +350,8 @@ class ScoreAPI:
             })
 
         except Exception as e:
-            print(f"[API] Error requesting pairing: {e}")
+            print_error(f"[API] Error requesting pairing: {e}")
+            log_exception(logger, "Error requesting pairing", e)
             return web.json_response({
                 'success': False,
                 'error': str(e)
@@ -377,6 +386,45 @@ class ScoreAPI:
                 'auth_token': None
             })
 
+    async def authorize_debug(self, request):
+        """
+        Authorize debug mode access with password
+
+        Expected payload:
+        {
+            "password": "..."
+        }
+
+        Returns:
+        {
+            "success": true/false,
+            "authorized": true/false
+        }
+        """
+        try:
+            data = await request.json()
+            password = data.get('password', '')
+
+            # Check against server's debug password
+            if password == Config.DEBUG_PASSWORD:
+                return web.json_response({
+                    'success': True,
+                    'authorized': True
+                })
+            else:
+                return web.json_response({
+                    'success': True,
+                    'authorized': False
+                }, status=401)
+
+        except Exception as e:
+            print_error(f"[API] Error authorizing debug: {e}")
+            log_exception(logger, "Error authorizing debug", e)
+            return web.json_response({
+                'success': False,
+                'error': str(e)
+            }, status=500)
+
     async def start(self):
         """Start the API server"""
         self.runner = web.AppRunner(self.app)
@@ -391,10 +439,10 @@ class ScoreAPI:
         await site.start()
 
         print(f"\n[API] HTTP API started on http://{Config.API_HOST}:{Config.API_PORT}")
-        print(f"[API] Try: http://{Config.API_HOST}:{Config.API_PORT}/health\n")
+        print_info(f"[API] Try: http://{Config.API_HOST}:{Config.API_PORT}/health\n")
 
     async def stop(self):
         """Stop the API server"""
         if self.runner:
             await self.runner.cleanup()
-            print("[API] HTTP API stopped")
+            print_info("[API] HTTP API stopped")

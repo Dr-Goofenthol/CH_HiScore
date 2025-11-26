@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Tuple
 import secrets
 from .config import Config
+from shared.console import print_success, print_info, print_warning, print_error
 
 
 class Database:
@@ -32,17 +33,17 @@ class Database:
         self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row  # Return rows as dictionaries
         self.cursor = self.conn.cursor()
-        print(f"[DB] Connected to database: {self.db_path}")
+        print_info(f"[DB] Connected to database: {self.db_path}")
 
     def close(self):
         """Close database connection"""
         if self.conn:
             self.conn.close()
-            print("[DB] Database connection closed")
+            print_info("[DB] Database connection closed")
 
     def initialize_schema(self):
         """Create database tables if they don't exist"""
-        print("[DB] Initializing database schema...")
+        print_info("[DB] Initializing database schema...")
 
         # Users table
         self.cursor.execute("""
@@ -140,7 +141,7 @@ class Database:
         """)
 
         self.conn.commit()
-        print("[DB] Schema initialized successfully")
+        print_success("[DB] Schema initialized successfully")
 
     # ========================================================================
     # USER OPERATIONS
@@ -167,7 +168,7 @@ class Database:
         self.conn.commit()
         user_id = self.cursor.lastrowid
 
-        print(f"[DB] Created user: {discord_username} (ID: {user_id})")
+        print_success(f"[DB] Created user: {discord_username} (ID: {user_id})")
         return user_id, auth_token
 
     def get_user_by_discord_id(self, discord_id: str) -> Optional[Dict]:
@@ -222,7 +223,7 @@ class Database:
         """, (code, client_id, expires_at))
 
         self.conn.commit()
-        print(f"[DB] Created pairing code: {code} (expires in {expires_minutes} min)")
+        print_info(f"[DB] Created pairing code: {code} (expires in {expires_minutes} min)")
         return code
 
     def get_pairing_code(self, code: str) -> Optional[Dict]:
@@ -254,19 +255,19 @@ class Database:
         # Check if expired
         expires_at = datetime.fromisoformat(pairing['expires_at'])
         if datetime.now() > expires_at:
-            print(f"[DB] Pairing code {code} has expired")
+            print_warning(f"[DB] Pairing code {code} has expired")
             return None
 
         # Check if already completed
         if pairing['completed']:
-            print(f"[DB] Pairing code {code} already used")
+            print_warning(f"[DB] Pairing code {code} already used")
             return None
 
         # Create or get user
         user = self.get_user_by_discord_id(discord_id)
         if user:
             auth_token = user['auth_token']
-            print(f"[DB] User already exists: {discord_username}")
+            print_info(f"[DB] User already exists: {discord_username}")
         else:
             _, auth_token = self.create_user(discord_id, discord_username)
 
@@ -278,7 +279,7 @@ class Database:
         """, (discord_id, auth_token, code))
 
         self.conn.commit()
-        print(f"[DB] Pairing completed: {code} -> {discord_username}")
+        print_success(f"[DB] Pairing completed: {code} -> {discord_username}")
         return auth_token
 
     def check_pairing_status(self, client_id: str) -> Optional[str]:
@@ -435,7 +436,7 @@ class Database:
             'discord_id': user['discord_id']
         }
 
-        print(f"[DB] Score submitted: {user['discord_username']} - {score:,} "
+        print_info(f"[DB] Score submitted: {user['discord_username']} - {score:,} "
               f"({'NEW HIGH SCORE!' if is_new_high_score else 'not a high score'})")
 
         return result
@@ -741,3 +742,90 @@ class Database:
         """, (limit,))
 
         return [dict(row) for row in self.cursor.fetchall()]
+
+    def get_server_stats(self) -> Dict:
+        """Get comprehensive server statistics"""
+        # Total registered users
+        self.cursor.execute("SELECT COUNT(*) as count FROM users")
+        total_users = self.cursor.fetchone()['count']
+
+        # Total scores submitted
+        self.cursor.execute("SELECT COUNT(*) as count FROM scores")
+        total_scores = self.cursor.fetchone()['count']
+
+        # Total unique chart/instrument/difficulty combinations with scores
+        self.cursor.execute("""
+            SELECT COUNT(DISTINCT chart_hash || instrument_id || difficulty_id) as count
+            FROM scores
+        """)
+        total_charts_played = self.cursor.fetchone()['count']
+
+        # Total record breaks
+        self.cursor.execute("SELECT COUNT(*) as count FROM record_breaks")
+        total_record_breaks = self.cursor.fetchone()['count']
+
+        # Database creation time (first user or first score timestamp)
+        self.cursor.execute("""
+            SELECT MIN(created_at) as first_activity
+            FROM (
+                SELECT created_at FROM users
+                UNION ALL
+                SELECT submitted_at as created_at FROM scores
+            )
+        """)
+        first_activity = self.cursor.fetchone()['first_activity']
+
+        # Most active user (by score submissions)
+        self.cursor.execute("""
+            SELECT u.discord_username, u.discord_id, COUNT(*) as score_count
+            FROM scores s
+            JOIN users u ON s.user_id = u.id
+            GROUP BY u.id
+            ORDER BY score_count DESC
+            LIMIT 1
+        """)
+        most_active_row = self.cursor.fetchone()
+        most_active_user = dict(most_active_row) if most_active_row else None
+
+        # Most competitive song (most record breaks)
+        self.cursor.execute("""
+            SELECT songs.title, rb.chart_hash, COUNT(*) as break_count
+            FROM record_breaks rb
+            LEFT JOIN songs ON rb.chart_hash = songs.chart_hash
+            GROUP BY rb.chart_hash
+            ORDER BY break_count DESC
+            LIMIT 1
+        """)
+        most_competitive_row = self.cursor.fetchone()
+        most_competitive_song = dict(most_competitive_row) if most_competitive_row else None
+
+        # Current record holders (unique users holding at least one record)
+        self.cursor.execute("""
+            SELECT COUNT(DISTINCT user_id) as count
+            FROM scores s1
+            WHERE score = (
+                SELECT MAX(score)
+                FROM scores s2
+                WHERE s2.chart_hash = s1.chart_hash
+                AND s2.instrument_id = s1.instrument_id
+                AND s2.difficulty_id = s1.difficulty_id
+            )
+        """)
+        total_record_holders = self.cursor.fetchone()['count']
+
+        # Database file size
+        import os
+        db_size_bytes = os.path.getsize(self.db_path)
+        db_size_mb = db_size_bytes / (1024 * 1024)
+
+        return {
+            'total_users': total_users,
+            'total_scores': total_scores,
+            'total_charts_played': total_charts_played,
+            'total_record_breaks': total_record_breaks,
+            'total_record_holders': total_record_holders,
+            'first_activity': first_activity,
+            'most_active_user': most_active_user,
+            'most_competitive_song': most_competitive_song,
+            'db_size_mb': round(db_size_mb, 2)
+        }
