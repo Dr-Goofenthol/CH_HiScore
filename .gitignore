@@ -56,7 +56,7 @@ debug_screenshots/
 # Old spec files (keep only latest)
 *_v2.3*.spec
 *_v2.4.*.spec
-!*_v2.4.8.spec
+!*_v2.4.13.spec
 
 # Temporary files
 nul

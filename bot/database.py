@@ -488,6 +488,34 @@ class Database:
         row = self.cursor.fetchone()
         return dict(row) if row else None
 
+    def get_all_records_for_chart(self, chart_hash: str) -> List[Dict]:
+        """
+        Get all high scores for a chart across all instrument/difficulty combinations
+
+        Args:
+            chart_hash: The chart hash to look up
+
+        Returns:
+            List of records with user info, one per instrument/difficulty combo
+        """
+        self.cursor.execute("""
+            SELECT s.*, u.discord_username, u.discord_id,
+                   DATE(s.submitted_at) as record_date
+            FROM scores s
+            JOIN users u ON s.user_id = u.id
+            WHERE s.chart_hash = ?
+            AND s.id IN (
+                SELECT id FROM scores s2
+                WHERE s2.chart_hash = s.chart_hash
+                AND s2.instrument_id = s.instrument_id
+                AND s2.difficulty_id = s.difficulty_id
+                ORDER BY s2.score DESC
+                LIMIT 1
+            )
+            ORDER BY s.instrument_id, s.difficulty_id
+        """, (chart_hash,))
+        return [dict(row) for row in self.cursor.fetchall()]
+
     def get_leaderboard(self, limit: int = 10, instrument_id: int = None,
                        difficulty_id: int = None) -> List[Dict]:
         """
@@ -651,13 +679,13 @@ class Database:
         return dict(row) if row else None
 
     def search_songs(self, query: str, limit: int = 10) -> List[Dict]:
-        """Search songs by title (partial match)"""
+        """Search songs by title or artist (partial match)"""
         self.cursor.execute("""
             SELECT * FROM songs
-            WHERE title LIKE ?
+            WHERE title LIKE ? OR artist LIKE ?
             ORDER BY title
             LIMIT ?
-        """, (f'%{query}%', limit))
+        """, (f'%{query}%', f'%{query}%', limit))
         return [dict(row) for row in self.cursor.fetchall()]
 
     def update_song_artist(self, chart_hash: str, artist: str) -> bool:

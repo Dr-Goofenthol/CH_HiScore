@@ -34,7 +34,7 @@ except ImportError:
 logger = get_bot_logger()
 
 # Version and update check
-BOT_VERSION = "2.4.9"
+BOT_VERSION = "2.4.13"
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
 
 
@@ -490,10 +490,10 @@ async def mystats(interaction: discord.Interaction, user: discord.Member = None)
     await interaction.followup.send(embed=embed)
 
 
-@bot.tree.command(name="lookupsong", description="Search for a song and view/update its metadata")
-@app_commands.describe(query="Song title to search for")
+@bot.tree.command(name="lookupsong", description="Search for a song and view its records")
+@app_commands.describe(query="Song title or artist to search for")
 async def lookupsong(interaction: discord.Interaction, query: str):
-    """Search for songs in the database by title"""
+    """Search for songs in the database by title or artist"""
     await interaction.response.defer(ephemeral=True)
 
     # Search for songs matching the query
@@ -512,14 +512,41 @@ async def lookupsong(interaction: discord.Interaction, query: str):
         color=discord.Color.blue()
     )
 
+    instruments = {0: "Lead", 1: "Bass", 2: "Rhythm", 3: "Keys", 4: "Drums"}
+    difficulties = {0: "Easy", 1: "Med", 2: "Hard", 3: "Expert"}
+
     results_text = ""
     for i, song in enumerate(songs, 1):
         title = song.get('title', '[Unknown]')
         artist = song.get('artist') or '*No artist*'
+        charter = song.get('charter') or '*Unknown*'
         hash_short = song['chart_hash'][:8]
+
         results_text += f"**{i}.** {title}\n"
-        results_text += f"    Artist: {artist}\n"
-        results_text += f"    Chart Hash: `{hash_short}`\n\n"
+        results_text += f"   Artist: {artist}\n"
+        results_text += f"   Charter: {charter}\n"
+        results_text += f"   Chart Hash: `{hash_short}`\n"
+
+        # Get all records for this chart
+        records = bot.db.get_all_records_for_chart(song['chart_hash'])
+
+        if records:
+            results_text += f"   **Records:**\n"
+            for rec in records:
+                inst = instruments.get(rec['instrument_id'], '?')
+                diff = difficulties.get(rec['difficulty_id'], '?')
+                username = rec['discord_username']
+                score = rec['score']
+                date = rec.get('record_date', 'Unknown')
+                results_text += f"   • {diff} {inst}: {username} ({score:,} pts) - {date}\n"
+        else:
+            results_text += f"   *No scores yet*\n"
+
+        results_text += "\n"
+
+    # Truncate if too long for embed
+    if len(results_text) > 1024:
+        results_text = results_text[:1000] + "\n...(truncated)"
 
     embed.add_field(
         name=f"Found {len(songs)} song(s)",
@@ -527,7 +554,7 @@ async def lookupsong(interaction: discord.Interaction, query: str):
         inline=False
     )
 
-    embed.set_footer(text="Use /setartist <hash> <artist> to update artist info")
+    embed.set_footer(text="Use /setartist or /updatesong to update metadata")
 
     await interaction.followup.send(embed=embed, ephemeral=True)
 

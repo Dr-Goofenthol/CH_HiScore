@@ -4,7 +4,7 @@ Clone Hero High Score Client
 Monitors your Clone Hero scores and submits them to the Discord scoreboard.
 """
 
-VERSION = "2.4.12"
+VERSION = "2.4.13"
 
 # GitHub repository for auto-updates
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
@@ -34,9 +34,14 @@ from shared.logger import get_client_logger, log_exception
 # Initialize colorama for Windows
 try:
     import colorama
+    from colorama import Fore, Style
     colorama.init()
 except ImportError:
-    pass
+    # Fallback if colorama not available
+    class Fore:
+        GREEN = YELLOW = CYAN = RED = ''
+    class Style:
+        RESET_ALL = ''
 
 # Initialize logger
 logger = get_client_logger()
@@ -226,9 +231,19 @@ def on_tray_show(icon, item):
 
 def on_tray_exit(icon, item):
     """Exit from tray"""
-    global _tray_should_exit
-    _tray_should_exit = True
-    icon.stop()
+    import os
+
+    # Stop the tray icon
+    try:
+        icon.stop()
+    except:
+        pass
+
+    # Clean up lock file
+    release_instance_lock()
+
+    # Force immediate exit (needed because main loop is blocked on input())
+    os._exit(0)
 
 
 def on_tray_check_updates(icon, item):
@@ -390,6 +405,11 @@ def start_tray_icon(show_startup_notification=False):
         print_warning("System tray not available (install pystray and Pillow)")
         return False
 
+    # If tray icon already exists, don't create duplicate
+    if _tray_icon is not None:
+        print_info("System tray icon already running")
+        return True
+
     try:
         # Create initial menu
         menu = pystray.Menu(
@@ -440,6 +460,63 @@ def stop_tray_icon():
         except:
             pass
         _tray_icon = None
+
+
+def monitor_window_minimize():
+    """
+    Background thread to monitor console window state and hide to tray when minimized
+    """
+    if sys.platform != 'win32':
+        return
+
+    import ctypes
+    import threading
+    import time
+
+    def check_window_state():
+        SW_MINIMIZE = 6
+        SW_HIDE = 0
+        last_was_minimized = False  # Track state to only notify once
+
+        while True:
+            try:
+                # Check if tray is enabled and icon exists
+                settings = load_settings()
+                if not settings.get('minimize_to_tray', False) or _tray_icon is None:
+                    time.sleep(1)
+                    continue
+
+                # Get console window handle
+                hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+                if not hwnd:
+                    time.sleep(1)
+                    continue
+
+                # Check if window is minimized
+                is_minimized = ctypes.windll.user32.IsIconic(hwnd)
+
+                if is_minimized and not last_was_minimized:
+                    # Just became minimized - handle this transition once
+                    ctypes.windll.user32.ShowWindow(hwnd, SW_HIDE)
+
+                    # Show notification only once when minimizing
+                    try:
+                        if _tray_icon:
+                            _tray_icon.notify(
+                                title="Clone Hero Score Tracker",
+                                message="Minimized to system tray"
+                            )
+                    except:
+                        pass
+
+                last_was_minimized = is_minimized
+                time.sleep(0.5)  # Check twice per second
+            except:
+                time.sleep(1)
+
+    # Start monitor thread
+    monitor_thread = threading.Thread(target=check_window_state, daemon=True)
+    monitor_thread.start()
 
 
 def get_bot_url():
@@ -968,28 +1045,32 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
         else:
             data_source = "Chart hash only"
 
-        print("\n" + "=" * 50)
-        print(f"NEW SCORE DETECTED! [{score_type.upper()}]")
-        print("=" * 50)
-        print(f"Song: {song_title}" + (f" - {song_artist}" if song_artist else ""))
+        print_header("NEW SCORE DETECTED", width=50)
+
+        print(f"{Fore.CYAN}Song Information:{Style.RESET_ALL}")
+        print(f"  • Title: {song_title}" + (f" - {song_artist}" if song_artist else ""))
         if song_charter:
-            print(f"Charter: {song_charter}")
-        print(f"Source: {data_source}")
-        print(f"Chart Hash: {score.chart_hash}")
-        print(f"Instrument: {score.instrument_name}")
-        print(f"Difficulty: {score.difficulty_name}")
-        print(f"Score: {score.score:,}")
-        print(f"Accuracy: {score.completion_percent:.1f}%")
-        print(f"Stars: {score.stars}")
+            print(f"  • Charter: {song_charter}")
+        print(f"  • Chart Hash: {score.chart_hash[:8]}...")
+        print()
+        print(f"{Fore.CYAN}Performance Data:{Style.RESET_ALL}")
+        print(f"  • Instrument: {score.instrument_name} ({score.difficulty_name})")
+        print(f"  • Score: {score.score:,} pts")
         if notes_hit is not None and notes_total is not None:
-            print(f"Notes: {notes_hit}/{notes_total}")
+            print(f"  • Accuracy: {score.completion_percent:.1f}% ({notes_hit}/{notes_total} notes)")
+        else:
+            print(f"  • Accuracy: {score.completion_percent:.1f}%")
+        print(f"  • Stars: {score.stars}/5")
         if best_streak is not None:
-            print(f"Best Streak: {best_streak}")
-        print("=" * 50)
+            print(f"  • Best Streak: {best_streak}")
+        print(f"  • Play Count: {score.play_count}")
+        print()
+        print_info(f"Data Source: {data_source}")
 
         # Send score to bot API
         try:
-            print("\n[*] Sending score to bot API...")
+            print()  # Newline for spacing
+            print_info("Submitting to bot API...")
 
             payload = {
                 "auth_token": auth_token,
@@ -1022,20 +1103,50 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
 
             if response.status_code == 200:
                 result = response.json()
-                print_success("Score submitted successfully!")
+
+                print_header("SUBMISSION SUCCESSFUL", width=50)
+
                 if result.get('is_record_broken'):
-                    print_success("RECORD BROKEN! Check Discord for the announcement!")
-                    if result.get('previous_score'):
-                        diff = score.score - result['previous_score']
-                        print(f"    Beat previous record by {diff:,} points!")
+                    # Beat an existing record
+                    print_success("Record Status: NEW RECORD!")
+                    print()
+                    if result.get('previous_score') and result.get('previous_holder'):
+                        prev_score = result['previous_score']
+                        diff = score.score - prev_score
+                        diff_pct = (diff / prev_score * 100) if prev_score > 0 else 0
+                        print(f"{Fore.YELLOW}Previous Record:{Style.RESET_ALL}")
+                        print(f"  • Holder: {result['previous_holder']}")
+                        print(f"  • Score: {prev_score:,} pts")
+                        print(f"  • Improvement: {Fore.GREEN}+{diff:,} pts (+{diff_pct:.1f}%){Style.RESET_ALL}")
+                    print()
+                    print_success("Result: Discord announcement posted!")
+
                 elif result.get('is_high_score'):
-                    print_success("New personal best! (First score on this chart)")
+                    # First score on this chart (no previous record)
+                    print_success("Record Status: First score on this chart")
+                    print()
+                    print("You are the first to submit a score for:")
+                    print(f"  • {song_title}" + (f" - {song_artist}" if song_artist else ""))
+                    print(f"  • {score.difficulty_name} {score.instrument_name}")
+                    print()
+                    print_info("Result: Score saved! (No announcement - waiting for competition)")
+
                 else:
-                    print_info("Not a new high score")
+                    # Not a new high score
+                    print_info("Record Status: Not a new record")
+                    print()
                     if result.get('your_best_score'):
-                        print(f"    Your current PB: {result['your_best_score']:,}")
-                        diff = result['your_best_score'] - score.score
-                        print(f"    You were {diff:,} points short")
+                        your_best = result['your_best_score']
+                        diff = your_best - score.score
+                        diff_pct = (diff / your_best * 100) if your_best > 0 else 0
+                        print(f"{Fore.CYAN}Your Personal Best:{Style.RESET_ALL}")
+                        print(f"  • Previous: {your_best:,} pts")
+                        print(f"  • Current: {score.score:,} pts")
+                        print(f"  • Gap: {Fore.RED}-{diff:,} pts (-{diff_pct:.1f}%){Style.RESET_ALL}")
+                        print()
+                        print_info("Result: Score saved (did not beat your PB)")
+                    else:
+                        print_info("Result: Score saved")
             elif response.status_code == 401:
                 print_error("Authentication failed - you may need to re-pair")
             else:
@@ -1956,8 +2067,131 @@ def check_connection_with_retry(bot_url, max_retries=3):
     return False, "Max retries exceeded"
 
 
+def get_lock_file_path():
+    """Get path to the lock file"""
+    import tempfile
+    return Path(tempfile.gettempdir()) / 'clone_hero_tracker.lock'
+
+
+def is_process_running(pid):
+    """
+    Check if a process with given PID is running
+
+    Args:
+        pid: Process ID to check
+
+    Returns:
+        True if process is running, False otherwise
+    """
+    if sys.platform == 'win32':
+        # Use tasklist command - more reliable than OpenProcess
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['tasklist', '/FI', f'PID eq {pid}'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            # If process exists, tasklist output will contain the PID
+            return str(pid) in result.stdout
+        except:
+            # Fallback to OpenProcess if tasklist fails
+            try:
+                import ctypes
+                kernel32 = ctypes.windll.kernel32
+                PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+                handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid)
+                if handle:
+                    kernel32.CloseHandle(handle)
+                    return True
+                return False
+            except:
+                return False
+    else:
+        # Unix-like systems
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+
+def acquire_instance_lock():
+    """
+    Acquire single-instance lock to prevent multiple clients running
+
+    Returns:
+        tuple: (success: bool, message: str, stale_pid: int or None)
+    """
+    lock_file = get_lock_file_path()
+
+    try:
+        # Check if lock file exists
+        if lock_file.exists():
+            # Read PID from lock file
+            try:
+                pid = int(lock_file.read_text().strip())
+
+                # Check if process is still running
+                if is_process_running(pid):
+                    # Process is actually running
+                    return (False, f"Another instance is running (PID {pid})", pid)
+
+                # Process not running - stale lock
+                print_warning(f"Removed stale lock file (PID {pid} not running)")
+                lock_file.unlink()
+
+            except (ValueError, IOError) as e:
+                # Invalid lock file - remove it
+                print_warning(f"Removed invalid lock file: {e}")
+                try:
+                    lock_file.unlink()
+                except:
+                    pass
+
+        # Create new lock file with our PID
+        lock_file.write_text(str(os.getpid()))
+        return (True, "Lock acquired", None)
+
+    except Exception as e:
+        # If we can't create lock, allow running (better than blocking user)
+        print_warning(f"Could not create instance lock: {e}")
+        return (True, "Lock creation failed, allowing start", None)
+
+
+def release_instance_lock():
+    """Release the single-instance lock"""
+    lock_file = get_lock_file_path()
+    try:
+        if lock_file.exists():
+            # Only remove if it's our PID
+            try:
+                pid = int(lock_file.read_text().strip())
+                if pid == os.getpid():
+                    lock_file.unlink()
+            except:
+                pass
+    except:
+        pass
+
+
 def main():
     print_header(f"Clone Hero High Score Tracker v{VERSION}", width=50)
+
+    # Check for single instance
+    success, message, stale_pid = acquire_instance_lock()
+    if not success:
+        print_error("Another instance of Clone Hero Score Tracker is already running!")
+        print_info("Check your system tray for the existing instance.")
+        print_info(f"Details: {message}")
+        print()
+        print("If you're sure no other instance is running:")
+        print(f"  1. Open Task Manager and look for PID {stale_pid if stale_pid else 'unknown'}")
+        print(f"  2. Or delete: {get_lock_file_path()}")
+        print()
+        input("Press Enter to exit...")
+        return
 
     # Check for updates on startup
     print_info("Checking for updates...")
@@ -2108,6 +2342,9 @@ def main():
             # Show startup notification if program is set to start with Windows
             show_notification = settings.get('start_with_windows', False)
             start_tray_icon(show_startup_notification=show_notification)
+            # Start monitoring for window minimize to hide to tray
+            monitor_window_minimize()
+            print_info("Tip: Click the minimize button (-) to minimize to tray")
         else:
             print_warning("Minimize to tray enabled but pystray not installed")
             tray_enabled = False
@@ -2285,8 +2522,11 @@ def main():
                                 return main()
                             else:
                                 print_error("Invalid password.")
+                        elif response.status_code == 401:
+                            print_error("Invalid password.")
                         else:
-                            print_error("Authorization failed. Check server connection.")
+                            print_error(f"Authorization failed: HTTP {response.status_code}")
+                            print_info("Check server connection and try again.")
                     except requests.exceptions.ConnectionError:
                         print_error("Could not connect to server for authorization.")
                     except Exception as e:
@@ -2324,4 +2564,8 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    finally:
+        # Always release lock on exit
+        release_instance_lock()
