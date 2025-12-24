@@ -4,7 +4,7 @@ Clone Hero High Score Client
 Monitors your Clone Hero scores and submits them to the Discord scoreboard.
 """
 
-VERSION = "2.4.13"
+VERSION = "2.4.14"
 
 # GitHub repository for auto-updates
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
@@ -2176,6 +2176,253 @@ def release_instance_lock():
         pass
 
 
+def resolve_hashes_command():
+    """
+    Resolve chart hashes by scanning local songs folder
+    and updating the server database with metadata
+    """
+    import hashlib
+
+    print_header("RESOLVE CHART HASHES")
+    print()
+    print("This will:")
+    print("  1. Get list of unresolved hashes from server")
+    print("  2. Scan your Clone Hero songs folder")
+    print("  3. Match hashes and extract song metadata")
+    print("  4. Send updates to server (with your confirmation)")
+    print()
+
+    # Check auth token
+    config = load_config()
+    auth_token = config.get('auth_token')
+    if not auth_token:
+        print_error("Not paired! Use Discord to pair first (/pair)")
+        return
+
+    bot_url = get_bot_url()
+
+    # Step 1: Get unresolved hashes from server
+    print("[*] Fetching unresolved hashes from server...")
+    try:
+        response = requests.get(
+            f"{bot_url}/api/unresolved_hashes",
+            headers={'Authorization': f'Bearer {auth_token}'},
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            print_error(f"Server error: {response.status_code}")
+            return
+
+        data = response.json()
+        if not data.get('success'):
+            print_error(f"Server error: {data.get('error', 'Unknown')}")
+            return
+
+        unresolved_hashes = set(data.get('hashes', []))
+        print_success(f"Found {len(unresolved_hashes)} unresolved hashes")
+
+        if not unresolved_hashes:
+            print_info("No hashes to resolve! All your scores have metadata.")
+            return
+
+    except Exception as e:
+        print_error(f"Failed to get unresolved hashes: {e}")
+        return
+
+    # Step 2: Find Clone Hero's song folders from settings.ini
+    print()
+    print("[*] Looking for Clone Hero's settings...")
+
+    # Try to find Clone Hero's settings.ini
+    ch_dir = Path.home() / 'Documents' / 'Clone Hero'
+    settings_path = ch_dir / "settings.ini"
+
+    song_folders = []
+
+    if settings_path.exists():
+        try:
+            # Parse settings.ini to get all path0, path1, path2, etc.
+            # Clone Hero's INI format may not have section headers, so read manually
+            with open(settings_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith('path') and '=' in line:
+                        # Extract path number and folder
+                        key, value = line.split('=', 1)
+                        key = key.strip()
+                        folder = value.strip()
+
+                        # Check if it's a pathX key and folder exists
+                        if key.startswith('path') and key[4:].isdigit():
+                            if folder and Path(folder).exists():
+                                song_folders.append(Path(folder))
+                                print_success(f"  Found song folder: {folder}")
+        except Exception as e:
+            print_warning(f"Could not parse Clone Hero settings: {e}")
+
+    # Fallback: Use tracker's configured songs folder
+    if not song_folders:
+        print_warning("Could not find folders in Clone Hero settings.ini")
+        print_info("Trying tracker's configured songs folder...")
+
+        settings = load_settings()
+        fallback_folder = settings.get('songs_folder')
+
+        if fallback_folder and Path(fallback_folder).exists():
+            song_folders.append(Path(fallback_folder))
+            print_success(f"  Using tracker folder: {fallback_folder}")
+
+    if not song_folders:
+        print_error("No song folders found!")
+        print_info("")
+        print_info("You can either:")
+        print_info("  1. Configure a songs folder in Clone Hero's settings")
+        print_info("  2. Configure a songs folder in the tracker's settings")
+        print_info("")
+        return
+
+    # Ask if user wants to add more folders (for multiple Clone Hero installs)
+    print()
+    while True:
+        add_more = input("Add another songs folder? (yes/no): ").strip().lower()
+        if add_more == 'yes' or add_more == 'y':
+            folder_path = input("Enter full path to songs folder: ").strip()
+            if folder_path:
+                # Remove quotes if user pasted a path with quotes
+                folder_path = folder_path.strip('"').strip("'")
+                if Path(folder_path).exists():
+                    song_folders.append(Path(folder_path))
+                    print_success(f"  Added folder: {folder_path}")
+                else:
+                    print_error(f"  Folder not found: {folder_path}")
+        else:
+            break
+
+    print()
+    print(f"[*] Will scan {len(song_folders)} song folder(s)")
+    print_warning("This may take a few minutes for large libraries...")
+    print()
+
+    # Step 3: Scan all songs folders
+    resolved_metadata = []
+    scanned = 0
+    found = 0
+
+    for songs_path in song_folders:
+        print(f"[*] Scanning: {songs_path}")
+        for root, dirs, files in os.walk(songs_path):
+            # Look for chart files
+            chart_files = [f for f in files if f.lower() in ['notes.chart', 'notes.mid', 'notes.midi']]
+
+            if not chart_files:
+                continue
+
+            scanned += 1
+
+            # Show progress
+            if scanned % 100 == 0:
+                print(f"  Scanned {scanned} songs... (found {found} matches)", end='\r')
+
+            chart_path = Path(root) / chart_files[0]
+
+            # Calculate MD5 hash
+            try:
+                with open(chart_path, 'rb') as f:
+                    chart_hash = hashlib.md5(f.read()).hexdigest()
+
+                # Check if this is an unresolved hash
+                if chart_hash not in unresolved_hashes:
+                    # Also check partial match (first 8 chars)
+                    if not any(h.startswith(chart_hash[:8]) for h in unresolved_hashes):
+                        continue
+
+                # Found a match! Get metadata
+                ini_data = parse_song_ini(str(chart_path))
+
+                if ini_data:
+                    title = ini_data.get('name', ini_data.get('title', ''))
+                    artist = ini_data.get('artist', '')
+                    charter = ini_data.get('charter', ini_data.get('frets', ''))
+
+                    if not title:
+                        title = Path(root).name
+
+                    resolved_metadata.append({
+                        'chart_hash': chart_hash,
+                        'title': title,
+                        'artist': artist,
+                        'charter': charter
+                    })
+
+                    found += 1
+                    print(f"\n  [+] Found: {title} - {artist}")
+
+            except Exception as e:
+                continue
+
+    print(f"\n\n[*] Scan complete: {scanned} songs scanned")
+    print()
+
+    if not resolved_metadata:
+        print_warning("No matches found!")
+        print_info("Your unresolved hashes might be for songs not in your current folder.")
+        return
+
+    # Step 4: Show preview and confirm
+    print_header(f"FOUND METADATA FOR {len(resolved_metadata)} SONGS")
+    print()
+
+    # Show first 10 as preview
+    for i, item in enumerate(resolved_metadata[:10], 1):
+        print(f"{i}. {item['title']}")
+        if item['artist']:
+            print(f"   Artist: {item['artist']}")
+        if item['charter']:
+            print(f"   Charter: {item['charter']}")
+        print(f"   Hash: [{item['chart_hash'][:8]}...]")
+        print()
+
+    if len(resolved_metadata) > 10:
+        print(f"... and {len(resolved_metadata) - 10} more")
+        print()
+
+    print("="*60)
+    print()
+    confirm = input(f"Send these {len(resolved_metadata)} updates to server? (yes/no): ").strip().lower()
+
+    if confirm != "yes":
+        print("  Cancelled.")
+        return
+
+    # Step 5: Send to server
+    print()
+    print(f"[*] Sending updates to server...")
+
+    try:
+        response = requests.post(
+            f"{bot_url}/api/resolve_hashes",
+            headers={'Authorization': f'Bearer {auth_token}'},
+            json={'metadata': resolved_metadata},
+            timeout=30
+        )
+
+        if response.status_code != 200:
+            print_error(f"Server error: {response.status_code}")
+            return
+
+        data = response.json()
+        if data.get('success'):
+            updated_count = data.get('updated_count', 0)
+            print_success(f"Updated {updated_count} songs in database!")
+            print_info("Your mystery hashes now have song names!")
+        else:
+            print_error(f"Server error: {data.get('error', 'Unknown')}")
+
+    except Exception as e:
+        print_error(f"Failed to send updates: {e}")
+
+
 def main():
     print_header(f"Clone Hero High Score Tracker v{VERSION}", width=50)
 
@@ -2405,17 +2652,18 @@ def main():
 
                 elif cmd == "help" or cmd == "?":
                     print_header("AVAILABLE COMMANDS", width=50)
-                    print_plain("  help      Show this help message")
-                    print_plain("  status    Check connection and score tracking status")
-                    print_plain("  resync    Scan for scores made while offline")
-                    print_plain("  reset     Clear state and re-submit ALL scores")
-                    print_plain("  settings  Configure bot URL, paths, and options")
-                    print_plain("  update    Check for and download updates")
-                    print_plain("  unpair    Disconnect from Discord account")
+                    print_plain("  help           Show this help message")
+                    print_plain("  status         Check connection and score tracking status")
+                    print_plain("  resync         Scan for scores made while offline")
+                    print_plain("  resolvehashes  Fix mystery hashes by scanning songs")
+                    print_plain("  reset          Clear state and re-submit ALL scores")
+                    print_plain("  settings       Configure bot URL, paths, and options")
+                    print_plain("  update         Check for and download updates")
+                    print_plain("  unpair         Disconnect from Discord account")
                     if tray_enabled:
-                        print_plain("  minimize  Minimize to system tray")
-                    print_plain("  debug     Enter debug mode (password required)")
-                    print_plain("  quit      Exit the tracker")
+                        print_plain("  minimize       Minimize to system tray")
+                    print_plain("  debug          Enter debug mode (password required)")
+                    print_plain("  quit           Exit the tracker")
                     print("\n" + "=" * 50)
                     print("Type any command at the > prompt")
                     print("=" * 50 + "\n")
@@ -2439,6 +2687,9 @@ def main():
                     print("\n[*] Scanning for missed scores...")
                     watcher.catch_up_scan()
                     print()
+
+                elif cmd == "resolvehashes":
+                    resolve_hashes_command()
 
                 elif cmd == "reset":
                     print("\n" + "=" * 50)

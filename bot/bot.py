@@ -339,35 +339,58 @@ async def leaderboard(
         instruments = {0: "Lead", 1: "Bass", 2: "Rhythm", 3: "Keys", 4: "Drums"}
         difficulties = {0: "Easy", 1: "Med", 2: "Hard", 3: "Expert"}
 
-        leaderboard_text = ""
+        # Build leaderboard entries
+        entries = []
         for i, score in enumerate(scores, 1):
             inst = instruments.get(score['instrument_id'], '?')
             diff = difficulties.get(score['difficulty_id'], '?')
 
-            # Show full chart hash if title is available, or just hash if not
+            # Display song info cleanly
             song_title = score.get('song_title')
             artist = score.get('song_artist')
             chart_hash = score['chart_hash']
 
-            if song_title:
-                song_display = f"{song_title}"
+            # Check if this is a mystery hash (title starts with '[')
+            is_mystery = not song_title or song_title.startswith('[')
+
+            if is_mystery:
+                # Mystery hash - show hash only
+                song_display = f"🔍 `[{chart_hash[:8]}]`"
+            else:
+                # Real song - show title and artist (no hash)
+                song_display = f"♪ {song_title}"
                 if artist:
                     song_display += f" - {artist}"
-                # Truncate hash to first 8 chars to avoid embed length limits
-                song_display += f"\n   Hash: `{chart_hash[:8]}...`"
+
+            entry = f"**{i}.** {score['discord_username']}\n"
+            entry += f"   {score['score']:,} pts | {diff} {inst}\n"
+            entry += f"   {song_display}\n"
+            entries.append(entry)
+
+        # Split entries into fields that don't exceed Discord's 1024 char limit
+        current_field = ""
+        field_count = 1
+        for entry in entries:
+            # Check if adding this entry would exceed the limit
+            if len(current_field) + len(entry) > 1000:  # Leave some margin
+                # Add current field to embed
+                embed.add_field(
+                    name=f"Top Scores" if field_count == 1 else f"Top Scores (cont'd {field_count})",
+                    value=current_field,
+                    inline=False
+                )
+                current_field = entry
+                field_count += 1
             else:
-                # Truncate hash to first 8 chars
-                song_display = f"Chart Hash: `{chart_hash[:8]}...`"
+                current_field += entry
 
-            leaderboard_text += f"**{i}.** {score['discord_username']}\n"
-            leaderboard_text += f"   {score['score']:,} pts | {diff} {inst}\n"
-            leaderboard_text += f"   {song_display}\n"
-
-        embed.add_field(
-            name="Top Scores",
-            value=leaderboard_text or "No scores yet!",
-            inline=False
-        )
+        # Add remaining entries
+        if current_field:
+            embed.add_field(
+                name=f"Top Scores" if field_count == 1 else f"Top Scores (cont'd {field_count})",
+                value=current_field,
+                inline=False
+            )
     else:
         embed.add_field(
             name="No Scores",
@@ -490,10 +513,10 @@ async def mystats(interaction: discord.Interaction, user: discord.Member = None)
     await interaction.followup.send(embed=embed)
 
 
-@bot.tree.command(name="lookupsong", description="Search for a song and view its records")
-@app_commands.describe(query="Song title or artist to search for")
+@bot.tree.command(name="lookupsong", description="Search for a song by title, artist, or chart hash")
+@app_commands.describe(query="Song title, artist, or chart hash to search for")
 async def lookupsong(interaction: discord.Interaction, query: str):
-    """Search for songs in the database by title or artist"""
+    """Search for songs in the database by title, artist, or chart hash"""
     await interaction.response.defer(ephemeral=True)
 
     # Search for songs matching the query
@@ -514,6 +537,9 @@ async def lookupsong(interaction: discord.Interaction, query: str):
 
     instruments = {0: "Lead", 1: "Bass", 2: "Rhythm", 3: "Keys", 4: "Drums"}
     difficulties = {0: "Easy", 1: "Med", 2: "Hard", 3: "Expert"}
+
+    # Import for URL encoding
+    from urllib.parse import quote
 
     results_text = ""
     for i, song in enumerate(songs, 1):
@@ -541,6 +567,22 @@ async def lookupsong(interaction: discord.Interaction, query: str):
                 results_text += f"   • {diff} {inst}: {username} ({score:,} pts) - {date}\n"
         else:
             results_text += f"   *No scores yet*\n"
+
+        # Add Enchor.us link if we have song metadata
+        # Skip if title is missing or is a mystery hash (starts with '[')
+        if title and not title.startswith('['):
+            # Build URL with title and artist
+            enchor_url = f"https://enchor.us/search?title={quote(title)}"
+            if artist and artist != '*No artist*':
+                enchor_url += f"&artist={quote(artist)}"
+
+            # Only add charter if it's not Unknown
+            if charter and charter != '*Unknown*':
+                enchor_url += f"&charter={quote(charter)}"
+
+            results_text += f"   🔗 [View on Enchor.us]({enchor_url})\n"
+        else:
+            results_text += f"   *(No Enchor.us link available - missing song metadata)*\n"
 
         results_text += "\n"
 
@@ -909,17 +951,25 @@ async def server_status(interaction: discord.Interaction):
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     """Handle errors in slash commands"""
+    error_message = ""
+
     if isinstance(error, app_commands.CommandOnCooldown):
-        await interaction.response.send_message(
-            f"⏱️ Command on cooldown. Try again in {error.retry_after:.1f}s",
-            ephemeral=True
-        )
+        error_message = f"⏱️ Command on cooldown. Try again in {error.retry_after:.1f}s"
     else:
-        await interaction.response.send_message(
-            f"❌ An error occurred: {str(error)}",
-            ephemeral=True
-        )
+        error_message = f"❌ An error occurred: {str(error)}"
         print_error(f"Command error: {error}")
+
+    # Check if interaction already responded
+    try:
+        if interaction.response.is_done():
+            # Already responded, use followup
+            await interaction.followup.send(error_message, ephemeral=True)
+        else:
+            # Not responded yet, use response
+            await interaction.response.send_message(error_message, ephemeral=True)
+    except Exception as e:
+        # Last resort: just print the error
+        print_error(f"Failed to send error message: {e}")
 
 
 # ============================================================================

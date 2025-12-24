@@ -75,6 +75,8 @@ class ScoreAPI:
         self.app.router.add_post('/api/pair/request', self.request_pairing)
         self.app.router.add_get('/api/pair/status/{client_id}', self.check_pairing_status)
         self.app.router.add_post('/api/debug/authorize', self.authorize_debug)
+        self.app.router.add_get('/api/unresolved_hashes', self.get_unresolved_hashes)
+        self.app.router.add_post('/api/resolve_hashes', self.resolve_hashes)
 
     async def index(self, request):
         """Root endpoint - API info"""
@@ -514,6 +516,122 @@ class ScoreAPI:
         except Exception as e:
             print_error(f"[API] Error authorizing debug: {e}")
             log_exception(logger, "Error authorizing debug", e)
+            return web.json_response({
+                'success': False,
+                'error': str(e)
+            }, status=500)
+
+    async def get_unresolved_hashes(self, request):
+        """
+        Get list of chart hashes that don't have metadata
+
+        Requires authentication via auth_token header
+
+        Returns:
+        {
+            "success": true,
+            "hashes": ["hash1", "hash2", ...]
+        }
+        """
+        try:
+            # Check authentication
+            auth_token = request.headers.get('Authorization', '').replace('Bearer ', '')
+            if not auth_token:
+                return web.json_response({
+                    'success': False,
+                    'error': 'Missing auth token'
+                }, status=401)
+
+            # Verify user exists
+            user = self.bot.db.get_user_by_auth_token(auth_token)
+            if not user:
+                return web.json_response({
+                    'success': False,
+                    'error': 'Invalid auth token'
+                }, status=401)
+
+            # Get unresolved hashes
+            hashes = self.bot.db.get_unresolved_hashes()
+
+            return web.json_response({
+                'success': True,
+                'count': len(hashes),
+                'hashes': hashes
+            })
+
+        except Exception as e:
+            print_error(f"[API] Error getting unresolved hashes: {e}")
+            log_exception(logger, "Error getting unresolved hashes", e)
+            return web.json_response({
+                'success': False,
+                'error': str(e)
+            }, status=500)
+
+    async def resolve_hashes(self, request):
+        """
+        Batch update song metadata for chart hashes
+
+        Requires authentication via auth_token header
+
+        Expected payload:
+        {
+            "metadata": [
+                {
+                    "chart_hash": "abc123...",
+                    "title": "Song Title",
+                    "artist": "Artist Name",
+                    "charter": "Charter Name"
+                },
+                ...
+            ]
+        }
+
+        Returns:
+        {
+            "success": true,
+            "updated_count": 42
+        }
+        """
+        try:
+            # Check authentication
+            auth_token = request.headers.get('Authorization', '').replace('Bearer ', '')
+            if not auth_token:
+                return web.json_response({
+                    'success': False,
+                    'error': 'Missing auth token'
+                }, status=401)
+
+            # Verify user exists
+            user = self.bot.db.get_user_by_auth_token(auth_token)
+            if not user:
+                return web.json_response({
+                    'success': False,
+                    'error': 'Invalid auth token'
+                }, status=401)
+
+            # Get metadata from request
+            data = await request.json()
+            metadata_list = data.get('metadata', [])
+
+            if not metadata_list:
+                return web.json_response({
+                    'success': False,
+                    'error': 'No metadata provided'
+                }, status=400)
+
+            # Update database
+            updated_count = self.bot.db.batch_update_song_metadata(metadata_list)
+
+            print_success(f"[API] Resolved {updated_count} hashes (by {user['discord_username']})")
+
+            return web.json_response({
+                'success': True,
+                'updated_count': updated_count
+            })
+
+        except Exception as e:
+            print_error(f"[API] Error resolving hashes: {e}")
+            log_exception(logger, "Error resolving hashes", e)
             return web.json_response({
                 'success': False,
                 'error': str(e)

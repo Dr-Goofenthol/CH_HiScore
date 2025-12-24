@@ -679,13 +679,13 @@ class Database:
         return dict(row) if row else None
 
     def search_songs(self, query: str, limit: int = 10) -> List[Dict]:
-        """Search songs by title or artist (partial match)"""
+        """Search songs by title, artist, or chart hash (partial match)"""
         self.cursor.execute("""
             SELECT * FROM songs
-            WHERE title LIKE ? OR artist LIKE ?
+            WHERE title LIKE ? OR artist LIKE ? OR chart_hash LIKE ?
             ORDER BY title
             LIMIT ?
-        """, (f'%{query}%', f'%{query}%', limit))
+        """, (f'%{query}%', f'%{query}%', f'{query}%', limit))
         return [dict(row) for row in self.cursor.fetchall()]
 
     def update_song_artist(self, chart_hash: str, artist: str) -> bool:
@@ -742,6 +742,73 @@ class Database:
             LIMIT ?
         """, (limit,))
         return [dict(row) for row in self.cursor.fetchall()]
+
+    def get_unresolved_hashes(self) -> List[str]:
+        """
+        Get chart hashes that don't have title or artist info
+
+        Considers a hash "unresolved" if:
+        - No song entry exists, OR
+        - Title is NULL/empty, OR
+        - Title starts with "[" (indicating it's just a hash shortcode like "[abc12345]")
+
+        Returns:
+            List of chart hashes without metadata
+        """
+        self.cursor.execute("""
+            SELECT DISTINCT s.chart_hash FROM scores s
+            LEFT JOIN songs sg ON s.chart_hash = sg.chart_hash
+            WHERE sg.chart_hash IS NULL
+               OR sg.title IS NULL
+               OR sg.title = ''
+               OR sg.title LIKE '[%'
+        """)
+        return [row['chart_hash'] for row in self.cursor.fetchall()]
+
+    def batch_update_song_metadata(self, metadata_list: List[Dict]) -> int:
+        """
+        Batch update song metadata for multiple hashes
+
+        Args:
+            metadata_list: List of dicts with keys: chart_hash, title, artist, charter
+
+        Returns:
+            Number of songs updated
+        """
+        updated_count = 0
+
+        for item in metadata_list:
+            chart_hash = item.get('chart_hash')
+            title = item.get('title', '')
+            artist = item.get('artist', '')
+            charter = item.get('charter', '')
+
+            if not chart_hash or not title:
+                continue
+
+            # Check if song exists
+            self.cursor.execute("SELECT chart_hash FROM songs WHERE chart_hash = ?", (chart_hash,))
+            exists = self.cursor.fetchone()
+
+            if exists:
+                # Update existing
+                self.cursor.execute("""
+                    UPDATE songs
+                    SET title = ?, artist = ?, charter = ?
+                    WHERE chart_hash = ?
+                """, (title, artist, charter, chart_hash))
+            else:
+                # Insert new
+                self.cursor.execute("""
+                    INSERT INTO songs (chart_hash, title, artist, charter)
+                    VALUES (?, ?, ?, ?)
+                """, (chart_hash, title, artist, charter))
+
+            if self.cursor.rowcount > 0:
+                updated_count += 1
+
+        self.conn.commit()
+        return updated_count
 
     def get_recent_record_breaks(self, limit: int = 10) -> List[Dict]:
         """
