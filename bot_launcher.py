@@ -4,7 +4,7 @@ Clone Hero High Score Bot Launcher
 Standalone executable for the Discord bot with first-time setup.
 """
 
-VERSION = "2.4.14"
+VERSION = "2.4.15"
 
 # GitHub repository for auto-updates
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
@@ -488,6 +488,9 @@ def setup_environment(config):
     os.environ['DISCORD_CHANNEL_ID'] = config.get('DISCORD_CHANNEL_ID', '')
     os.environ['API_PORT'] = str(config.get('API_PORT', 8080))
     os.environ['API_HOST'] = '0.0.0.0'  # Listen on all interfaces
+
+    # Pass bot version to bot module
+    os.environ['BOT_VERSION'] = VERSION
 
     # Optional: Guild ID for fast command sync
     if config.get('DISCORD_GUILD_ID'):

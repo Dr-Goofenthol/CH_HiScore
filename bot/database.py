@@ -119,6 +119,15 @@ class Database:
             )
         """)
 
+        # Metadata table for bot settings
+        self.cursor.execute("""
+            CREATE TABLE IF NOT EXISTS bot_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         # Create indexes for performance
         self.cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_scores_chart
@@ -679,13 +688,47 @@ class Database:
         return dict(row) if row else None
 
     def search_songs(self, query: str, limit: int = 10) -> List[Dict]:
-        """Search songs by title, artist, or chart hash (partial match)"""
-        self.cursor.execute("""
-            SELECT * FROM songs
-            WHERE title LIKE ? OR artist LIKE ? OR chart_hash LIKE ?
-            ORDER BY title
-            LIMIT ?
-        """, (f'%{query}%', f'%{query}%', f'{query}%', limit))
+        """
+        Search songs by title, artist, or chart hash (partial match)
+
+        Supports multi-word queries like "Haywyre Endlessly" by matching:
+        - Any word in title OR artist OR hash
+        - Full query as phrase in title OR artist OR hash
+        """
+        # Split query into words for fuzzy matching
+        words = query.strip().split()
+
+        if len(words) > 1:
+            # Multi-word query: search for any word in title/artist/hash
+            conditions = []
+            params = []
+
+            for word in words:
+                conditions.append("(title LIKE ? OR artist LIKE ? OR chart_hash LIKE ?)")
+                params.extend([f'%{word}%', f'%{word}%', f'{word}%'])
+
+            # Also try exact phrase match for better results
+            conditions.append("(title LIKE ? OR artist LIKE ? OR chart_hash LIKE ?)")
+            params.extend([f'%{query}%', f'%{query}%', f'{query}%'])
+
+            where_clause = " OR ".join(conditions)
+            params.append(limit)
+
+            self.cursor.execute(f"""
+                SELECT * FROM songs
+                WHERE {where_clause}
+                ORDER BY title
+                LIMIT ?
+            """, params)
+        else:
+            # Single word query: simple match
+            self.cursor.execute("""
+                SELECT * FROM songs
+                WHERE title LIKE ? OR artist LIKE ? OR chart_hash LIKE ?
+                ORDER BY title
+                LIMIT ?
+            """, (f'%{query}%', f'%{query}%', f'{query}%', limit))
+
         return [dict(row) for row in self.cursor.fetchall()]
 
     def update_song_artist(self, chart_hash: str, artist: str) -> bool:
@@ -925,3 +968,31 @@ class Database:
             'most_competitive_song': most_competitive_song,
             'db_size_mb': round(db_size_mb, 2)
         }
+
+    def get_metadata(self, key: str) -> Optional[str]:
+        """
+        Get a metadata value by key
+
+        Args:
+            key: Metadata key to retrieve
+
+        Returns:
+            Value if exists, None otherwise
+        """
+        self.cursor.execute("SELECT value FROM bot_metadata WHERE key = ?", (key,))
+        row = self.cursor.fetchone()
+        return row['value'] if row else None
+
+    def set_metadata(self, key: str, value: str):
+        """
+        Set a metadata value (upsert)
+
+        Args:
+            key: Metadata key
+            value: Value to store
+        """
+        self.cursor.execute("""
+            INSERT OR REPLACE INTO bot_metadata (key, value, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+        """, (key, value))
+        self.conn.commit()

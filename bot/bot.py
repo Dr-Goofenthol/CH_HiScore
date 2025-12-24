@@ -8,6 +8,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -34,8 +35,74 @@ except ImportError:
 logger = get_bot_logger()
 
 # Version and update check
-BOT_VERSION = "2.4.13"
+# Get bot version from environment (set by launcher) or fallback
+BOT_VERSION = os.environ.get('BOT_VERSION', '2.4.14')
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
+
+
+def build_enchor_url(title: str, artist: str = None, charter: str = None) -> str:
+    """
+    Build Enchor.us search URL from song metadata
+
+    Args:
+        title: Song title/name
+        artist: Artist name (optional)
+        charter: Charter name (optional)
+
+    Returns:
+        Formatted Enchor.us search URL
+    """
+    from urllib.parse import quote
+
+    url = f"https://enchor.us/search?name={quote(title)}"
+
+    if artist and artist not in ('*No artist*', ''):
+        url += f"&artist={quote(artist)}"
+
+    if charter and charter not in ('*Unknown*', ''):
+        url += f"&charter={quote(charter)}"
+
+    return url
+
+
+def extract_update_highlights(release_notes: str) -> str:
+    """
+    Extract high-level bullet points from release notes.
+    Looks for lines starting with emojis or under "What's New" sections.
+    """
+    if not release_notes:
+        return ""
+
+    highlights = []
+    lines = release_notes.split('\n')
+    in_whats_new = False
+
+    for line in lines:
+        line = line.strip()
+
+        # Check if we're entering a "What's New" section
+        if "what's new" in line.lower() or "new features" in line.lower():
+            in_whats_new = True
+            continue
+
+        # Stop at certain sections
+        if any(section in line.lower() for section in ['bug fixes', 'installation', 'upgrade', 'technical', 'notes']):
+            if in_whats_new:
+                break
+
+        # Look for emoji-prefixed lines (main features)
+        if in_whats_new and line and (line[0] in '🎉🔍📊🎵🐛✨🚀📝💡' or line.startswith('###')):
+            # Clean up markdown headers
+            cleaned = line.replace('###', '').strip()
+            if cleaned and len(cleaned) > 5:  # Avoid empty or very short lines
+                highlights.append(cleaned)
+
+    # If we found highlights, return them
+    if highlights:
+        return '\n'.join(f"• {h}" for h in highlights[:5])  # Max 5 highlights
+
+    # Fallback: just return first 200 chars
+    return release_notes[:200] + "..." if len(release_notes) > 200 else release_notes
 
 
 def check_for_client_update():
@@ -147,70 +214,87 @@ class CloneHeroBot(commands.Bot):
         await self.check_and_notify_update()
 
     async def check_and_notify_update(self):
-        """Check for client updates and send one-time notification to Discord"""
+        """
+        Check if bot was just updated to a new version.
+        If yes, announce to Discord channel ONCE per version.
+        """
         try:
-            # Only notify once per bot session
-            if hasattr(self, '_update_notified') and self._update_notified:
+            # Check what version was last announced
+            last_announced = self.db.get_metadata('last_announced_version')
+
+            # If this version was already announced, skip
+            if last_announced == BOT_VERSION:
+                print_info(f"Version {BOT_VERSION} already announced - skipping update notification")
                 return
 
-            update_info = check_for_client_update()
-            if not update_info:
-                print_info("No client updates available")
-                return
+            print_info(f"New bot version detected: {BOT_VERSION} (last announced: {last_announced or 'none'})")
+
+            # Fetch latest release from GitHub to get release notes
+            release_info = check_for_client_update()
+            if not release_info:
+                print_warning("Could not fetch release info from GitHub - announcing without release notes")
+                release_info = {
+                    'version': BOT_VERSION,
+                    'release_url': f'https://github.com/{GITHUB_REPO}/releases/tag/v{BOT_VERSION}',
+                    'release_notes': ''
+                }
 
             # Get announcement channel
             channel_id = Config.DISCORD_CHANNEL_ID
             if not channel_id:
+                print_warning("No announcement channel configured - skipping update notification")
+                # Still mark as announced so we don't keep trying
+                self.db.set_metadata('last_announced_version', BOT_VERSION)
                 return
 
             channel = self.get_channel(int(channel_id))
             if not channel:
+                print_warning("Could not find announcement channel - skipping update notification")
+                # Still mark as announced
+                self.db.set_metadata('last_announced_version', BOT_VERSION)
                 return
 
             # Create update announcement embed
             embed = discord.Embed(
-                title="🔄 Client Update Available!",
-                description=f"A new version of the Clone Hero Score Tracker is available.",
-                color=discord.Color.blue()
+                title="🔄 Server Updated!",
+                description=f"The score tracker server has been updated to **v{BOT_VERSION}**\n\nPlayers should update their clients to match!",
+                color=discord.Color.green()
             )
 
-            embed.add_field(
-                name="New Version",
-                value=f"v{update_info['version']}",
-                inline=True
-            )
+            # Extract high-level highlights from release notes
+            highlights = ""
+            if release_info.get("release_notes"):
+                highlights = extract_update_highlights(release_info["release_notes"])
 
-            embed.add_field(
-                name="Current Bot Version",
-                value=f"v{BOT_VERSION}",
-                inline=True
-            )
-
-            # Add release notes if available (truncated)
-            if update_info.get("release_notes"):
-                notes = update_info["release_notes"].strip()
-                if len(notes) > 500:
-                    notes = notes[:500] + "..."
+            if highlights:
                 embed.add_field(
-                    name="What's New",
-                    value=notes,
+                    name="✨ What's New",
+                    value=highlights,
                     inline=False
                 )
 
+            # Update instructions
             embed.add_field(
-                name="Download",
-                value=f"[Get the latest version]({update_info['release_url']})",
+                name="📥 How to Update Your Client",
+                value=(
+                    "**Option 1:** Type `update` in your tracker's terminal\n"
+                    "**Option 2:** Right-click the system tray icon → Check for Updates\n"
+                    "**Option 3:** [Download manually]({})".format(release_info['release_url'])
+                ),
                 inline=False
             )
 
-            embed.set_footer(text="Players should update their clients to get the latest features and fixes.")
+            embed.set_footer(text=f"Server version: v{BOT_VERSION} • Keep your client up to date!")
 
             await channel.send(embed=embed)
-            self._update_notified = True
-            print_success(f"Update notification sent to #{channel.name}")
+
+            # Mark this version as announced
+            self.db.set_metadata('last_announced_version', BOT_VERSION)
+            print_success(f"Update notification sent to #{channel.name} for version {BOT_VERSION}")
 
         except Exception as e:
             print_error(f"Error sending update notification: {e}")
+            log_exception(e)
 
 
 # Create bot instance
@@ -365,6 +449,14 @@ async def leaderboard(
             entry = f"**{i}.** {score['discord_username']}\n"
             entry += f"   {score['score']:,} pts | {diff} {inst}\n"
             entry += f"   {song_display}\n"
+
+            # Add Enchor.us link if we have metadata
+            if not is_mystery:
+                charter = score.get('song_charter')
+                enchor_url = build_enchor_url(song_title, artist, charter)
+                entry += f"   🔗 [Enchor.us]({enchor_url})\n"
+
+            entry += "\n"  # Blank line after entry
             entries.append(entry)
 
         # Split entries into fields that don't exceed Discord's 1024 char limit
@@ -470,18 +562,29 @@ async def mystats(interaction: discord.Interaction, user: discord.Member = None)
                 # Show full chart hash with title/artist if available
                 song_title = rec.get('song_title')
                 artist = rec.get('song_artist')
+                charter = rec.get('song_charter')
                 chart_hash = rec['chart_hash']
 
-                if song_title:
-                    song_display = f"{song_title}"
+                # Check if mystery hash
+                is_mystery = not song_title or song_title.startswith('[')
+
+                if is_mystery:
+                    # Truncate hash to first 8 chars
+                    song_display = f"🔍 `[{chart_hash[:8]}]`"
+                else:
+                    song_display = f"♪ {song_title}"
                     if artist:
                         song_display += f" - {artist}"
-                else:
-                    # Truncate hash to first 8 chars
-                    song_display = f"Hash: `{chart_hash[:8]}...`"
 
-                records_text += f"• {song_display} ({diff} {inst})\n"
-                records_text += f"  {rec['score']:,} pts | Hash: `{chart_hash[:8]}...`\n"
+                records_text += f"• {song_display}\n"
+                records_text += f"  {rec['score']:,} pts | {diff} {inst}\n"
+
+                # Add Enchor.us link if we have metadata
+                if not is_mystery:
+                    enchor_url = build_enchor_url(song_title, artist, charter)
+                    records_text += f"  🔗 [Enchor.us]({enchor_url})\n"
+
+                records_text += "\n"  # Blank line between records
 
             embed.add_field(
                 name="Top Records Held",
@@ -571,8 +674,8 @@ async def lookupsong(interaction: discord.Interaction, query: str):
         # Add Enchor.us link if we have song metadata
         # Skip if title is missing or is a mystery hash (starts with '[')
         if title and not title.startswith('['):
-            # Build URL with title and artist
-            enchor_url = f"https://enchor.us/search?title={quote(title)}"
+            # Build URL with name (not title!) and artist
+            enchor_url = f"https://enchor.us/search?name={quote(title)}"
             if artist and artist != '*No artist*':
                 enchor_url += f"&artist={quote(artist)}"
 
