@@ -542,6 +542,7 @@ class Database:
             SELECT s.*, u.discord_username, u.discord_id,
                    COALESCE(songs.title, '[' || SUBSTR(s.chart_hash, 1, 8) || ']') as song_title,
                    songs.artist as song_artist,
+                   songs.charter as song_charter,
                    ROW_NUMBER() OVER (
                        PARTITION BY s.chart_hash, s.instrument_id, s.difficulty_id
                        ORDER BY s.score DESC
@@ -662,7 +663,8 @@ class Database:
         self.cursor.execute("""
             SELECT s.chart_hash, s.instrument_id, s.difficulty_id, s.score, s.stars,
                    COALESCE(songs.title, '[' || SUBSTR(s.chart_hash, 1, 8) || ']') as song_title,
-                   songs.artist as song_artist
+                   songs.artist as song_artist,
+                   songs.charter as song_charter
             FROM scores s
             LEFT JOIN songs ON s.chart_hash = songs.chart_hash
             WHERE s.user_id = ?

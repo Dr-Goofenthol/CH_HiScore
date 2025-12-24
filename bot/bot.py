@@ -105,14 +105,29 @@ def extract_update_highlights(release_notes: str) -> str:
     return release_notes[:200] + "..." if len(release_notes) > 200 else release_notes
 
 
-def check_for_client_update():
-    """Check GitHub for latest client version and return info if newer than bot version"""
+def fetch_github_release(version=None):
+    """
+    Fetch release info from GitHub for a specific version or latest
+
+    Args:
+        version: Version string (e.g. "2.4.15"). If None, fetches latest.
+
+    Returns:
+        Dict with version, release_url, release_notes, download_url or None if failed
+    """
     if not HAS_REQUESTS:
         return None
 
     try:
+        if version:
+            # Fetch specific version by tag
+            url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/tags/v{version}"
+        else:
+            # Fetch latest release
+            url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+
         response = requests.get(
-            f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+            url,
             timeout=10,
             headers={"Accept": "application/vnd.github.v3+json"}
         )
@@ -121,28 +136,39 @@ def check_for_client_update():
             return None
 
         release = response.json()
-        latest_version = release["tag_name"].lstrip("v")
+        release_version = release["tag_name"].lstrip("v")
 
-        # Check if there's a client update available
-        # Find the client asset
+        # Find the client asset download URL
         client_url = None
         for asset in release.get("assets", []):
             if "Tracker" in asset["name"] and asset["name"].endswith(".exe"):
                 client_url = asset["browser_download_url"]
                 break
 
-        if client_url and latest_version > BOT_VERSION:
-            return {
-                "version": latest_version,
-                "download_url": client_url,
-                "release_notes": release.get("body", ""),
-                "release_url": release["html_url"]
-            }
+        return {
+            "version": release_version,
+            "download_url": client_url,
+            "release_notes": release.get("body", ""),
+            "release_url": release["html_url"]
+        }
 
+    except Exception as e:
+        print_error(f"Failed to fetch GitHub release: {e}")
         return None
 
-    except Exception:
+
+def check_for_client_update():
+    """Check GitHub for latest client version and return info if newer than bot version"""
+    release_info = fetch_github_release()  # Fetch latest
+
+    if not release_info:
         return None
+
+    # Only return if there's a newer version than current bot
+    if release_info["version"] > BOT_VERSION and release_info["download_url"]:
+        return release_info
+
+    return None
 
 
 class CloneHeroBot(commands.Bot):
@@ -229,10 +255,10 @@ class CloneHeroBot(commands.Bot):
 
             print_info(f"New bot version detected: {BOT_VERSION} (last announced: {last_announced or 'none'})")
 
-            # Fetch latest release from GitHub to get release notes
-            release_info = check_for_client_update()
+            # Fetch release info for current bot version from GitHub
+            release_info = fetch_github_release(BOT_VERSION)
             if not release_info:
-                print_warning("Could not fetch release info from GitHub - announcing without release notes")
+                print_warning(f"Could not fetch release info for v{BOT_VERSION} from GitHub - announcing without release notes")
                 release_info = {
                     'version': BOT_VERSION,
                     'release_url': f'https://github.com/{GITHUB_REPO}/releases/tag/v{BOT_VERSION}',
@@ -449,6 +475,7 @@ async def leaderboard(
             entry = f"**{i}.** {score['discord_username']}\n"
             entry += f"   {score['score']:,} pts | {diff} {inst}\n"
             entry += f"   {song_display}\n"
+            entry += f"   Hash: `[{chart_hash[:8]}]`\n"
 
             # Add Enchor.us link if we have metadata
             if not is_mystery:
@@ -578,6 +605,7 @@ async def mystats(interaction: discord.Interaction, user: discord.Member = None)
 
                 records_text += f"• {song_display}\n"
                 records_text += f"  {rec['score']:,} pts | {diff} {inst}\n"
+                records_text += f"  Hash: `[{chart_hash[:8]}]`\n"
 
                 # Add Enchor.us link if we have metadata
                 if not is_mystery:
