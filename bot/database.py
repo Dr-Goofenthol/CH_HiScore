@@ -793,15 +793,16 @@ class Database:
 
     def get_unresolved_hashes(self) -> List[str]:
         """
-        Get chart hashes that don't have title or artist info
+        Get chart hashes that don't have complete metadata
 
         Considers a hash "unresolved" if:
         - No song entry exists, OR
         - Title is NULL/empty, OR
-        - Title starts with "[" (indicating it's just a hash shortcode like "[abc12345]")
+        - Title starts with "[" (indicating it's just a hash shortcode like "[abc12345]"), OR
+        - Charter is NULL/empty/Unknown
 
         Returns:
-            List of chart hashes without metadata
+            List of chart hashes without complete metadata
         """
         self.cursor.execute("""
             SELECT DISTINCT s.chart_hash FROM scores s
@@ -810,6 +811,9 @@ class Database:
                OR sg.title IS NULL
                OR sg.title = ''
                OR sg.title LIKE '[%'
+               OR sg.charter IS NULL
+               OR sg.charter = ''
+               OR sg.charter = 'Unknown'
         """)
         return [row['chart_hash'] for row in self.cursor.fetchall()]
 
