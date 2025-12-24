@@ -317,7 +317,8 @@ class Database:
 
     def submit_score(self, auth_token: str, chart_hash: str, instrument_id: int,
                     difficulty_id: int, score: int, completion_percent: float,
-                    stars: int, song_title: str = "", song_artist: str = "") -> Dict:
+                    stars: int, song_title: str = "", song_artist: str = "",
+                    song_charter: str = "") -> Dict:
         """
         Submit a score and check if it's a new high score
 
@@ -331,6 +332,7 @@ class Database:
             stars: Star rating
             song_title: Song title (optional)
             song_artist: Song artist (optional)
+            song_charter: Charter name (optional)
 
         Returns:
             Dictionary with result info (is_high_score, previous_score, etc)
@@ -344,7 +346,7 @@ class Database:
 
         # Save/update song info if provided
         if song_title:
-            self.save_song_info(chart_hash, song_title, song_artist)
+            self.save_song_info(chart_hash, song_title, song_artist, song_charter)
 
         # Get current high score for this chart/instrument/difficulty
         self.cursor.execute("""
@@ -451,15 +453,16 @@ class Database:
 
         return result
 
-    def save_song_info(self, chart_hash: str, title: str, artist: str = ""):
+    def save_song_info(self, chart_hash: str, title: str, artist: str = "", charter: str = ""):
         """Save or update song information"""
         self.cursor.execute("""
-            INSERT INTO songs (chart_hash, title, artist)
-            VALUES (?, ?, ?)
+            INSERT INTO songs (chart_hash, title, artist, charter)
+            VALUES (?, ?, ?, ?)
             ON CONFLICT(chart_hash) DO UPDATE SET
                 title = COALESCE(NULLIF(excluded.title, ''), songs.title),
-                artist = COALESCE(NULLIF(excluded.artist, ''), songs.artist)
-        """, (chart_hash, title, artist))
+                artist = COALESCE(NULLIF(excluded.artist, ''), songs.artist),
+                charter = COALESCE(NULLIF(excluded.charter, ''), songs.charter)
+        """, (chart_hash, title, artist, charter))
         self.conn.commit()
 
     def record_break(self, user_id: int, chart_hash: str, instrument_id: int,

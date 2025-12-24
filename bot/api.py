@@ -137,7 +137,8 @@ class ScoreAPI:
                 completion_percent=data.get('completion_percent', 0),
                 stars=data.get('stars', 0),
                 song_title=data.get('song_title', ''),
-                song_artist=data.get('song_artist', '')
+                song_artist=data.get('song_artist', ''),
+                song_charter=data.get('song_charter', '')
             )
 
             if not result['success']:
