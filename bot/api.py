@@ -551,8 +551,8 @@ class ScoreAPI:
                     'error': 'Invalid auth token'
                 }, status=401)
 
-            # Get unresolved hashes
-            hashes = self.bot.db.get_unresolved_hashes()
+            # Get unresolved hashes for this user only
+            hashes = self.bot.db.get_unresolved_hashes(user['id'])
 
             return web.json_response({
                 'success': True,

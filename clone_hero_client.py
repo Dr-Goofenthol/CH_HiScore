@@ -23,7 +23,7 @@ import getpass
 from pathlib import Path
 import requests
 from client.file_watcher import CloneHeroWatcher
-from shared.parsers import SongCacheParser, get_artist_for_song
+from shared.parsers import SongCacheParser, get_artist_for_song, parse_song_ini
 from client.ocr_capture import capture_and_extract, check_ocr_available, OCRResult
 from shared.console import (
     print_success, print_info, print_warning, print_error,
@@ -2242,22 +2242,19 @@ def resolve_hashes_command():
 
     if settings_path.exists():
         try:
-            # Parse settings.ini to get all path0, path1, path2, etc.
-            # Clone Hero's INI format may not have section headers, so read manually
-            with open(settings_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith('path') and '=' in line:
-                        # Extract path number and folder
-                        key, value = line.split('=', 1)
-                        key = key.strip()
-                        folder = value.strip()
+            # Parse settings.ini using configparser to handle sections properly
+            config = configparser.ConfigParser()
+            config.read(str(settings_path))
 
-                        # Check if it's a pathX key and folder exists
-                        if key.startswith('path') and key[4:].isdigit():
-                            if folder and Path(folder).exists():
-                                song_folders.append(Path(folder))
-                                print_success(f"  Found song folder: {folder}")
+            # Look for path entries in all sections
+            for section in config.sections():
+                for key in config.options(section):
+                    if key.startswith('path') and key[4:].isdigit():
+                        folder = config.get(section, key)
+
+                        if folder and Path(folder).exists():
+                            song_folders.append(Path(folder))
+                            print_success(f"  Found song folder: {folder}")
         except Exception as e:
             print_warning(f"Could not parse Clone Hero settings: {e}")
 
@@ -2331,11 +2328,19 @@ def resolve_hashes_command():
                 with open(chart_path, 'rb') as f:
                     chart_hash = hashlib.md5(f.read()).hexdigest()
 
-                # Check if this is an unresolved hash
-                if chart_hash not in unresolved_hashes:
-                    # Also check partial match (first 8 chars)
-                    if not any(h.startswith(chart_hash[:8]) for h in unresolved_hashes):
-                        continue
+                # Check if this is an unresolved hash (exact match)
+                is_match = chart_hash in unresolved_hashes
+
+                if not is_match:
+                    # Also try matching if calculated hash starts with any server hash
+                    # (in case server has partial hashes)
+                    for server_hash in unresolved_hashes:
+                        if chart_hash.startswith(server_hash):
+                            is_match = True
+                            break
+
+                if not is_match:
+                    continue
 
                 # Found a match! Get metadata
                 ini_data = parse_song_ini(str(chart_path))
@@ -2356,7 +2361,7 @@ def resolve_hashes_command():
                     })
 
                     found += 1
-                    print(f"\n  [+] Found: {title} - {artist}")
+                    print(f"  [+] Found: {title} - {artist}")
 
             except Exception as e:
                 continue

@@ -791,7 +791,7 @@ class Database:
         """, (limit,))
         return [dict(row) for row in self.cursor.fetchall()]
 
-    def get_unresolved_hashes(self) -> List[str]:
+    def get_unresolved_hashes(self, user_id: int = None) -> List[str]:
         """
         Get chart hashes that don't have complete metadata
 
@@ -801,20 +801,38 @@ class Database:
         - Title starts with "[" (indicating it's just a hash shortcode like "[abc12345]"), OR
         - Charter is NULL/empty/Unknown
 
+        Args:
+            user_id: If provided, only return hashes for this user's scores
+
         Returns:
             List of chart hashes without complete metadata
         """
-        self.cursor.execute("""
-            SELECT DISTINCT s.chart_hash FROM scores s
-            LEFT JOIN songs sg ON s.chart_hash = sg.chart_hash
-            WHERE sg.chart_hash IS NULL
-               OR sg.title IS NULL
-               OR sg.title = ''
-               OR sg.title LIKE '[%'
-               OR sg.charter IS NULL
-               OR sg.charter = ''
-               OR sg.charter = 'Unknown'
-        """)
+        if user_id:
+            self.cursor.execute("""
+                SELECT DISTINCT s.chart_hash FROM scores s
+                LEFT JOIN songs sg ON s.chart_hash = sg.chart_hash
+                WHERE s.user_id = ?
+                  AND (sg.chart_hash IS NULL
+                   OR sg.title IS NULL
+                   OR sg.title = ''
+                   OR sg.title LIKE '[%'
+                   OR sg.charter IS NULL
+                   OR sg.charter = ''
+                   OR sg.charter = 'Unknown')
+            """, (user_id,))
+        else:
+            # Return all unresolved hashes (for admin use)
+            self.cursor.execute("""
+                SELECT DISTINCT s.chart_hash FROM scores s
+                LEFT JOIN songs sg ON s.chart_hash = sg.chart_hash
+                WHERE sg.chart_hash IS NULL
+                   OR sg.title IS NULL
+                   OR sg.title = ''
+                   OR sg.title LIKE '[%'
+                   OR sg.charter IS NULL
+                   OR sg.charter = ''
+                   OR sg.charter = 'Unknown'
+            """)
         return [row['chart_hash'] for row in self.cursor.fetchall()]
 
     def batch_update_song_metadata(self, metadata_list: List[Dict]) -> int:
