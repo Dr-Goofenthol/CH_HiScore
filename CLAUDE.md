@@ -347,6 +347,46 @@ Never store config next to the exe when using PyInstaller.
 
 Clone Hero writes `scoredata.bin` multiple times per save operation. The watcher uses a 2-second debounce delay to ensure all writes complete before parsing. Without this, partial reads can cause parse errors or miss data.
 
+### 8. Clone Hero Settings.ini Format
+
+Clone Hero uses standard INI format with sections like `[directories]`, `[game]`, `[streamer]`, etc. Song folder paths are typically stored as:
+
+```ini
+[directories]
+path0=D:\Games\Clone Hero\songs
+path1=E:\More Songs
+```
+
+**Always use `configparser.ConfigParser()`** to read this file, never manual line-by-line parsing. The resolvehashes command relies on correctly reading these paths.
+
+### 9. Charter Data Pipeline
+
+Charter information flows through multiple stages:
+
+1. **Collection:** Read from `currentsong.txt` line 3 during gameplay (cached by background thread)
+2. **Submission:** Sent to bot API via `POST /api/score` with `song_charter` parameter
+3. **Storage:** `submit_score()` → `save_song_info()` saves to database `songs.charter` field
+4. **Resolution:** `resolvehashes` command extracts from `song.ini` for missing data
+5. **Display:** Included in Discord announcements and Enchor.us search links
+
+**Critical:** All stages must pass charter through. Missing any link breaks the chain.
+
+### 10. Debugging Methodology
+
+When debugging complex issues like resolvehashes:
+
+1. **Add extensive debug output** at each step of the pipeline
+2. **Test with known data** (specific song hash you know exists)
+3. **Check for silent failures** (exception handlers that swallow errors)
+4. **Verify imports** (missing imports cause NameError at runtime)
+5. **Remove debug output** before production release
+
+Example from v2.4.15 debugging:
+- Hash was correctly calculated ✓
+- Hash was in unresolved list ✓
+- Match logic worked ✓
+- But `parse_song_ini` wasn't imported ✗ (silent failure in exception handler)
+
 ## Database Migrations
 
 Migrations run automatically on bot startup. To add a new migration:
@@ -405,9 +445,43 @@ def migrate_v2_to_v3(db_path: Path):
 **Offline play:** Network disconnect during gameplay
 **Multiple machines:** Pair two clients to same Discord account
 
+## Client Commands
+
+### resolvehashes Command
+
+Scans local song folders to populate missing charter information in the database.
+
+**How it works:**
+1. Fetches list of chart hashes with missing/incomplete metadata from server
+2. Reads Clone Hero's `settings.ini` to find song folder paths
+3. Walks all song folders, calculating MD5 hash of each chart file
+4. Matches hashes against server's unresolved list
+5. Extracts metadata (title, artist, charter) from `song.ini` files
+6. Sends updates to server with user confirmation
+
+**Important implementation details:**
+- Uses `configparser.ConfigParser()` to read settings.ini (handles INI sections properly)
+- Searches ALL sections for `path0`, `path1`, `path2` entries (typically in `[directories]` section)
+- Uses `parse_song_ini()` from `shared.parsers` to extract metadata
+- User-filtered: only resolves hashes for songs the current user has played
+- Hashes chart files (`notes.chart`, `notes.mid`, `notes.midi`) using MD5
+
+**Common issues:**
+- Missing `parse_song_ini` import causes silent failure (all matches fail with NameError)
+- Manual line-by-line parsing of settings.ini can't handle sectioned INI format
+- Overly broad exception handling can hide errors (always check what's inside try/except blocks)
+
 ## Version History & Migration Notes
 
-**v2.4.12** - Current (Discord Announcement Enhancements)
+**v2.4.15** - Critical Bugfix (resolvehashes command)
+- **FIXED:** resolvehashes command now functional (was completely broken)
+  - Added missing `parse_song_ini` import
+  - Fixed settings.ini parser to use `configparser.ConfigParser()` instead of manual line-by-line
+  - Successfully tested resolving 116+ songs with complete metadata
+- Charter data pipeline fully operational (currentsong.txt → database → Enchor.us links)
+- User-filtered hash resolution (only scans for your songs, not all server users)
+
+**v2.4.12** - Discord Announcement Enhancements
 - Added charter name display as separate inline field in announcements
 - Added play count tracking and display in announcements
 - Added "Held for X days/hours/minutes" to previous record footer
