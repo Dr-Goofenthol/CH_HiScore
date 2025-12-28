@@ -4,7 +4,7 @@ Clone Hero High Score Client
 Monitors your Clone Hero scores and submits them to the Discord scoreboard.
 """
 
-VERSION = "2.4.15"
+VERSION = "2.5.2"
 
 # GitHub repository for auto-updates
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
@@ -2503,8 +2503,10 @@ def main():
         choice = input("\nChoice: ").strip().lower()
         if choice == 's':
             settings_menu()
+            release_instance_lock()  # v2.5.1: Release lock before restart
             return main()
         elif choice == 'r':
+            release_instance_lock()  # v2.5.1: Release lock before restart
             return main()
         return
 
@@ -2548,6 +2550,7 @@ def main():
         choice = input("\nChoice: ").strip().lower()
         if choice == 's':
             settings_menu()
+            release_instance_lock()  # v2.5.1: Release lock before restart
             return main()
         return
 
@@ -2726,6 +2729,7 @@ def main():
                     settings_menu()
                     print("\n[*] Restarting tracker with new settings...")
                     watcher.stop()
+                    release_instance_lock()  # v2.5.1: Release lock before restart
                     return main()  # Restart with new settings
 
                 elif cmd == "update":
@@ -2775,6 +2779,7 @@ def main():
                                 stop_tray_icon()
                                 debug_mode(auth_token)
                                 print_info("Restarting tracker...")
+                                release_instance_lock()  # v2.5.1: Release lock before restart
                                 return main()
                             else:
                                 print_error("Invalid password.")

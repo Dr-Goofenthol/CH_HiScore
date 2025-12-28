@@ -4,7 +4,7 @@ Clone Hero High Score Bot Launcher
 Standalone executable for the Discord bot with first-time setup.
 """
 
-VERSION = "2.4.15"
+VERSION = "2.5.2"
 
 # GitHub repository for auto-updates
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
@@ -500,6 +500,153 @@ def setup_environment(config):
     os.environ['DEBUG_PASSWORD'] = config.get('DEBUG_PASSWORD', 'admin123')
 
 
+def send_manual_update_notification(config):
+    """Manually send update notification to Discord"""
+    print("\n" + "=" * 60)
+    print("  Manual Update Notification")
+    print("=" * 60)
+    print()
+    print(f"Current bot version: v{VERSION}")
+    print()
+    print("This will send an update notification to your Discord channel.")
+    print()
+
+    # Ask for confirmation
+    choice = input("Send update notification? (yes/no): ").strip().lower()
+    if choice != 'yes':
+        print_info("Cancelled.")
+        return
+
+    # Ask if they want to force re-announcement
+    force = input("\nForce announcement (bypass version check)? (yes/no): ").strip().lower()
+    force_announce = (force == 'yes')
+
+    print()
+    print("[*] Connecting to Discord...")
+
+    # Import Discord bot module
+    import asyncio
+    import discord
+    from bot.config import Config
+    from bot.database import Database
+
+    # Set up environment
+    setup_environment(config)
+
+    async def send_notification():
+        """Async function to send notification"""
+        try:
+            # Create a simple bot client
+            intents = discord.Intents.default()
+            client = discord.Client(intents=intents)
+
+            @client.event
+            async def on_ready():
+                try:
+                    print_success(f"Connected as {client.user}")
+
+                    # Get announcement channel
+                    channel_id = Config.DISCORD_CHANNEL_ID
+                    if not channel_id:
+                        print_error("No announcement channel configured!")
+                        await client.close()
+                        return
+
+                    channel = client.get_channel(int(channel_id))
+                    if not channel:
+                        print_error(f"Could not find channel with ID {channel_id}")
+                        await client.close()
+                        return
+
+                    # Check if already announced (unless forcing)
+                    if not force_announce:
+                        db = Database()
+                        db.connect()
+                        last_announced = db.get_metadata('last_announced_version')
+                        if last_announced == VERSION:
+                            print_warning(f"Version {VERSION} already announced.")
+                            choice = input("Send anyway? (yes/no): ").strip().lower()
+                            if choice != 'yes':
+                                print_info("Cancelled.")
+                                await client.close()
+                                return
+                        db.close()
+
+                    # Fetch release info from GitHub
+                    from bot.bot import fetch_github_release, extract_update_highlights
+                    release_info = fetch_github_release(VERSION)
+                    if not release_info:
+                        print_warning(f"Could not fetch release info for v{VERSION} - using basic announcement")
+                        release_info = {
+                            'version': VERSION,
+                            'release_url': f'https://github.com/Dr-Goofenthol/CH_HiScore/releases/tag/v{VERSION}',
+                            'release_notes': ''
+                        }
+
+                    # Create announcement embed
+                    embed = discord.Embed(
+                        title="🔄 Server Updated!",
+                        description=f"The score tracker server has been updated to **v{VERSION}**\n\nPlayers should update their clients to match!",
+                        color=discord.Color.green()
+                    )
+
+                    # Extract highlights
+                    highlights = ""
+                    if release_info.get("release_notes"):
+                        highlights = extract_update_highlights(release_info["release_notes"])
+
+                    if highlights:
+                        embed.add_field(
+                            name="✨ What's New",
+                            value=highlights,
+                            inline=False
+                        )
+
+                    # Update instructions
+                    embed.add_field(
+                        name="📥 How to Update Your Client",
+                        value=(
+                            "**Option 1:** Type `update` in your tracker's terminal\n"
+                            "**Option 2:** Right-click the system tray icon → Check for Updates\n"
+                            "**Option 3:** [Download manually]({})".format(release_info['release_url'])
+                        ),
+                        inline=False
+                    )
+
+                    embed.set_footer(text=f"Server version: v{VERSION} • Keep your client up to date!")
+
+                    # Send announcement
+                    await channel.send(embed=embed)
+                    print_success(f"Update notification sent to #{channel.name}")
+
+                    # Mark as announced
+                    db = Database()
+                    db.connect()
+                    db.set_metadata('last_announced_version', VERSION)
+                    db.close()
+
+                except Exception as e:
+                    print_error(f"Error sending notification: {e}")
+                    import traceback
+                    traceback.print_exc()
+                finally:
+                    await client.close()
+
+            # Connect and send
+            await client.start(Config.DISCORD_TOKEN)
+
+        except Exception as e:
+            print_error(f"Connection error: {e}")
+            import traceback
+            traceback.print_exc()
+
+    # Run the async function
+    try:
+        asyncio.run(send_notification())
+    except KeyboardInterrupt:
+        print_info("\nCancelled by user")
+
+
 def main():
     print()
     print("=" * 60)
@@ -537,6 +684,52 @@ def main():
     # Set environment variables
     setup_environment(config)
 
+    # Show startup menu
+    print("\n" + "-" * 60)
+    print("OPTIONS:")
+    print("  [1] Start Bot")
+    print("  [2] Settings Menu")
+    print("  [3] Send Update Notification")
+    print("  [Q] Quit")
+    print("-" * 60)
+    choice = input("\nChoice: ").strip().lower()
+
+    if choice == '3':
+        # Manually send update notification
+        try:
+            send_manual_update_notification(config)
+            input("\nPress Enter to continue...")
+            return main()  # Return to launcher
+        except Exception as e:
+            print_error(f"Error sending update notification: {e}")
+            import traceback
+            traceback.print_exc()
+            input("\nPress Enter to continue...")
+            return main()
+
+    elif choice == '2':
+        # Open settings menu
+        try:
+            from bot.settings_menu import SettingsMenu
+            from bot.config_manager import ConfigManager
+            config_manager = ConfigManager()
+            config_manager.load()  # Load configuration
+            menu = SettingsMenu(config_manager)
+            menu.run()
+            print("\n[*] Returning to launcher...")
+            input("Press Enter to continue...")
+            return main()  # Restart launcher to apply settings
+        except Exception as e:
+            print_error(f"Error opening settings menu: {e}")
+            import traceback
+            traceback.print_exc()
+            input("\nPress Enter to continue...")
+            return main()
+    elif choice == 'q':
+        print("[*] Exiting...")
+        return
+    # If choice == '1' or anything else, continue to start bot
+
     # Run database migrations before starting the bot
     print("\n[*] Running database migrations...")
     try:
@@ -548,6 +741,25 @@ def main():
         print("[!] Bot may not function correctly")
         import traceback
         traceback.print_exc()
+
+    # Create database backup (if enabled)
+    from bot.config_manager import ConfigManager
+    config_manager = ConfigManager()
+    config_manager.load()  # Load configuration
+    auto_backup_enabled = config_manager.config.get('database', {}).get('auto_backup', True)
+    backup_keep_count = config_manager.config.get('database', {}).get('backup_keep_count', 7)
+
+    if auto_backup_enabled:
+        print("\n[*] Creating database backup...")
+        try:
+            from bot.database import Database
+            db = Database(str(db_path))
+            success = db.create_backup(keep_count=backup_keep_count)
+            if success:
+                print_success("Database backup created successfully")
+        except Exception as e:
+            print_warning(f"Backup failed: {e}")
+            print("[*] Bot will continue without backup")
 
     # Start the bot
     print("\n[*] Starting Discord bot...")

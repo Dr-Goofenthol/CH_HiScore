@@ -10,7 +10,7 @@ from pathlib import Path
 from datetime import datetime
 
 
-def setup_logger(name: str, log_file: Path, level=logging.INFO) -> logging.Logger:
+def setup_logger(name: str, log_file: Path, level=logging.INFO, rotate=True, max_size_mb=10) -> logging.Logger:
     """
     Set up a logger with file and console handlers
 
@@ -18,6 +18,8 @@ def setup_logger(name: str, log_file: Path, level=logging.INFO) -> logging.Logge
         name: Logger name (e.g., 'client', 'bot')
         log_file: Path to log file
         level: Logging level (default: INFO)
+        rotate: Enable log rotation (default: True)
+        max_size_mb: Max log size before rotation in MB (default: 10)
 
     Returns:
         Configured logger instance
@@ -32,6 +34,10 @@ def setup_logger(name: str, log_file: Path, level=logging.INFO) -> logging.Logge
 
     # Create log directory if needed
     log_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # Rotate log if needed before creating handler
+    if rotate:
+        rotate_log_if_needed(log_file, max_size_mb)
 
     # File handler - detailed logging
     file_handler = logging.FileHandler(log_file, encoding='utf-8')

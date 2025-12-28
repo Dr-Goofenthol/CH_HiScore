@@ -19,6 +19,7 @@ except ImportError:
     HAS_REQUESTS = False
 
 from .config import Config
+from .config_manager import ConfigManager
 from .api import ScoreAPI
 from .database import Database
 from shared.console import print_success, print_info, print_warning, print_error, print_header
@@ -188,7 +189,9 @@ class CloneHeroBot(commands.Bot):
 
         self.pairing_codes = {}  # Store pairing codes temporarily
         self.db = Database()  # Database connection
-        self.api = ScoreAPI(self)  # HTTP API for score submission
+        self.config_manager = ConfigManager()  # Configuration manager
+        self.config_manager.load()  # Load configuration
+        self.api = ScoreAPI(self, self.config_manager)  # HTTP API for score submission
 
     async def setup_hook(self):
         """Called when bot is starting up"""
@@ -353,7 +356,9 @@ async def pair(interaction: discord.Interaction, code: str):
     3. Bot validates code and links Discord ID to client
     4. Client receives auth token for future score submissions
     """
-    await interaction.response.defer(ephemeral=True)
+    # Command privacy: read from config (default: private)
+    is_private = interaction.client.config_manager.config.get('discord', {}).get('command_privacy', {}).get('pair', 'private') == 'private'
+    await interaction.response.defer(ephemeral=is_private)
 
     # Normalize code (uppercase, remove spaces)
     code = code.upper().strip()
@@ -417,7 +422,9 @@ async def leaderboard(
     instrument: app_commands.Choice[int] = None
 ):
     """Show high scores leaderboard"""
-    await interaction.response.defer()
+    # Command privacy: read from config (default: public)
+    is_private = interaction.client.config_manager.config.get('discord', {}).get('command_privacy', {}).get('leaderboard', 'public') == 'private'
+    await interaction.response.defer(ephemeral=is_private)
 
     # Get filters
     difficulty_id = difficulty.value if difficulty else None
@@ -526,7 +533,9 @@ async def leaderboard(
 @app_commands.describe(user="The user to look up (leave empty for your own stats)")
 async def mystats(interaction: discord.Interaction, user: discord.Member = None):
     """Show user's personal stats"""
-    await interaction.response.defer()
+    # Command privacy: read from config (default: private)
+    is_private = interaction.client.config_manager.config.get('discord', {}).get('command_privacy', {}).get('mystats', 'private') == 'private'
+    await interaction.response.defer(ephemeral=is_private)
 
     # Use provided user or default to command caller
     target_user = user or interaction.user
@@ -648,7 +657,9 @@ async def mystats(interaction: discord.Interaction, user: discord.Member = None)
 @app_commands.describe(query="Song title, artist, or chart hash to search for")
 async def lookupsong(interaction: discord.Interaction, query: str):
     """Search for songs in the database by title, artist, or chart hash"""
-    await interaction.response.defer(ephemeral=True)
+    # Command privacy: read from config (default: public)
+    is_private = interaction.client.config_manager.config.get('discord', {}).get('command_privacy', {}).get('lookupsong', 'public') == 'private'
+    await interaction.response.defer(ephemeral=is_private)
 
     # Search for songs matching the query
     songs = bot.db.search_songs(query, limit=10)
@@ -656,8 +667,7 @@ async def lookupsong(interaction: discord.Interaction, query: str):
     if not songs:
         await interaction.followup.send(
             f"No songs found matching '{query}'.\n\n"
-            f"Songs are only added to the database after someone submits a score for them.",
-            ephemeral=True
+            f"Songs are only added to the database after someone submits a score for them."
         )
         return
 
@@ -729,7 +739,7 @@ async def lookupsong(interaction: discord.Interaction, query: str):
 
     embed.set_footer(text="Use /setartist or /updatesong to update metadata")
 
-    await interaction.followup.send(embed=embed, ephemeral=True)
+    await interaction.followup.send(embed=embed)
 
 
 @bot.tree.command(name="setartist", description="Manually set the artist for a song")
@@ -739,7 +749,9 @@ async def lookupsong(interaction: discord.Interaction, query: str):
 )
 async def setartist(interaction: discord.Interaction, hash_prefix: str, artist: str):
     """Manually set artist for a song"""
-    await interaction.response.defer(ephemeral=True)
+    # Command privacy: read from config (default: private)
+    is_private = interaction.client.config_manager.config.get('discord', {}).get('command_privacy', {}).get('setartist', 'private') == 'private'
+    await interaction.response.defer(ephemeral=is_private)
 
     # Clean inputs
     hash_prefix = hash_prefix.lower().strip()
@@ -824,7 +836,9 @@ async def setartist(interaction: discord.Interaction, hash_prefix: str, artist: 
 )
 async def updatesong(interaction: discord.Interaction, hash_prefix: str, title: str = None, artist: str = None):
     """Manually update song title and/or artist"""
-    await interaction.response.defer(ephemeral=True)
+    # Command privacy: read from config (default: private)
+    is_private = interaction.client.config_manager.config.get('discord', {}).get('command_privacy', {}).get('updatesong', 'private') == 'private'
+    await interaction.response.defer(ephemeral=is_private)
 
     # Clean inputs
     hash_prefix = hash_prefix.lower().strip()
@@ -912,7 +926,9 @@ async def updatesong(interaction: discord.Interaction, hash_prefix: str, title: 
 @bot.tree.command(name="missingartists", description="Show songs that are missing artist information")
 async def missingartists(interaction: discord.Interaction):
     """Show songs without artist info"""
-    await interaction.response.defer(ephemeral=True)
+    # Command privacy: read from config (default: private)
+    is_private = interaction.client.config_manager.config.get('discord', {}).get('command_privacy', {}).get('missingartists', 'private') == 'private'
+    await interaction.response.defer(ephemeral=is_private)
 
     songs = bot.db.get_songs_without_artist(limit=15)
 
@@ -951,7 +967,9 @@ async def missingartists(interaction: discord.Interaction):
 @app_commands.describe(count="Number of recent records to show (1-20, default 5)")
 async def recent(interaction: discord.Interaction, count: int = 5):
     """Show recent record breaks"""
-    await interaction.response.defer()
+    # Command privacy: read from config (default: public)
+    is_private = interaction.client.config_manager.config.get('discord', {}).get('command_privacy', {}).get('recent', 'public') == 'private'
+    await interaction.response.defer(ephemeral=is_private)
 
     # Validate count
     if count < 1:

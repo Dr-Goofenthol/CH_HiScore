@@ -55,14 +55,16 @@ def generate_enchor_url(song_title=None, song_artist=None, charter=None):
 class ScoreAPI:
     """HTTP API for score submission"""
 
-    def __init__(self, bot):
+    def __init__(self, bot, config_manager=None):
         """
         Initialize the API
 
         Args:
             bot: The Discord bot instance
+            config_manager: ConfigManager instance for reading settings
         """
         self.bot = bot
+        self.config = config_manager
         self.app = web.Application()
         self.setup_routes()
         self.runner = None
@@ -184,10 +186,38 @@ class ScoreAPI:
             print(f"  Stars: {data.get('stars', 0)}")
             print(f"  Result: {'RECORD BROKEN!' if result['is_record_broken'] else 'High Score' if result['is_high_score'] else 'Not a record'}")
 
-            # Only post announcement when an EXISTING record is broken
-            # (not for first-time scores on a chart)
-            if result['is_record_broken']:
-                await self.announce_high_score(data, result)
+            # Post announcements based on achievement type
+            # Check if record broken, first-time score, or personal best
+            should_announce_record = result.get('is_record_broken', False)
+            should_announce_first_time = result.get('is_first_time_score', False)
+            should_announce_pb = False
+
+            # Check personal best with improvement thresholds
+            if result.get('is_personal_best', False):
+                user_prev = result.get('user_previous_score', 0)
+                new_score = data.get('score', 0)
+
+                if user_prev > 0:
+                    # Calculate improvement
+                    points_improvement = new_score - user_prev
+                    percent_improvement = (points_improvement / user_prev) * 100
+
+                    # Get thresholds from config (default: 5% and 10,000 points)
+                    if self.config:
+                        min_percent = self.config.config.get('announcements', {}).get('personal_bests', {}).get('min_improvement_percent', 5.0)
+                        min_points = self.config.config.get('announcements', {}).get('personal_bests', {}).get('min_improvement_points', 10000)
+                    else:
+                        min_percent = 5.0
+                        min_points = 10000
+
+                    # Must meet BOTH thresholds to announce
+                    if percent_improvement >= min_percent and points_improvement >= min_points:
+                        should_announce_pb = True
+
+            should_announce = should_announce_record or should_announce_first_time or should_announce_pb
+
+            if should_announce:
+                await self.announce_score(data, result)
 
             return web.json_response({
                 'success': True,
@@ -214,7 +244,7 @@ class ScoreAPI:
                 'error': str(e)
             }, status=500)
 
-    async def announce_high_score(self, score_data: dict, result: dict):
+    async def announce_score(self, score_data: dict, result: dict):
         """Post high score announcement to Discord"""
         try:
             channel_id = Config.DISCORD_CHANNEL_ID
@@ -236,11 +266,79 @@ class ScoreAPI:
 
             import discord
 
-            # Stars display with emoji
+            # Determine announcement type and styling
+            is_record_broken = result.get('is_record_broken', False)
+            is_first_time = result.get('is_first_time_score', False)
+            is_personal_best = result.get('is_personal_best', False)
+
+            # Set title, emoji, color, and description based on announcement type
+            if is_record_broken:
+                title = "🏆 NEW RECORD SET!"
+                # Read color from config (default: Gold)
+                if self.config:
+                    color_hex = self.config.config.get('announcements', {}).get('record_breaks', {}).get('embed_color', '#FFD700')
+                else:
+                    color_hex = '#FFD700'
+                try:
+                    color = discord.Color.from_str(color_hex)
+                except ValueError:
+                    print_warning(f"[API] Invalid color '{color_hex}' for record breaks, using default gold")
+                    color = discord.Color.from_str('#FFD700')
+                action_text = "set a new server record!"
+            elif is_first_time:
+                title = "🎸 FIRST SCORE ON CHART!"
+                # Read color from config (default: Blue)
+                if self.config:
+                    color_hex = self.config.config.get('announcements', {}).get('first_time_scores', {}).get('embed_color', '#4169E1')
+                else:
+                    color_hex = '#4169E1'
+                try:
+                    color = discord.Color.from_str(color_hex)
+                except ValueError:
+                    print_warning(f"[API] Invalid color '{color_hex}' for first-time scores, using default blue")
+                    color = discord.Color.from_str('#4169E1')
+                action_text = "was the first to score on this chart!"
+            elif is_personal_best:
+                title = "📈 PERSONAL BEST!"
+                # Read color from config (default: Green)
+                if self.config:
+                    color_hex = self.config.config.get('announcements', {}).get('personal_bests', {}).get('embed_color', '#32CD32')
+                else:
+                    color_hex = '#32CD32'
+                try:
+                    color = discord.Color.from_str(color_hex)
+                except ValueError:
+                    print_warning(f"[API] Invalid color '{color_hex}' for personal bests, using default green")
+                    color = discord.Color.from_str('#32CD32')
+                action_text = "improved their personal best!"
+            else:
+                # Fallback (shouldn't happen)
+                title = "NEW HIGH SCORE!"
+                color = discord.Color.gold()
+                action_text = "set a new score!"
+
+            # Check for minimalist mode based on announcement type
+            use_minimalist_mode = False
+            minimalist_config_path = None
+
+            if self.config:
+                if is_record_broken:
+                    style = self.config.config.get('announcements', {}).get('record_breaks', {}).get('style', 'full')
+                    use_minimalist_mode = (style == 'minimalist')
+                    minimalist_config_path = 'announcements.record_breaks.minimalist_fields'
+                elif is_first_time:
+                    style = self.config.config.get('announcements', {}).get('first_time_scores', {}).get('style', 'full')
+                    use_minimalist_mode = (style == 'minimalist')
+                    minimalist_config_path = 'announcements.first_time_scores.minimalist_fields'
+                elif is_personal_best:
+                    style = self.config.config.get('announcements', {}).get('personal_bests', {}).get('style', 'full')
+                    use_minimalist_mode = (style == 'minimalist')
+                    minimalist_config_path = 'announcements.personal_bests.minimalist_fields'
+
+            # Common data extraction for both modes
             stars_count = score_data.get('stars', 0)
             stars_display = "⭐" * stars_count if stars_count > 0 else "-"
 
-            # Chart display - use song title if available
             song_title = score_data.get('song_title', '')
             song_artist = score_data.get('song_artist', '')
             if song_title and not song_title.startswith('['):
@@ -249,6 +347,133 @@ class ScoreAPI:
                     chart_display = f"{song_title} - {song_artist}"
             else:
                 chart_display = f"[{score_data['chart_hash'][:8]}]"
+
+            # MINIMALIST MODE: Simplified announcement with configurable fields
+            if use_minimalist_mode and minimalist_config_path:
+                # Get minimalist fields configuration
+                fields_config = self.config.config.get('announcements', {})
+                if is_record_broken:
+                    fields_config = fields_config.get('record_breaks', {}).get('minimalist_fields', {})
+                elif is_first_time:
+                    fields_config = fields_config.get('first_time_scores', {}).get('minimalist_fields', {})
+                elif is_personal_best:
+                    fields_config = fields_config.get('personal_bests', {}).get('minimalist_fields', {})
+
+                # Build description
+                user_mention = f"<@{result['discord_id']}>"
+                description = f"{user_mention} {action_text}\n\n"
+
+                # Song title (always in description)
+                if fields_config.get('song_title', True):
+                    description += f"**Song:** *{chart_display}*\n"
+
+                # Score (always in description)
+                if fields_config.get('score', True):
+                    description += f"**Score:** *{score_data['score']:,}* points"
+
+                    # Show improvement if applicable
+                    if fields_config.get('improvement', False) and result.get('user_previous_score') and (is_personal_best or is_record_broken):
+                        diff = score_data['score'] - result['user_previous_score']
+                        description += f" (+{diff:,})"
+
+                embed = discord.Embed(
+                    title=title,
+                    description=description,
+                    color=color
+                )
+
+                # Configurable inline fields
+                if fields_config.get('difficulty_instrument', True):
+                    embed.add_field(name="Instrument", value=instrument_name, inline=True)
+                    embed.add_field(name="Difficulty", value=difficulty_name, inline=True)
+
+                if fields_config.get('stars', True):
+                    embed.add_field(name="Stars", value=stars_display, inline=True)
+
+                # Optional fields based on configuration
+                if fields_config.get('charter', False):
+                    charter_name = score_data.get('song_charter')
+                    if charter_name:
+                        embed.add_field(name="Charter", value=charter_name, inline=True)
+
+                if fields_config.get('accuracy', False):
+                    accuracy = score_data.get('completion_percent', 0)
+                    notes_hit = score_data.get('notes_hit')
+                    notes_total = score_data.get('notes_total')
+                    if notes_hit is not None and notes_total is not None:
+                        accuracy_display = f"{notes_hit}/{notes_total} ({accuracy:.1f}%)"
+                    else:
+                        accuracy_display = f"{accuracy:.1f}%"
+                    embed.add_field(name="Accuracy", value=accuracy_display, inline=True)
+
+                if fields_config.get('play_count', False):
+                    play_count = score_data.get('play_count')
+                    if play_count is not None:
+                        embed.add_field(name="Play Count", value=str(play_count), inline=True)
+
+                # Previous record/best info
+                if is_record_broken and fields_config.get('previous_record', False):
+                    if result.get('previous_holder'):
+                        prev_text = f"{result['previous_holder']}: {result.get('previous_score', 0):,} pts"
+                        embed.add_field(name="Previous Record", value=prev_text, inline=False)
+
+                if is_personal_best and fields_config.get('previous_best', False):
+                    if result.get('user_previous_score'):
+                        prev_text = f"{result['user_previous_score']:,} pts"
+                        embed.add_field(name="Previous Best", value=prev_text, inline=True)
+
+                # Server record holder info for personal bests
+                if is_personal_best and fields_config.get('server_record_holder', False):
+                    # This would need to be fetched from database - placeholder for now
+                    pass
+
+                # Enchor.us link
+                if fields_config.get('enchor_link', False):
+                    enchor_url = generate_enchor_url(
+                        score_data.get('song_title'),
+                        score_data.get('song_artist'),
+                        score_data.get('song_charter')
+                    )
+                    if enchor_url:
+                        embed.add_field(
+                            name="Find This Chart",
+                            value=f"[Search on enchor.us]({enchor_url})",
+                            inline=False
+                        )
+
+                # Chart hash
+                if fields_config.get('chart_hash', True):
+                    chart_hash = score_data['chart_hash']
+                    hash_format = fields_config.get('chart_hash_format', 'abbreviated')
+                    if hash_format == 'abbreviated':
+                        hash_display = f"`{chart_hash[:8]}`"
+                    else:
+                        hash_display = f"`{chart_hash}`"
+                    embed.add_field(name="Chart Hash", value=hash_display, inline=False)
+
+                # Timestamp
+                if fields_config.get('timestamp', True):
+                    import pytz
+                    from datetime import datetime
+
+                    # Get display timezone from config
+                    tz_name = self.config.config.get('display', {}).get('timezone', 'UTC')
+                    try:
+                        display_timezone = pytz.timezone(tz_name)
+                    except pytz.exceptions.UnknownTimeZoneError:
+                        display_timezone = pytz.UTC
+
+                    now_utc = datetime.utcnow().replace(tzinfo=pytz.UTC)
+                    now_display = now_utc.astimezone(display_timezone)
+                    timestamp_str = now_display.strftime("%Y-%m-%d %I:%M %p")
+                    tz_abbr = now_display.strftime("%Z")
+                    embed.add_field(name="Achieved", value=f"{timestamp_str} {tz_abbr}", inline=True)
+
+                await channel.send(embed=embed)
+                print_success(f"[API] Minimalist announcement posted to #{channel.name}")
+                return  # Early return for minimalist mode
+
+            # FULL MODE: Continue with regular detailed announcement
 
             # Accuracy/Notes display
             accuracy = score_data.get('completion_percent', 0)
@@ -264,18 +489,19 @@ class ScoreAPI:
             user_mention = f"<@{result['discord_id']}>"
 
             # Build description with mention, song, and score
-            description = f"{user_mention} set a new record!\n\n"
+            description = f"{user_mention} {action_text}\n\n"
             description += f"**Song:** *{chart_display}*\n"
             description += f"**Score:** *{score_data['score']:,}* points"
 
-            if result.get('previous_score'):
-                diff = score_data['score'] - result['previous_score']
+            # Show improvement for personal bests and record breaks
+            if result.get('user_previous_score') and (is_personal_best or is_record_broken):
+                diff = score_data['score'] - result['user_previous_score']
                 description += f" (+{diff:,})"
 
             embed = discord.Embed(
-                title="NEW HIGH SCORE!",
+                title=title,
                 description=description,
-                color=discord.Color.gold()
+                color=color
             )
 
             # Get OCR-enriched fields (only present for "rich" scores)
@@ -362,6 +588,33 @@ class ScoreAPI:
                 inline=False
             )
 
+            # Timezone handling for timestamps
+            import pytz
+            from datetime import datetime
+
+            # Get display timezone from config (default: UTC)
+            if self.config:
+                tz_name = self.config.config.get('display', {}).get('timezone', 'UTC')
+                try:
+                    display_timezone = pytz.timezone(tz_name)
+                except pytz.exceptions.UnknownTimeZoneError:
+                    print_warning(f"Unknown timezone '{tz_name}', using UTC")
+                    display_timezone = pytz.UTC
+            else:
+                display_timezone = pytz.UTC
+
+            # Add timestamp field showing when THIS score was achieved
+            now_utc = datetime.utcnow().replace(tzinfo=pytz.UTC)
+            now_display = now_utc.astimezone(display_timezone)
+            timestamp_str = now_display.strftime("%Y-%m-%d %I:%M %p")
+            tz_abbr = now_display.strftime("%Z")
+
+            embed.add_field(
+                name="Achieved",
+                value=f"{timestamp_str} {tz_abbr}",
+                inline=True
+            )
+
             # Previous record holder - always show if there was one
             if result.get('previous_holder') and result.get('previous_holder_discord_id'):
                 prev_discord_id = result['previous_holder_discord_id']
@@ -371,11 +624,13 @@ class ScoreAPI:
                 footer_text = f"Previous record: {result['previous_holder']} ({result.get('previous_score', 0):,} pts)"
 
                 if result.get('previous_record_timestamp'):
-                    from datetime import datetime
                     try:
                         prev_time = datetime.fromisoformat(result['previous_record_timestamp'])
-                        now = datetime.now()
-                        time_held = now - prev_time
+                        # Assume prev_time is in UTC (from database)
+                        if prev_time.tzinfo is None:
+                            prev_time = prev_time.replace(tzinfo=pytz.UTC)
+
+                        time_held = now_utc - prev_time
 
                         # Format as days/hours/minutes
                         total_seconds = time_held.total_seconds()
@@ -388,6 +643,11 @@ class ScoreAPI:
                         else:  # Less than 1 hour
                             minutes = int(total_seconds // 60)
                             footer_text += f" • Held for {minutes} minute{'s' if minutes != 1 else ''}"
+
+                        # Add previous record timestamp (converted to display timezone)
+                        prev_time_display = prev_time.astimezone(display_timezone)
+                        prev_timestamp_str = prev_time_display.strftime("%Y-%m-%d %I:%M %p")
+                        footer_text += f" • Set on {prev_timestamp_str} {tz_abbr}"
                     except (ValueError, TypeError):
                         pass  # If timestamp parsing fails, just show the basic info
 

@@ -363,20 +363,29 @@ class Database:
         current_high = self.cursor.fetchone()
         current_high_score = dict(current_high) if current_high else None
 
+        # Get user's previous score for this chart (for personal best detection)
+        self.cursor.execute("""
+            SELECT score FROM scores
+            WHERE chart_hash = ? AND instrument_id = ? AND difficulty_id = ? AND user_id = ?
+        """, (chart_hash, instrument_id, difficulty_id, user_id))
+        user_previous = self.cursor.fetchone()
+        user_previous_score = user_previous['score'] if user_previous else None
+
         is_new_high_score = False
-        is_record_broken = False  # Only true when beating an EXISTING record
+        is_record_broken = False  # Only true when beating an EXISTING server record
+        is_first_time_score = False  # True when NO scores exist for this chart/diff/inst
+        is_personal_best = False  # True when improving own score but not beating server record
         previous_holder = None
         previous_holder_discord_id = None
         previous_holder_id = None
 
         if current_high_score:
-            # There's an existing score - check if we beat it
+            # There's an existing server record - check if we beat it
             is_new_high_score = score > current_high_score['score']
             if is_new_high_score:
-                # We beat an existing record - this should trigger announcement
+                # We beat an existing record
                 is_record_broken = True
                 previous_holder_id = current_high_score['user_id']
-                # Always include the previous holder info (even if same user)
                 previous_holder = current_high_score['holder_name']
                 # Get previous holder's discord_id for mention
                 self.cursor.execute("""
@@ -385,11 +394,14 @@ class Database:
                 prev_user = self.cursor.fetchone()
                 if prev_user:
                     previous_holder_discord_id = prev_user['discord_id']
+            elif user_previous_score and score > user_previous_score:
+                # Improved own score but didn't beat server record
+                is_personal_best = True
         else:
-            # No existing score - this is the first score for this chart
-            # It's technically a "high score" but NOT a "record broken"
+            # No existing scores from any user - this is a first-time score
             is_new_high_score = True
-            is_record_broken = False  # Don't announce first-time scores
+            is_first_time_score = True
+            is_record_broken = False
 
         # Insert or update user's score
         self.cursor.execute("""
@@ -437,12 +449,17 @@ class Database:
             'success': True,
             'is_high_score': is_new_high_score,
             'is_record_broken': is_record_broken,  # Only true when beating existing record
+            'is_first_time_score': is_first_time_score,  # True when first score on chart
+            'is_personal_best': is_personal_best,  # True when improving own score (not server record)
             'score': score,
             'previous_score': current_high_score['score'] if current_high_score else None,
             'previous_holder': previous_holder,
             'previous_holder_discord_id': previous_holder_discord_id,
             'previous_record_timestamp': current_high_score['submitted_at'] if current_high_score else None,
+            'user_previous_score': user_previous_score,  # User's previous score for PB calculation
             'your_best_score': your_best_score,  # User's PB for feedback when not a high score
+            'current_server_record': current_high_score['score'] if current_high_score else None,
+            'current_server_record_holder': current_high_score['holder_name'] if current_high_score else None,
             'user_id': user_id,
             'username': user['discord_username'],
             'discord_id': user['discord_id']
@@ -694,47 +711,116 @@ class Database:
 
     def search_songs(self, query: str, limit: int = 10) -> List[Dict]:
         """
-        Search songs by title, artist, or chart hash (partial match)
+        Search songs by title, artist, or chart hash with smart filtering
 
-        Supports multi-word queries like "Haywyre Endlessly" by matching:
-        - Any word in title OR artist OR hash
-        - Full query as phrase in title OR artist OR hash
+        Filters out common stop words and uses tiered matching:
+        1. Exact phrase matches (highest priority)
+        2. All meaningful words match (AND logic)
+        3. Partial word matches (for 3+ word queries)
         """
-        # Split query into words for fuzzy matching
-        words = query.strip().split()
+        # Handle empty query
+        if not query or not query.strip():
+            return []
 
-        if len(words) > 1:
-            # Multi-word query: search for any word in title/artist/hash
-            conditions = []
-            params = []
+        # Stop words to filter out
+        STOP_WORDS = {'the', 'and', 'a', 'an', 'of', 'in', 'on', 'at', 'to',
+                      'for', 'with', 'by', 'from', 'as', 'is', 'it', 'or'}
 
-            for word in words:
-                conditions.append("(title LIKE ? OR artist LIKE ? OR chart_hash LIKE ?)")
-                params.extend([f'%{word}%', f'%{word}%', f'{word}%'])
+        # Split query and filter out stop words and short words
+        all_words = query.strip().lower().split()
+        meaningful_words = [
+            word for word in all_words
+            if len(word) >= 3 and word not in STOP_WORDS
+        ]
 
-            # Also try exact phrase match for better results
-            conditions.append("(title LIKE ? OR artist LIKE ? OR chart_hash LIKE ?)")
-            params.extend([f'%{query}%', f'%{query}%', f'{query}%'])
+        # If no meaningful words remain, use original query
+        if not meaningful_words:
+            meaningful_words = all_words
 
-            where_clause = " OR ".join(conditions)
-            params.append(limit)
+        results = []
+        seen_hashes = set()  # Prevent duplicates across tiers
+
+        # TIER 1: Exact phrase match (highest priority)
+        self.cursor.execute("""
+            SELECT * FROM songs
+            WHERE title LIKE ? OR artist LIKE ? OR chart_hash LIKE ?
+            ORDER BY
+                CASE
+                    WHEN LOWER(title) = LOWER(?) THEN 0
+                    WHEN LOWER(artist) = LOWER(?) THEN 1
+                    ELSE 2
+                END,
+                title
+            LIMIT ?
+        """, (f'%{query}%', f'%{query}%', f'{query}%',
+              query, query, limit))
+
+        for row in self.cursor.fetchall():
+            song = dict(row)
+            if song['chart_hash'] not in seen_hashes:
+                results.append(song)
+                seen_hashes.add(song['chart_hash'])
+
+        # If we have enough results from exact phrase, return early
+        if len(results) >= limit:
+            return results[:limit]
+
+        # TIER 2: All meaningful words match (AND logic) - only if multiple words
+        if len(meaningful_words) > 1:
+            # Build AND conditions: each word must appear somewhere
+            and_conditions = []
+            and_params = []
+
+            for word in meaningful_words:
+                and_conditions.append("(title LIKE ? OR artist LIKE ? OR chart_hash LIKE ?)")
+                and_params.extend([f'%{word}%', f'%{word}%', f'{word}%'])
+
+            where_clause = " AND ".join(and_conditions)
+            and_params.append(limit - len(results))
 
             self.cursor.execute(f"""
                 SELECT * FROM songs
                 WHERE {where_clause}
                 ORDER BY title
                 LIMIT ?
-            """, params)
-        else:
-            # Single word query: simple match
-            self.cursor.execute("""
+            """, and_params)
+
+            for row in self.cursor.fetchall():
+                song = dict(row)
+                if song['chart_hash'] not in seen_hashes:
+                    results.append(song)
+                    seen_hashes.add(song['chart_hash'])
+
+            # If we have enough results, return
+            if len(results) >= limit:
+                return results[:limit]
+
+        # TIER 3: Partial match (at least one meaningful word) - fallback
+        if meaningful_words:
+            or_conditions = []
+            or_params = []
+
+            for word in meaningful_words:
+                or_conditions.append("(title LIKE ? OR artist LIKE ? OR chart_hash LIKE ?)")
+                or_params.extend([f'%{word}%', f'%{word}%', f'{word}%'])
+
+            where_clause = " OR ".join(or_conditions)
+            or_params.append(limit - len(results))
+
+            self.cursor.execute(f"""
                 SELECT * FROM songs
-                WHERE title LIKE ? OR artist LIKE ? OR chart_hash LIKE ?
+                WHERE {where_clause}
                 ORDER BY title
                 LIMIT ?
-            """, (f'%{query}%', f'%{query}%', f'{query}%', limit))
+            """, or_params)
 
-        return [dict(row) for row in self.cursor.fetchall()]
+            for row in self.cursor.fetchall():
+                song = dict(row)
+                if song['chart_hash'] not in seen_hashes:
+                    results.append(song)
+                    seen_hashes.add(song['chart_hash'])
+
+        return results[:limit]
 
     def update_song_artist(self, chart_hash: str, artist: str) -> bool:
         """Update artist for a song by chart hash"""
@@ -1023,3 +1109,63 @@ class Database:
             VALUES (?, ?, CURRENT_TIMESTAMP)
         """, (key, value))
         self.conn.commit()
+
+    def create_backup(self, backup_dir: Path = None, keep_count: int = 7) -> bool:
+        """
+        Create a timestamped backup of the database and rotate old backups
+
+        Args:
+            backup_dir: Directory to store backups (defaults to same dir as database)
+            keep_count: Number of recent backups to keep (default: 7)
+
+        Returns:
+            bool: True if backup successful, False otherwise
+        """
+        import shutil
+        from datetime import datetime
+
+        try:
+            # Ensure database connection exists
+            if self.conn is None:
+                self.connect()
+
+            # Determine backup directory
+            if backup_dir is None:
+                backup_dir = Path(self.db_path).parent
+
+            backup_dir = Path(backup_dir)
+            backup_dir.mkdir(parents=True, exist_ok=True)
+
+            # Create timestamped backup filename
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            db_name = Path(self.db_path).stem
+            backup_name = f"{db_name}_backup_{timestamp}.db"
+            backup_path = backup_dir / backup_name
+
+            # Create backup using SQLite backup API (safer than file copy)
+            import sqlite3
+            backup_conn = sqlite3.connect(str(backup_path))
+            with backup_conn:
+                self.conn.backup(backup_conn)
+            backup_conn.close()
+
+            print(f"[+] Database backup created: {backup_path}")
+
+            # Rotate old backups - keep only most recent N
+            if keep_count > 0:
+                # Find all backup files for this database
+                backup_pattern = f"{db_name}_backup_*.db"
+                backup_files = sorted(backup_dir.glob(backup_pattern), reverse=True)
+
+                # Delete old backups beyond keep_count
+                for old_backup in backup_files[keep_count:]:
+                    old_backup.unlink()
+                    print(f"[*] Deleted old backup: {old_backup.name}")
+
+            return True
+
+        except Exception as e:
+            print(f"[!] Error creating database backup: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
