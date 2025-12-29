@@ -480,6 +480,22 @@ Scans local song folders to populate missing charter information in the database
 
 ## Version History & Migration Notes
 
+**v2.5.4** - Client Terminal Feedback Enhancement (Dec 29, 2025)
+- **NEW:** Detailed feedback for scores that don't improve personal best
+  - Shows which chart was played (chart hash, instrument, difficulty)
+  - Displays score achieved vs personal best with exact difference and percentage
+  - Replaces unhelpful "No new scores detected" message with actionable feedback
+  - Users can now see their progress even when not beating PBs
+- **TECHNICAL:** Implemented diff tracking in file watcher
+  - Tracks previous `scoredata.bin` parse snapshot
+  - Compares current parse to previous to identify exactly which score changed
+  - Smart first-parse handling to avoid spam on startup
+  - Shows: `Your Score: 140,000 pts | Personal Best: 150,000 pts | Difference: -10,000 pts (-6.7%)`
+- **IMPROVED:** Client UX - every score attempt now provides meaningful feedback
+- **FILES MODIFIED:** `client/file_watcher.py` only (client-only update)
+- CONFIG_VERSION: 5 (unchanged)
+- NOTE: Feedback shows chart hash instead of song title (technical limitation - see release notes)
+
 **v2.5.3** - Full Mode Customization & Critical Bug Fixes (Dec 28, 2025)
 - **NEW:** Full mode field customization - all announcement fields now configurable
   - Added `full_fields` config section for record_breaks, first_time_scores, personal_bests

@@ -104,6 +104,8 @@ class ScoreFileHandler(FileSystemEventHandler):
         self.on_new_score = on_new_score
         self.last_check = 0
         self.debounce_seconds = 2  # Wait 2 seconds after last change before processing
+        self.previous_scores_snapshot: Dict[str, int] = {}  # Track previous parse to detect changes
+        self.first_check = True  # Flag to skip detailed feedback on first parse
 
     def on_modified(self, event):
         """Called when scoredata.bin is modified"""
@@ -134,20 +136,79 @@ class ScoreFileHandler(FileSystemEventHandler):
             parser = ScoreDataParser(str(self.scoredata_path))
             scores = parser.parse()
 
-            new_scores = []
+            # Build current snapshot: key -> score value
+            current_snapshot = {}
             for score in scores:
+                key = self.state._score_key(score.chart_hash, score.instrument_id, score.difficulty)
+                current_snapshot[key] = score.score
+
+            # Find what changed by comparing to previous snapshot
+            changed_scores = []
+            for score in scores:
+                key = self.state._score_key(score.chart_hash, score.instrument_id, score.difficulty)
+                # Score changed if: not in previous snapshot OR value different from previous
+                if key not in self.previous_scores_snapshot or self.previous_scores_snapshot[key] != score.score:
+                    changed_scores.append(score)
+
+            # Separate changed scores into improved vs non-improved
+            new_scores = []
+            failed_improvements = []
+
+            for score in changed_scores:
                 if self.state.is_new_or_improved_score(score.chart_hash, score.instrument_id,
                                                        score.difficulty, score.score):
                     new_scores.append(score)
                     self.state.mark_score_seen(score.chart_hash, score.instrument_id,
                                               score.difficulty, score.score)
+                else:
+                    # Score changed but didn't improve - track for feedback
+                    failed_improvements.append(score)
 
+            # Show feedback for improved scores (existing behavior)
             if new_scores:
                 print(f"[+] Found {len(new_scores)} new/improved score(s)!")
                 for score in new_scores:
                     self.on_new_score(score)
-            else:
-                print("[-] No new scores detected (might be a replay or same score)")
+
+            # Show detailed feedback for scores that didn't improve
+            elif failed_improvements:
+                # Skip detailed feedback on first check (would show all existing scores)
+                if self.first_check:
+                    print("[-] No new scores detected")
+                else:
+                    print(f"[-] Score updated but did not improve personal best:")
+                    print()
+                    for score in failed_improvements:
+                        # Get personal best from state
+                        key = self.state._score_key(score.chart_hash, score.instrument_id, score.difficulty)
+                        pb_score = self.state.known_scores.get(key, 0)
+
+                        if pb_score > 0:
+                            diff = score.score - pb_score
+                            diff_pct = (diff / pb_score * 100) if pb_score > 0 else 0
+
+                            print(f"    Chart: [{score.chart_hash[:8]}...] ({score.difficulty_name} {score.instrument_name})")
+                            print(f"    Your Score: {score.score:,} pts")
+                            print(f"    Personal Best: {pb_score:,} pts")
+                            print(f"    Difference: {diff:,} pts ({diff_pct:+.1f}%)")
+                            print()
+                        else:
+                            # Edge case: changed but PB is 0 (shouldn't happen)
+                            print(f"    Chart: [{score.chart_hash[:8]}...] ({score.difficulty_name} {score.instrument_name})")
+                            print(f"    Score: {score.score:,} pts (replay or same score)")
+                            print()
+
+            # No changes at all (file modified but scores identical)
+            elif not changed_scores:
+                if not self.first_check:
+                    print("[-] No score changes detected (file modified but scores unchanged)")
+
+            # Update snapshot for next comparison
+            self.previous_scores_snapshot = current_snapshot
+
+            # Mark first check as complete
+            if self.first_check:
+                self.first_check = False
 
         except Exception as e:
             print(f"[!] Error checking for new scores: {e}")
