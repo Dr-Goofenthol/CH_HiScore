@@ -4,7 +4,7 @@ Clone Hero High Score Client
 Monitors your Clone Hero scores and submits them to the Discord scoreboard.
 """
 
-VERSION = "2.5.2"
+VERSION = "2.5.3"
 
 # GitHub repository for auto-updates
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
@@ -1133,19 +1133,41 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
 
                 else:
                     # Not a new high score
-                    print_info("Record Status: Not a new record")
-                    print()
                     if result.get('your_best_score'):
                         your_best = result['your_best_score']
-                        diff = your_best - score.score
+                        diff = score.score - your_best  # Positive = beat, Negative = below, 0 = tie
                         diff_pct = (diff / your_best * 100) if your_best > 0 else 0
-                        print(f"{Fore.CYAN}Your Personal Best:{Style.RESET_ALL}")
-                        print(f"  • Previous: {your_best:,} pts")
-                        print(f"  • Current: {score.score:,} pts")
-                        print(f"  • Gap: {Fore.RED}-{diff:,} pts (-{diff_pct:.1f}%){Style.RESET_ALL}")
-                        print()
-                        print_info("Result: Score saved (did not beat your PB)")
+
+                        if diff == 0:
+                            # Check if this is first time playing (play_count == 1)
+                            if score.play_count == 1:
+                                # First time playing this song
+                                print_info("Record Status: First time playing this song")
+                                print()
+                                print(f"{Fore.CYAN}Score:{Style.RESET_ALL} {score.score:,} pts")
+                                print()
+                                print_info("Result: Score saved (new personal best!)")
+                            else:
+                                # Tied with own best (played before)
+                                print_info("Record Status: Tied with your personal best")
+                                print()
+                                print(f"{Fore.CYAN}Score:{Style.RESET_ALL} {score.score:,} pts")
+                                print()
+                                print_info("Result: Score saved (matched your PB)")
+                        else:
+                            # Below own best
+                            print_info("Record Status: Below your personal best")
+                            print()
+                            print(f"{Fore.CYAN}Your Personal Best:{Style.RESET_ALL}")
+                            print(f"  • Best: {your_best:,} pts")
+                            print(f"  • This Score: {score.score:,} pts")
+                            print(f"  • Gap: {Fore.YELLOW}{diff:,} pts ({diff_pct:+.1f}%){Style.RESET_ALL}")
+                            print()
+                            print_info("Result: Score saved (did not beat your PB)")
                     else:
+                        # No previous score from this user (shouldn't happen, but handle it)
+                        print_info("Record Status: Score saved")
+                        print()
                         print_info("Result: Score saved")
             elif response.status_code == 401:
                 print_error("Authentication failed - you may need to re-pair")

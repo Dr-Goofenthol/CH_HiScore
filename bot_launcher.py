@@ -4,7 +4,7 @@ Clone Hero High Score Bot Launcher
 Standalone executable for the Discord bot with first-time setup.
 """
 
-VERSION = "2.5.2"
+VERSION = "2.5.3"
 
 # GitHub repository for auto-updates
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
@@ -763,7 +763,7 @@ def main():
 
     # Start the bot
     print("\n[*] Starting Discord bot...")
-    print("[*] Press Ctrl+C to stop\n")
+    print("[*] Press Ctrl+C to return to launcher\n")
 
     try:
         # Import and run the bot
@@ -771,11 +771,15 @@ def main():
         bot.run(config['DISCORD_TOKEN'])
     except KeyboardInterrupt:
         print("\n[*] Bot stopped by user")
+        print("[*] Returning to launcher...")
+        input("\nPress Enter to continue...")
+        return main()  # Return to launcher menu
     except Exception as e:
         print(f"\n[!] Error starting bot: {e}")
         import traceback
         traceback.print_exc()
-        input("\nPress Enter to exit...")
+        input("\nPress Enter to continue...")
+        return main()  # Return to launcher menu even on error
 
 
 if __name__ == '__main__':

@@ -15,8 +15,8 @@ from shared.console import print_success, print_info, print_warning, print_error
 class ConfigManager:
     """Manages bot configuration with version tracking and migrations"""
 
-    CONFIG_VERSION = 4  # Current config version for v2.5.2
-    BOT_VERSION = "2.5.2"
+    CONFIG_VERSION = 5  # Current config version for v2.5.3
+    BOT_VERSION = "2.5.3"
 
     def __init__(self, config_path: Optional[Path] = None):
         """
@@ -179,6 +179,27 @@ class ConfigManager:
                     "ping_previous_holder": True,
                     "embed_color": "#FFD700",
                     "style": "full",
+                    "full_fields": {
+                        "song_title": True,
+                        "artist": True,
+                        "difficulty_instrument": True,
+                        "score": True,
+                        "stars": True,
+                        "charter": True,
+                        "accuracy": True,
+                        "play_count": True,
+                        "best_streak": True,
+                        "previous_record": True,
+                        "improvement": True,
+                        "enchor_link": True,
+                        "chart_hash": True,
+                        "chart_hash_format": "full",
+                        "timestamp": True,
+                        "footer_show_previous_holder": True,
+                        "footer_show_previous_score": True,
+                        "footer_show_held_duration": True,
+                        "footer_show_set_timestamp": True
+                    },
                     "minimalist_fields": {
                         "song_title": True,
                         "artist": True,
@@ -193,13 +214,31 @@ class ConfigManager:
                         "enchor_link": False,
                         "chart_hash": True,
                         "chart_hash_format": "abbreviated",
-                        "timestamp": True
+                        "timestamp": True,
+                        "footer_show_previous_holder": True,
+                        "footer_show_previous_score": True,
+                        "footer_show_held_duration": True,
+                        "footer_show_set_timestamp": True
                     }
                 },
                 "first_time_scores": {
                     "enabled": True,
                     "style": "full",
                     "embed_color": "#4169E1",
+                    "full_fields": {
+                        "song_title": True,
+                        "artist": True,
+                        "difficulty_instrument": True,
+                        "score": True,
+                        "stars": True,
+                        "charter": True,
+                        "accuracy": True,
+                        "play_count": True,
+                        "enchor_link": True,
+                        "chart_hash": True,
+                        "chart_hash_format": "full",
+                        "timestamp": True
+                    },
                     "minimalist_fields": {
                         "song_title": True,
                         "artist": True,
@@ -223,6 +262,25 @@ class ConfigManager:
                     "show_server_record_holder": True,
                     "embed_color": "#32CD32",
                     "style": "full",
+                    "full_fields": {
+                        "song_title": True,
+                        "artist": True,
+                        "difficulty_instrument": True,
+                        "score": True,
+                        "stars": True,
+                        "charter": True,
+                        "accuracy": True,
+                        "play_count": True,
+                        "previous_best": True,
+                        "improvement": True,
+                        "server_record_holder": True,
+                        "enchor_link": True,
+                        "chart_hash": True,
+                        "chart_hash_format": "full",
+                        "timestamp": True,
+                        "footer_show_previous_best": True,
+                        "footer_show_improvement": True
+                    },
                     "minimalist_fields": {
                         "song_title": True,
                         "artist": True,
@@ -238,18 +296,10 @@ class ConfigManager:
                         "enchor_link": False,
                         "chart_hash": True,
                         "chart_hash_format": "abbreviated",
-                        "timestamp": True
+                        "timestamp": True,
+                        "footer_show_previous_best": True,
+                        "footer_show_improvement": True
                     }
-                },
-                "global_fields": {
-                    "show_play_count": True,
-                    "show_charter": True,
-                    "show_accuracy": True,
-                    "show_artist": False,
-                    "show_enchor_link": True,
-                    "show_timestamp_with_tz": True,
-                    "show_chart_hash": True,
-                    "chart_hash_format": "abbreviated"
                 },
                 "formatting": {
                     "include_thumbnail": False,
@@ -293,6 +343,29 @@ class ConfigManager:
         # Placeholder for future migrations
         pass
 
+    def _deep_merge_config(self, user_config: dict, default_config: dict) -> dict:
+        """
+        Deep merge user config with default config, adding missing keys while preserving user values
+
+        Args:
+            user_config: User's existing config
+            default_config: Default config template
+
+        Returns:
+            Merged config with all keys from default but user values where they exist
+        """
+        merged = default_config.copy()
+
+        for key, value in user_config.items():
+            if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+                # Recursively merge nested dicts
+                merged[key] = self._deep_merge_config(value, merged[key])
+            else:
+                # Use user's value
+                merged[key] = value
+
+        return merged
+
     def _migrate_v2_to_v3(self):
         """Migrate from v2 to v3 (add v2.5.0 features)"""
         default = self._create_default_config()
@@ -319,33 +392,39 @@ class ConfigManager:
 
         # Ensure announcements section exists before accessing nested keys
         self.config.setdefault('announcements', {})
+
+        # Deep merge each announcement type to ensure all fields are present
         if 'record_breaks' not in self.config['announcements']:
             self.config['announcements']['record_breaks'] = default['announcements']['record_breaks']
         else:
-            # Add missing fields to existing record_breaks config
-            if 'style' not in self.config['announcements']['record_breaks']:
-                self.config['announcements']['record_breaks']['style'] = default['announcements']['record_breaks']['style']
-            if 'minimalist_fields' not in self.config['announcements']['record_breaks']:
-                self.config['announcements']['record_breaks']['minimalist_fields'] = default['announcements']['record_breaks']['minimalist_fields']
+            # Deep merge to add any missing nested fields
+            self.config['announcements']['record_breaks'] = self._deep_merge_config(
+                self.config['announcements']['record_breaks'],
+                default['announcements']['record_breaks']
+            )
 
         if 'first_time_scores' not in self.config['announcements']:
             self.config['announcements']['first_time_scores'] = default['announcements']['first_time_scores']
         else:
-            # Add missing fields to existing first_time_scores config
-            if 'minimalist_fields' not in self.config['announcements']['first_time_scores']:
-                self.config['announcements']['first_time_scores']['minimalist_fields'] = default['announcements']['first_time_scores']['minimalist_fields']
+            # Deep merge to add any missing nested fields
+            self.config['announcements']['first_time_scores'] = self._deep_merge_config(
+                self.config['announcements']['first_time_scores'],
+                default['announcements']['first_time_scores']
+            )
 
         if 'personal_bests' not in self.config['announcements']:
             self.config['announcements']['personal_bests'] = default['announcements']['personal_bests']
         else:
-            # Add missing fields to existing personal_bests config
-            if 'style' not in self.config['announcements']['personal_bests']:
-                self.config['announcements']['personal_bests']['style'] = default['announcements']['personal_bests']['style']
-            if 'minimalist_fields' not in self.config['announcements']['personal_bests']:
-                self.config['announcements']['personal_bests']['minimalist_fields'] = default['announcements']['personal_bests']['minimalist_fields']
+            # Deep merge to add any missing nested fields
+            self.config['announcements']['personal_bests'] = self._deep_merge_config(
+                self.config['announcements']['personal_bests'],
+                default['announcements']['personal_bests']
+            )
 
-        if 'global_fields' not in self.config['announcements']:
-            self.config['announcements']['global_fields'] = default['announcements']['global_fields']
+        # Remove deprecated global_fields section if it exists (backwards compatibility)
+        if 'global_fields' in self.config['announcements']:
+            print_info("[Config] Removing deprecated 'global_fields' section (now using per-type minimalist_fields)")
+            del self.config['announcements']['global_fields']
 
         if 'logging' not in self.config:
             self.config['logging'] = default['logging']

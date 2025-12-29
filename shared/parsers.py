@@ -42,6 +42,11 @@ class SongMetadata:
 class ScoreDataParser:
     """Parser for Clone Hero's scoredata.bin file"""
 
+    # Instrument ID mapping
+    # IDs 0-6: Confirmed from Clone Hero's scoredata.bin structure
+    # IDs 7-10: Educated guesses based on Clone Hero Wiki instrument types
+    #           Need verification through testing - may be incorrect
+    # TODO: Verify IDs 7-10 through actual gameplay and scoredata analysis
     INSTRUMENT_NAMES = {
         0: "Lead Guitar",
         1: "Bass",
@@ -49,7 +54,11 @@ class ScoreDataParser:
         3: "Keys",
         4: "Drums",
         5: "GH Live Guitar",
-        6: "GH Live Bass"
+        6: "GH Live Bass",
+        7: "GH Live Rhythm",      # Unverified - educated guess
+        8: "GH Live Co-op",        # Unverified - educated guess
+        9: "Pro Drums",            # Unverified - educated guess
+        10: "Guitar Co-op"         # Unverified - educated guess
     }
 
     DIFFICULTY_NAMES = {

@@ -465,8 +465,19 @@ class Database:
             'discord_id': user['discord_id']
         }
 
-        print_info(f"[DB] Score submitted: {user['discord_username']} - {score:,} "
-              f"({'NEW HIGH SCORE!' if is_new_high_score else 'not a high score'})")
+        # Determine score type for terminal output
+        if is_record_broken:
+            score_type = "RECORD BROKEN!"
+        elif is_first_time_score:
+            score_type = "FIRST SCORE!"
+        elif is_personal_best:
+            score_type = "PERSONAL BEST!"
+        elif is_new_high_score:
+            score_type = "NEW HIGH SCORE!"
+        else:
+            score_type = "not a high score"
+
+        print_info(f"[DB] Score submitted: {user['discord_username']} - {score:,} ({score_type})")
 
         return result
 

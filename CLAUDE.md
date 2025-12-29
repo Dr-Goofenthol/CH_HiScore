@@ -109,7 +109,14 @@ All integers are **little-endian**.
   - Instrument Count (1 byte)
   - Play Count (3 bytes)
   - For each instrument:
-    - Instrument ID (2 bytes): 0=Lead, 1=Bass, 2=Rhythm, 3=Keys, 4=Drums
+    - Instrument ID (2 bytes):
+      - **Confirmed:** 0=Lead Guitar, 1=Bass, 2=Rhythm, 3=Keys, 4=Drums, 5=GH Live Guitar, 6=GH Live Bass
+      - **Partially Confirmed:** 8=Co-op Mode (observed: both players on lead guitar - Dec 2025)
+      - **Needs Verification:** 7=GH Live Rhythm(?), 9=Pro Drums(?), 10=Guitar Co-op(?)
+      - Note: ID 8 confirmed via user testing - co-op gameplay with both players on lead guitar
+      - Note: Exact naming for ID 8 TBD (could be "Guitar Co-op", "Lead Co-op", or general "Co-op")
+      - IDs 7, 9, 10 are educated guesses based on Clone Hero's documented instrument types
+      - Unknown IDs will display as "Unknown (ID X)" in announcements
     - Difficulty (1 byte): 0=Easy, 1=Medium, 2=Hard, 3=Expert
     - Completion Numerator/Denominator (2 bytes each)
     - Stars (1 byte): 0-5
@@ -472,6 +479,25 @@ Scans local song folders to populate missing charter information in the database
 - Overly broad exception handling can hide errors (always check what's inside try/except blocks)
 
 ## Version History & Migration Notes
+
+**v2.5.3** - Announcement Customization & Bug Fixes (Dec 2025)
+- **NEW:** Full mode field customization - all announcement fields now configurable
+  - Added `full_fields` config section for record_breaks, first_time_scores, personal_bests
+  - Admins can toggle any field on/off in full mode (song, artist, charter, accuracy, etc.)
+  - Footer components fully customizable (previous holder, score, held duration, timestamp)
+- **FIXED:** Previous record holder mentions not working in minimalist mode
+  - Both full and minimalist modes now respect `ping_previous_holder` config
+- **IMPROVED:** Extended instrument ID support (IDs 0-10)
+  - Added GH Live instruments (IDs 5-6 confirmed)
+  - Added co-op/pro drums support (IDs 7-10 educated guesses)
+  - **ID 8 partially confirmed:** Co-op mode (both players on lead guitar) via user testing
+- **FIXED:** Client terminal output for tied scores
+  - Fixed confusing "-0 pts gap" message when matching your own PB
+  - Gap calculation corrected (was showing backwards)
+  - Clearer status messages: "Tied with your personal best" vs "Below your personal best"
+- **ENHANCED:** Settings menu with full mode field customization options
+- **ENHANCED:** Preview generator respects both full and minimalist field configurations
+- CONFIG_VERSION: 5 (auto-migration from v4)
 
 **v2.4.15** - Critical Bugfix (resolvehashes command)
 - **FIXED:** resolvehashes command now functional (was completely broken)

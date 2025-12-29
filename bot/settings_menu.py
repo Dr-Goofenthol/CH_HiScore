@@ -289,22 +289,25 @@ class SettingsMenu:
             print("    1. Toggle Enabled/Disabled")
             print("    2. Set Color")
             print("    3. Toggle Style (Full/Minimalist)")
-            print("    4. Customize Minimalist Fields")
+            print("    4. Customize Full Mode Fields")
+            print("    5. Customize Minimalist Mode Fields")
             print()
             print("  First-Time Scores:")
-            print("    5. Toggle Enabled/Disabled")
-            print("    6. Set Color")
-            print("    7. Toggle Style (Full/Minimalist)")
-            print("    8. Customize Minimalist Fields")
+            print("    6. Toggle Enabled/Disabled")
+            print("    7. Set Color")
+            print("    8. Toggle Style (Full/Minimalist)")
+            print("    9. Customize Full Mode Fields")
+            print("   10. Customize Minimalist Mode Fields")
             print()
             print("  Personal Bests:")
-            print("    9. Toggle Enabled/Disabled")
-            print("   10. Set Color")
-            print("   11. Toggle Style (Full/Minimalist)")
-            print("   12. Set Thresholds")
-            print("   13. Customize Minimalist Fields")
+            print("   11. Toggle Enabled/Disabled")
+            print("   12. Set Color")
+            print("   13. Toggle Style (Full/Minimalist)")
+            print("   14. Set Thresholds")
+            print("   15. Customize Full Mode Fields")
+            print("   16. Customize Minimalist Mode Fields")
             print()
-            print("   14. Reset All Colors to Defaults")
+            print("   17. Reset All Colors to Defaults")
             print("    0. Back to Main Menu")
             print()
 
@@ -335,16 +338,18 @@ class SettingsMenu:
                 self.changes_made = True
                 print_success(f"[Settings] Record breaks style set to {new_style.capitalize()}")
             elif choice == "4":
+                self._customize_full_fields('record_breaks', 'Record Breaks')
+            elif choice == "5":
                 self._customize_minimalist_fields('record_breaks', 'Record Breaks')
 
             # First-Time Scores options
-            elif choice == "5":
+            elif choice == "6":
                 current = self.config.get('announcements.first_time_scores.enabled', True)
                 self.config.set('announcements.first_time_scores.enabled', not current)
                 self.changes_made = True
                 status = "Disabled" if current else "Enabled"
                 print_success(f"[Settings] First-time scores announcements: {status}")
-            elif choice == "6":
+            elif choice == "7":
                 color = self._get_input("Enter hex color (e.g., #4169E1 for blue): ").strip()
                 if self._validate_hex_color(color):
                     self.config.set('announcements.first_time_scores.embed_color', color)
@@ -352,23 +357,25 @@ class SettingsMenu:
                     print_success(f"[Settings] First-time scores color set to {color}")
                 else:
                     print_warning("[Settings] Invalid hex color format. Use #RRGGBB (e.g., #4169E1)")
-            elif choice == "7":
+            elif choice == "8":
                 current = self.config.get('announcements.first_time_scores.style', 'full')
                 new_style = 'minimalist' if current == 'full' else 'full'
                 self.config.set('announcements.first_time_scores.style', new_style)
                 self.changes_made = True
                 print_success(f"[Settings] First-time scores style set to {new_style.capitalize()}")
-            elif choice == "8":
+            elif choice == "9":
+                self._customize_full_fields('first_time_scores', 'First-Time Scores')
+            elif choice == "10":
                 self._customize_minimalist_fields('first_time_scores', 'First-Time Scores')
 
             # Personal Bests options
-            elif choice == "9":
+            elif choice == "11":
                 current = self.config.get('announcements.personal_bests.enabled', False)
                 self.config.set('announcements.personal_bests.enabled', not current)
                 self.changes_made = True
                 status = "Disabled" if current else "Enabled"
                 print_success(f"[Settings] Personal bests announcements: {status}")
-            elif choice == "10":
+            elif choice == "12":
                 color = self._get_input("Enter hex color (e.g., #32CD32 for green): ").strip()
                 if self._validate_hex_color(color):
                     self.config.set('announcements.personal_bests.embed_color', color)
@@ -376,13 +383,13 @@ class SettingsMenu:
                     print_success(f"[Settings] Personal bests color set to {color}")
                 else:
                     print_warning("[Settings] Invalid hex color format. Use #RRGGBB (e.g., #32CD32)")
-            elif choice == "11":
+            elif choice == "13":
                 current = self.config.get('announcements.personal_bests.style', 'full')
                 new_style = 'minimalist' if current == 'full' else 'full'
                 self.config.set('announcements.personal_bests.style', new_style)
                 self.changes_made = True
                 print_success(f"[Settings] Personal bests style set to {new_style.capitalize()}")
-            elif choice == "12":
+            elif choice == "14":
                 print()
                 print("Personal Bests Thresholds:")
                 print("(Both thresholds must be met for a personal best to be announced)")
@@ -403,9 +410,11 @@ class SettingsMenu:
                         print_warning("[Settings] Thresholds must be positive numbers")
                 except ValueError:
                     print_warning("[Settings] Invalid number format")
-            elif choice == "13":
+            elif choice == "15":
+                self._customize_full_fields('personal_bests', 'Personal Bests')
+            elif choice == "16":
                 self._customize_minimalist_fields('personal_bests', 'Personal Bests')
-            elif choice == "14":
+            elif choice == "17":
                 # Reset to default colors
                 self.config.set('announcements.record_breaks.embed_color', '#FFD700')
                 self.config.set('announcements.first_time_scores.embed_color', '#4169E1')
@@ -427,6 +436,135 @@ class SettingsMenu:
         except ValueError:
             return False
 
+    def _customize_full_fields(self, announcement_type: str, display_name: str):
+        """Customize which fields appear in full mode announcements"""
+        # Define available fields for each announcement type
+        field_definitions = {
+            'record_breaks': [
+                ('song_title', 'Song Title', True),
+                ('artist', 'Artist', True),
+                ('difficulty_instrument', 'Difficulty/Instrument', True),
+                ('score', 'Score', True),
+                ('stars', 'Stars', True),
+                ('charter', 'Charter', True),
+                ('accuracy', 'Accuracy', True),
+                ('play_count', 'Play Count', True),
+                ('best_streak', 'Best Streak', True),
+                ('previous_record', 'Previous Record', True),
+                ('improvement', 'Improvement', True),
+                ('enchor_link', 'Enchor.us Link', True),
+                ('chart_hash', 'Chart Hash', True),
+                ('chart_hash_format', 'Hash Format (abbreviated/full)', 'full'),
+                ('timestamp', 'Timestamp', True),
+                ('footer_show_previous_holder', 'Footer: Previous Holder', True),
+                ('footer_show_previous_score', 'Footer: Previous Score', True),
+                ('footer_show_held_duration', 'Footer: Held Duration', True),
+                ('footer_show_set_timestamp', 'Footer: Set Timestamp', True),
+            ],
+            'first_time_scores': [
+                ('song_title', 'Song Title', True),
+                ('artist', 'Artist', True),
+                ('difficulty_instrument', 'Difficulty/Instrument', True),
+                ('score', 'Score', True),
+                ('stars', 'Stars', True),
+                ('charter', 'Charter', True),
+                ('accuracy', 'Accuracy', True),
+                ('play_count', 'Play Count', True),
+                ('enchor_link', 'Enchor.us Link', True),
+                ('chart_hash', 'Chart Hash', True),
+                ('chart_hash_format', 'Hash Format (abbreviated/full)', 'full'),
+                ('timestamp', 'Timestamp', True),
+            ],
+            'personal_bests': [
+                ('song_title', 'Song Title', True),
+                ('artist', 'Artist', True),
+                ('difficulty_instrument', 'Difficulty/Instrument', True),
+                ('score', 'Score', True),
+                ('stars', 'Stars', True),
+                ('charter', 'Charter', True),
+                ('accuracy', 'Accuracy', True),
+                ('play_count', 'Play Count', True),
+                ('previous_best', 'Previous Best', True),
+                ('improvement', 'Improvement', True),
+                ('server_record_holder', 'Server Record Holder', True),
+                ('enchor_link', 'Enchor.us Link', True),
+                ('chart_hash', 'Chart Hash', True),
+                ('chart_hash_format', 'Hash Format (abbreviated/full)', 'full'),
+                ('timestamp', 'Timestamp', True),
+                ('footer_show_previous_best', 'Footer: Previous Best', True),
+                ('footer_show_improvement', 'Footer: Improvement', True),
+            ]
+        }
+
+        fields = field_definitions.get(announcement_type, [])
+        if not fields:
+            print_warning(f"[Settings] No fields defined for {announcement_type}")
+            input("Press Enter to continue...")
+            return
+
+        while True:
+            print("\n" + "=" * 80)
+            print(f" {display_name} - Full Mode Fields")
+            print("=" * 80)
+            print()
+            print("Configure which fields appear when using full detail style:")
+            print()
+
+            # Display current field status
+            for idx, (field_key, field_label, default_val) in enumerate(fields, 1):
+                config_key = f"announcements.{announcement_type}.full_fields.{field_key}"
+
+                if field_key == 'chart_hash_format':
+                    # Special handling for format field
+                    current_val = self.config.get(config_key, default_val)
+                    print(f"  {idx:2}. {field_label:30} [{current_val}]")
+                else:
+                    current_val = self.config.get(config_key, default_val)
+                    status = "ON" if current_val else "OFF"
+                    print(f"  {idx:2}. {field_label:30} [{status}]")
+
+            print()
+            print("  99. Reset to Defaults")
+            print("   0. Back")
+            print()
+
+            choice = self._get_input("Enter field number to toggle: ")
+
+            if choice == "0":
+                break
+            elif choice == "99":
+                # Reset all fields to defaults
+                for field_key, field_label, default_val in fields:
+                    config_key = f"announcements.{announcement_type}.full_fields.{field_key}"
+                    self.config.set(config_key, default_val)
+                self.changes_made = True
+                print_success(f"[Settings] {display_name} full mode fields reset to defaults")
+            else:
+                try:
+                    field_idx = int(choice) - 1
+                    if 0 <= field_idx < len(fields):
+                        field_key, field_label, default_val = fields[field_idx]
+                        config_key = f"announcements.{announcement_type}.full_fields.{field_key}"
+
+                        if field_key == 'chart_hash_format':
+                            # Toggle between abbreviated and full
+                            current_val = self.config.get(config_key, default_val)
+                            new_val = 'full' if current_val == 'abbreviated' else 'abbreviated'
+                            self.config.set(config_key, new_val)
+                            self.changes_made = True
+                            print_success(f"[Settings] {field_label} set to {new_val}")
+                        else:
+                            # Toggle boolean
+                            current_val = self.config.get(config_key, default_val)
+                            self.config.set(config_key, not current_val)
+                            self.changes_made = True
+                            status = "OFF" if current_val else "ON"
+                            print_success(f"[Settings] {field_label} set to {status}")
+                    else:
+                        print_warning("[Menu] Invalid selection")
+                except ValueError:
+                    print_warning("[Menu] Invalid selection")
+
     def _customize_minimalist_fields(self, announcement_type: str, display_name: str):
         """Customize which fields appear in minimalist announcements"""
         # Define available fields for each announcement type
@@ -446,6 +584,10 @@ class SettingsMenu:
                 ('chart_hash', 'Chart Hash', True),
                 ('chart_hash_format', 'Hash Format (abbreviated/full)', 'abbreviated'),
                 ('timestamp', 'Timestamp', True),
+                ('footer_show_previous_holder', 'Footer: Previous Holder', True),
+                ('footer_show_previous_score', 'Footer: Previous Score', True),
+                ('footer_show_held_duration', 'Footer: Held Duration', True),
+                ('footer_show_set_timestamp', 'Footer: Set Timestamp', True),
             ],
             'first_time_scores': [
                 ('song_title', 'Song Title', True),
@@ -477,6 +619,8 @@ class SettingsMenu:
                 ('chart_hash', 'Chart Hash', True),
                 ('chart_hash_format', 'Hash Format (abbreviated/full)', 'abbreviated'),
                 ('timestamp', 'Timestamp', True),
+                ('footer_show_previous_best', 'Footer: Previous Best', True),
+                ('footer_show_improvement', 'Footer: Improvement', True),
             ]
         }
 

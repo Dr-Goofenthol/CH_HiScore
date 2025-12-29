@@ -258,7 +258,21 @@ class ScoreAPI:
                 return
 
             # Get instrument and difficulty names
-            instruments = {0: "Lead Guitar", 1: "Bass", 2: "Rhythm", 3: "Keys", 4: "Drums"}
+            # IDs 0-6: Confirmed from Clone Hero's scoredata.bin structure
+            # IDs 7-10: Educated guesses - need verification through testing
+            instruments = {
+                0: "Lead Guitar",
+                1: "Bass",
+                2: "Rhythm",
+                3: "Keys",
+                4: "Drums",
+                5: "GH Live Guitar",
+                6: "GH Live Bass",
+                7: "GH Live Rhythm",      # Unverified - educated guess
+                8: "GH Live Co-op",        # Unverified - educated guess
+                9: "Pro Drums",            # Unverified - educated guess
+                10: "Guitar Co-op"         # Unverified - educated guess
+            }
             difficulties = {0: "Easy", 1: "Medium", 2: "Hard", 3: "Expert"}
 
             instrument_name = instruments.get(score_data['instrument_id'], "Unknown")
@@ -272,7 +286,9 @@ class ScoreAPI:
             is_personal_best = result.get('is_personal_best', False)
 
             # Set title, emoji, color, and description based on announcement type
+            # Also set announcement_type string for config lookups
             if is_record_broken:
+                announcement_type = "record_breaks"
                 title = "🏆 NEW RECORD SET!"
                 # Read color from config (default: Gold)
                 if self.config:
@@ -286,6 +302,7 @@ class ScoreAPI:
                     color = discord.Color.from_str('#FFD700')
                 action_text = "set a new server record!"
             elif is_first_time:
+                announcement_type = "first_time_scores"
                 title = "🎸 FIRST SCORE ON CHART!"
                 # Read color from config (default: Blue)
                 if self.config:
@@ -299,6 +316,7 @@ class ScoreAPI:
                     color = discord.Color.from_str('#4169E1')
                 action_text = "was the first to score on this chart!"
             elif is_personal_best:
+                announcement_type = "personal_bests"
                 title = "📈 PERSONAL BEST!"
                 # Read color from config (default: Green)
                 if self.config:
@@ -313,6 +331,7 @@ class ScoreAPI:
                 action_text = "improved their personal best!"
             else:
                 # Fallback (shouldn't happen)
+                announcement_type = "record_breaks"  # Default to record_breaks config
                 title = "NEW HIGH SCORE!"
                 color = discord.Color.gold()
                 action_text = "set a new score!"
@@ -427,8 +446,11 @@ class ScoreAPI:
                     # This would need to be fetched from database - placeholder for now
                     pass
 
-                # Enchor.us link
-                if fields_config.get('enchor_link', False):
+                # Enchor.us link and Chart hash (inline together when both visible)
+                show_enchor = fields_config.get('enchor_link', False)
+                show_hash = fields_config.get('chart_hash', True)
+
+                if show_enchor:
                     enchor_url = generate_enchor_url(
                         score_data.get('song_title'),
                         score_data.get('song_artist'),
@@ -438,18 +460,17 @@ class ScoreAPI:
                         embed.add_field(
                             name="Find This Chart",
                             value=f"[Search on enchor.us]({enchor_url})",
-                            inline=False
+                            inline=True  # Inline to pair with chart hash if both shown
                         )
 
-                # Chart hash
-                if fields_config.get('chart_hash', True):
+                if show_hash:
                     chart_hash = score_data['chart_hash']
                     hash_format = fields_config.get('chart_hash_format', 'abbreviated')
                     if hash_format == 'abbreviated':
                         hash_display = f"`{chart_hash[:8]}`"
                     else:
                         hash_display = f"`{chart_hash}`"
-                    embed.add_field(name="Chart Hash", value=hash_display, inline=False)
+                    embed.add_field(name="Chart Hash", value=hash_display, inline=True)  # Inline to pair with enchor link
 
                 # Timestamp
                 if fields_config.get('timestamp', True):
@@ -469,11 +490,106 @@ class ScoreAPI:
                     tz_abbr = now_display.strftime("%Z")
                     embed.add_field(name="Achieved", value=f"{timestamp_str} {tz_abbr}", inline=True)
 
-                await channel.send(embed=embed)
+                # Build footer for record breaks and personal bests (configurable)
+                footer_text = None
+
+                if is_record_broken and result.get('previous_holder'):
+                    # Record break footer with configurable components
+                    footer_parts = []
+
+                    if fields_config.get('footer_show_previous_holder', True):
+                        footer_parts.append(result['previous_holder'])
+
+                    if fields_config.get('footer_show_previous_score', True):
+                        footer_parts.append(f"({result.get('previous_score', 0):,} pts)")
+
+                    # Held duration calculation
+                    if fields_config.get('footer_show_held_duration', True) or fields_config.get('footer_show_set_timestamp', True):
+                        import pytz
+                        from datetime import datetime
+
+                        # Get timezone info
+                        tz_name = self.config.config.get('display', {}).get('timezone', 'UTC')
+                        try:
+                            display_timezone = pytz.timezone(tz_name)
+                        except pytz.exceptions.UnknownTimeZoneError:
+                            display_timezone = pytz.UTC
+
+                        now_utc = datetime.utcnow().replace(tzinfo=pytz.UTC)
+                        tz_abbr = now_utc.astimezone(display_timezone).strftime("%Z")
+
+                        if result.get('previous_record_timestamp'):
+                            try:
+                                prev_time = datetime.fromisoformat(result['previous_record_timestamp'])
+                                if prev_time.tzinfo is None:
+                                    prev_time = prev_time.replace(tzinfo=pytz.UTC)
+
+                                # Held duration
+                                if fields_config.get('footer_show_held_duration', True):
+                                    time_held = now_utc - prev_time
+                                    total_seconds = time_held.total_seconds()
+                                    if total_seconds >= 86400:  # 1 day or more
+                                        days = int(total_seconds // 86400)
+                                        footer_parts.append(f"Held for {days} day{'s' if days != 1 else ''}")
+                                    elif total_seconds >= 3600:  # 1 hour or more
+                                        hours = int(total_seconds // 3600)
+                                        footer_parts.append(f"Held for {hours} hour{'s' if hours != 1 else ''}")
+                                    else:  # Less than 1 hour
+                                        minutes = int(total_seconds // 60)
+                                        footer_parts.append(f"Held for {minutes} minute{'s' if minutes != 1 else ''}")
+
+                                # Set timestamp
+                                if fields_config.get('footer_show_set_timestamp', True):
+                                    prev_time_display = prev_time.astimezone(display_timezone)
+                                    prev_timestamp_str = prev_time_display.strftime("%Y-%m-%d %I:%M %p")
+                                    footer_parts.append(f"Set on {prev_timestamp_str} {tz_abbr}")
+                            except (ValueError, TypeError):
+                                pass  # Skip timestamp formatting if parsing fails
+
+                    if footer_parts:
+                        footer_text = "Previous record: " + " • ".join(footer_parts)
+
+                elif is_personal_best and result.get('user_previous_score'):
+                    # Personal best footer (simpler - just show improvement)
+                    footer_parts = []
+
+                    if fields_config.get('footer_show_previous_best', True):
+                        footer_parts.append(f"Previous best: {result['user_previous_score']:,} pts")
+
+                    if fields_config.get('footer_show_improvement', True):
+                        diff = score_data['score'] - result['user_previous_score']
+                        pct_improve = (diff / result['user_previous_score']) * 100
+                        footer_parts.append(f"Improved by {diff:,} pts ({pct_improve:.1f}%)")
+
+                    if footer_parts:
+                        footer_text = " • ".join(footer_parts)
+
+                # Set footer if we have text
+                if footer_text:
+                    embed.set_footer(text=footer_text)
+
+                # Ping previous record holder if enabled and applicable
+                ping_enabled = self.config.config.get('announcements', {}).get(announcement_type, {}).get('ping_previous_holder', True) if self.config else True
+                if is_record_broken and ping_enabled and result.get('previous_holder_discord_id'):
+                    prev_discord_id = result['previous_holder_discord_id']
+                    prev_mention = f"<@{prev_discord_id}>"
+
+                    # Only ping if it's a different person
+                    if str(prev_discord_id) != str(result['discord_id']):
+                        await channel.send(f"{prev_mention} - your record was beaten!", embed=embed)
+                    else:
+                        await channel.send(embed=embed)
+                else:
+                    await channel.send(embed=embed)
+
                 print_success(f"[API] Minimalist announcement posted to #{channel.name}")
                 return  # Early return for minimalist mode
 
             # FULL MODE: Continue with regular detailed announcement
+
+            # Get full_fields config for this announcement type (with safe .get() chaining)
+            # Defaults to empty dict if config not available (shows all fields)
+            full_fields_config = self.config.config.get('announcements', {}).get(announcement_type, {}).get('full_fields', {}) if self.config else {}
 
             # Accuracy/Notes display
             accuracy = score_data.get('completion_percent', 0)
@@ -488,15 +604,23 @@ class ScoreAPI:
             # User mention
             user_mention = f"<@{result['discord_id']}>"
 
-            # Build description with mention, song, and score
+            # Build description with mention, song, and score (always included in full mode)
             description = f"{user_mention} {action_text}\n\n"
-            description += f"**Song:** *{chart_display}*\n"
-            description += f"**Score:** *{score_data['score']:,}* points"
 
-            # Show improvement for personal bests and record breaks
-            if result.get('user_previous_score') and (is_personal_best or is_record_broken):
-                diff = score_data['score'] - result['user_previous_score']
-                description += f" (+{diff:,})"
+            # Song title (configurable)
+            if full_fields_config.get('song_title', True):
+                description += f"**Song:** *{chart_display}*\n"
+
+            # Score (configurable)
+            if full_fields_config.get('score', True):
+                description += f"**Score:** *{score_data['score']:,}* points"
+
+                # Show improvement for personal bests and record breaks
+                if full_fields_config.get('improvement', True) and result.get('user_previous_score') and (is_personal_best or is_record_broken):
+                    diff = score_data['score'] - result['user_previous_score']
+                    description += f" (+{diff:,})"
+
+                description += "\n\n"  # Add extra newline for spacing after score
 
             embed = discord.Embed(
                 title=title,
@@ -508,62 +632,69 @@ class ScoreAPI:
             best_streak = score_data.get('best_streak')
             score_type = score_data.get('score_type', 'raw')
 
-            # Row of key info
-            embed.add_field(
-                name="Instrument",
-                value=instrument_name,
-                inline=True
-            )
-            embed.add_field(
-                name="Difficulty",
-                value=difficulty_name,
-                inline=True
-            )
-            embed.add_field(
-                name="Stars",
-                value=stars_display,
-                inline=True
-            )
-
-            # Charter field (if available)
-            charter_name = score_data.get('song_charter')
-            if charter_name:
+            # Row of key info (instrument/difficulty/stars)
+            if full_fields_config.get('difficulty_instrument', True):
                 embed.add_field(
-                    name="Charter",
-                    value=charter_name,
+                    name="Instrument",
+                    value=instrument_name,
                     inline=True
                 )
+                embed.add_field(
+                    name="Difficulty",
+                    value=difficulty_name,
+                    inline=True
+                )
+
+            if full_fields_config.get('stars', True):
+                embed.add_field(
+                    name="Stars",
+                    value=stars_display,
+                    inline=True
+                )
+
+            # Charter field (if available and enabled)
+            if full_fields_config.get('charter', True):
+                charter_name = score_data.get('song_charter')
+                if charter_name:
+                    embed.add_field(
+                        name="Charter",
+                        value=charter_name,
+                        inline=True
+                    )
 
             # Accuracy field - show notes if we have rich score data
-            if notes_hit is not None and notes_total is not None:
-                embed.add_field(
-                    name="Accuracy",
-                    value=f"{notes_hit}/{notes_total} ({accuracy:.1f}%)",
-                    inline=True
-                )
-            else:
-                embed.add_field(
-                    name="Accuracy",
-                    value=f"{accuracy:.1f}%",
-                    inline=True
-                )
+            if full_fields_config.get('accuracy', True):
+                if notes_hit is not None and notes_total is not None:
+                    embed.add_field(
+                        name="Accuracy",
+                        value=f"{notes_hit}/{notes_total} ({accuracy:.1f}%)",
+                        inline=True
+                    )
+                else:
+                    embed.add_field(
+                        name="Accuracy",
+                        value=f"{accuracy:.1f}%",
+                        inline=True
+                    )
 
-            # Play count field (if available)
-            play_count = score_data.get('play_count')
-            if play_count is not None:
-                embed.add_field(
-                    name="Play Count",
-                    value=str(play_count),
-                    inline=True
-                )
+            # Play count field (if available and enabled)
+            if full_fields_config.get('play_count', True):
+                play_count = score_data.get('play_count')
+                if play_count is not None:
+                    embed.add_field(
+                        name="Play Count",
+                        value=str(play_count),
+                        inline=True
+                    )
 
-            # Only show streak if available (rich score)
-            if best_streak is not None:
-                embed.add_field(
-                    name="Best Streak",
-                    value=str(best_streak),
-                    inline=True
-                )
+            # Only show streak if available (rich score) and enabled
+            if full_fields_config.get('best_streak', True):
+                if best_streak is not None:
+                    embed.add_field(
+                        name="Best Streak",
+                        value=str(best_streak),
+                        inline=True
+                    )
 
             # Generate enchor.us link if we have metadata
             chart_hash = score_data['chart_hash']
@@ -573,20 +704,29 @@ class ScoreAPI:
                 score_data.get('song_charter')
             )
 
-            # Show enchor.us link if available
-            if enchor_url:
-                embed.add_field(
-                    name="Find This Chart",
-                    value=f"[Search on enchor.us]({enchor_url})",
-                    inline=False
-                )
+            # Show enchor.us link if available and enabled (full width for spacing)
+            if full_fields_config.get('enchor_link', True):
+                if enchor_url:
+                    embed.add_field(
+                        name="Find This Chart",
+                        value=f"[Search on enchor.us]({enchor_url})",
+                        inline=False  # Full width creates spacing like v2.4.13
+                    )
 
-            # Always show chart hash (unique identifier for our database)
-            embed.add_field(
-                name="Chart Hash",
-                value=f"`{chart_hash}`",
-                inline=False
-            )
+            # Chart hash (unique identifier for our database, full width for spacing)
+            if full_fields_config.get('chart_hash', True):
+                # Check format preference
+                hash_format = full_fields_config.get('chart_hash_format', 'full')
+                if hash_format == 'abbreviated':
+                    hash_display = f"`{chart_hash[:8]}`"
+                else:
+                    hash_display = f"`{chart_hash}`"
+
+                embed.add_field(
+                    name="Chart Hash",
+                    value=hash_display,
+                    inline=False  # Full width creates spacing like v2.4.13
+                )
 
             # Timezone handling for timestamps
             import pytz
@@ -603,58 +743,76 @@ class ScoreAPI:
             else:
                 display_timezone = pytz.UTC
 
-            # Add timestamp field showing when THIS score was achieved
+            # Calculate current time for timestamp and held duration calculations
+            # (needed by both timestamp field and held duration footer components)
             now_utc = datetime.utcnow().replace(tzinfo=pytz.UTC)
             now_display = now_utc.astimezone(display_timezone)
-            timestamp_str = now_display.strftime("%Y-%m-%d %I:%M %p")
             tz_abbr = now_display.strftime("%Z")
 
-            embed.add_field(
-                name="Achieved",
-                value=f"{timestamp_str} {tz_abbr}",
-                inline=True
-            )
+            # Add timestamp field showing when THIS score was achieved
+            if full_fields_config.get('timestamp', True):
+                timestamp_str = now_display.strftime("%Y-%m-%d %I:%M %p")
 
-            # Previous record holder - always show if there was one
+                embed.add_field(
+                    name="Achieved",
+                    value=f"{timestamp_str} {tz_abbr}",
+                    inline=True
+                )
+
+            # Previous record holder footer (configurable for full mode)
             if result.get('previous_holder') and result.get('previous_holder_discord_id'):
                 prev_discord_id = result['previous_holder_discord_id']
                 prev_mention = f"<@{prev_discord_id}>"
 
-                # Calculate how long the record was held
-                footer_text = f"Previous record: {result['previous_holder']} ({result.get('previous_score', 0):,} pts)"
+                # Build footer with configurable components
+                footer_parts = []
 
-                if result.get('previous_record_timestamp'):
-                    try:
-                        prev_time = datetime.fromisoformat(result['previous_record_timestamp'])
-                        # Assume prev_time is in UTC (from database)
-                        if prev_time.tzinfo is None:
-                            prev_time = prev_time.replace(tzinfo=pytz.UTC)
+                if full_fields_config.get('footer_show_previous_holder', True):
+                    footer_parts.append(result['previous_holder'])
 
-                        time_held = now_utc - prev_time
+                if full_fields_config.get('footer_show_previous_score', True):
+                    footer_parts.append(f"({result.get('previous_score', 0):,} pts)")
 
-                        # Format as days/hours/minutes
-                        total_seconds = time_held.total_seconds()
-                        if total_seconds >= 86400:  # 1 day or more
-                            days = int(total_seconds // 86400)
-                            footer_text += f" • Held for {days} day{'s' if days != 1 else ''}"
-                        elif total_seconds >= 3600:  # 1 hour or more
-                            hours = int(total_seconds // 3600)
-                            footer_text += f" • Held for {hours} hour{'s' if hours != 1 else ''}"
-                        else:  # Less than 1 hour
-                            minutes = int(total_seconds // 60)
-                            footer_text += f" • Held for {minutes} minute{'s' if minutes != 1 else ''}"
+                # Held duration and timestamp calculation
+                if full_fields_config.get('footer_show_held_duration', True) or full_fields_config.get('footer_show_set_timestamp', True):
+                    if result.get('previous_record_timestamp'):
+                        try:
+                            prev_time = datetime.fromisoformat(result['previous_record_timestamp'])
+                            # Assume prev_time is in UTC (from database)
+                            if prev_time.tzinfo is None:
+                                prev_time = prev_time.replace(tzinfo=pytz.UTC)
 
-                        # Add previous record timestamp (converted to display timezone)
-                        prev_time_display = prev_time.astimezone(display_timezone)
-                        prev_timestamp_str = prev_time_display.strftime("%Y-%m-%d %I:%M %p")
-                        footer_text += f" • Set on {prev_timestamp_str} {tz_abbr}"
-                    except (ValueError, TypeError):
-                        pass  # If timestamp parsing fails, just show the basic info
+                            time_held = now_utc - prev_time
 
-                embed.set_footer(text=footer_text)
+                            # Format held duration
+                            if full_fields_config.get('footer_show_held_duration', True):
+                                total_seconds = time_held.total_seconds()
+                                if total_seconds >= 86400:  # 1 day or more
+                                    days = int(total_seconds // 86400)
+                                    footer_parts.append(f"Held for {days} day{'s' if days != 1 else ''}")
+                                elif total_seconds >= 3600:  # 1 hour or more
+                                    hours = int(total_seconds // 3600)
+                                    footer_parts.append(f"Held for {hours} hour{'s' if hours != 1 else ''}")
+                                else:  # Less than 1 hour
+                                    minutes = int(total_seconds // 60)
+                                    footer_parts.append(f"Held for {minutes} minute{'s' if minutes != 1 else ''}")
 
-                # Only ping the previous holder if it's a different person
-                if str(prev_discord_id) != str(result['discord_id']):
+                            # Add previous record timestamp
+                            if full_fields_config.get('footer_show_set_timestamp', True):
+                                prev_time_display = prev_time.astimezone(display_timezone)
+                                prev_timestamp_str = prev_time_display.strftime("%Y-%m-%d %I:%M %p")
+                                footer_parts.append(f"Set on {prev_timestamp_str} {tz_abbr}")
+                        except (ValueError, TypeError):
+                            pass  # If timestamp parsing fails, skip these components
+
+                # Set footer if we have any parts
+                if footer_parts:
+                    footer_text = "Previous record: " + " • ".join(footer_parts)
+                    embed.set_footer(text=footer_text)
+
+                # Ping previous record holder if enabled
+                ping_enabled = self.config.config.get('announcements', {}).get(announcement_type, {}).get('ping_previous_holder', True) if self.config else True
+                if ping_enabled and str(prev_discord_id) != str(result['discord_id']):
                     await channel.send(f"{prev_mention} - your record was beaten!", embed=embed)
                 else:
                     await channel.send(embed=embed)
