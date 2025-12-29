@@ -480,21 +480,27 @@ Scans local song folders to populate missing charter information in the database
 
 ## Version History & Migration Notes
 
-**v2.5.3** - Announcement Customization & Bug Fixes (Dec 2025)
+**v2.5.3** - Full Mode Customization & Critical Bug Fixes (Dec 28, 2025)
 - **NEW:** Full mode field customization - all announcement fields now configurable
   - Added `full_fields` config section for record_breaks, first_time_scores, personal_bests
   - Admins can toggle any field on/off in full mode (song, artist, charter, accuracy, etc.)
   - Footer components fully customizable (previous holder, score, held duration, timestamp)
-- **FIXED:** Previous record holder mentions not working in minimalist mode
-  - Both full and minimalist modes now respect `ping_previous_holder` config
+  - Independent configuration for each announcement type
+- **FIXED (CRITICAL):** 6 major bugs identified and resolved via comprehensive code review:
+  1. UnboundLocalError: 'now_utc' not defined (held duration calculation)
+  2. UnboundLocalError: 'announcement_type' not defined (initial v2.5.3 release)
+  3. KeyError from unsafe config access (3 instances fixed with .get() chaining)
+  4. AttributeError when config is None (added null checks throughout)
+  5. Terminal output showing "NEW HIGH SCORE!" for all types (now shows RECORD BROKEN/FIRST SCORE/PERSONAL BEST)
+  6. Client terminal misleading "Tied with PB" for first-time scores (now checks play_count)
+- **IMPROVED:** Announcement spacing restored to v2.4.13 approach
+  - Full mode uses inline=False for Enchor/Chart Hash (creates natural spacing)
+  - Minimalist mode uses inline=True (maximum compactness)
+  - Clear visual distinction between the two modes
 - **IMPROVED:** Extended instrument ID support (IDs 0-10)
-  - Added GH Live instruments (IDs 5-6 confirmed)
-  - Added co-op/pro drums support (IDs 7-10 educated guesses)
-  - **ID 8 partially confirmed:** Co-op mode (both players on lead guitar) via user testing
-- **FIXED:** Client terminal output for tied scores
-  - Fixed confusing "-0 pts gap" message when matching your own PB
-  - Gap calculation corrected (was showing backwards)
-  - Clearer status messages: "Tied with your personal best" vs "Below your personal best"
+  - **ID 8 CONFIRMED:** Co-op mode (both players on lead guitar) - Dec 28, 2025
+  - IDs 7, 9, 10 still pending verification
+  - Unknown instruments display as "Unknown (ID X)" for easier identification
 - **ENHANCED:** Settings menu with full mode field customization options
 - **ENHANCED:** Preview generator respects both full and minimalist field configurations
 - CONFIG_VERSION: 5 (auto-migration from v4)
