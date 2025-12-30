@@ -919,15 +919,15 @@ def show_stats_command():
 
         db.close()
 
-        print_plain(f"  Total Users: {total_users}")
-        print_plain(f"  Total Scores: {total_scores:,}")
-        print_plain(f"  Total Songs: {total_songs:,}")
-        print_plain(f"  Record Breaks: {total_records:,}")
+        print_info(f"  Total Users: {total_users}")
+        print_info(f"  Total Scores: {total_scores:,}")
+        print_info(f"  Total Songs: {total_songs:,}")
+        print_info(f"  Record Breaks: {total_records:,}")
 
         if recent_result:
             from datetime import datetime
             recent_time = datetime.fromisoformat(recent_result[0])
-            print_plain(f"  Last Score: {recent_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            print_info(f"  Last Score: {recent_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
         print()
 
