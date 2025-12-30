@@ -15,6 +15,7 @@ import json
 import zipfile
 import tempfile
 import shutil
+import asyncio
 from pathlib import Path
 
 try:
@@ -525,7 +526,6 @@ def send_manual_update_notification(config):
     print("[*] Connecting to Discord...")
 
     # Import Discord bot module
-    import asyncio
     import discord
     from bot.config import Config
     from bot.database import Database

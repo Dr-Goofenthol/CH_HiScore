@@ -1155,7 +1155,6 @@ async def recent(interaction: discord.Interaction, count: int = 5):
 
             # Format the date nicely
             if rec.get('broken_at'):
-                from datetime import datetime
                 broken_date = datetime.fromisoformat(rec['broken_at'])
                 date_display = broken_date.strftime("%Y-%m-%d")
             else:
@@ -1276,7 +1275,6 @@ async def server_status(interaction: discord.Interaction):
 
     # Server Install Date
     if stats.get('first_activity'):
-        from datetime import datetime
         install_date = datetime.fromisoformat(stats['first_activity']).strftime("%B %d, %Y")
         embed.set_footer(text=f"Server tracking since {install_date}")
 
