@@ -18,6 +18,10 @@ import shutil
 import asyncio
 from pathlib import Path
 
+# Suppress Windows ProactorEventLoop connection errors (Discord.py known issue)
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 try:
     import requests
     HAS_REQUESTS = True
