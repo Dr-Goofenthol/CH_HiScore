@@ -9,12 +9,32 @@ import asyncio
 import json
 import urllib.parse
 from datetime import datetime
+import discord
 from .config import Config
 from shared.console import print_success, print_info, print_warning, print_error
 from shared.logger import get_bot_logger, log_exception
 
 # Initialize logger
 logger = get_bot_logger()
+
+
+def strip_color_tags(text: str) -> str:
+    """
+    Strip HTML color tags from text (e.g., from Clone Hero's currentsong.txt).
+
+    Example: "<color=#FFDE2B>R</color><color=#FFDE2B>L</color>" -> "RL"
+
+    Args:
+        text: Text potentially containing color tags
+
+    Returns:
+        Clean text with color tags removed
+    """
+    import re
+    if not text:
+        return text
+    # Remove <color=...> and </color> tags
+    return re.sub(r'</?color[^>]*>', '', text)
 
 
 def generate_enchor_url(song_title=None, song_artist=None, charter=None):
@@ -43,13 +63,47 @@ def generate_enchor_url(song_title=None, song_artist=None, charter=None):
 
     # Charter parameter helps distinguish multiple charts of same song
     if charter:
-        params['charter'] = charter
+        # Strip color tags before adding to params
+        clean_charter = strip_color_tags(charter)
+        params['charter'] = clean_charter
 
     # Build URL
     base_url = "https://www.enchor.us/"
     query_string = urllib.parse.urlencode(params)
 
     return f"{base_url}?{query_string}"
+
+
+def generate_bridge_url(song_title=None, song_artist=None, charter=None):
+    """
+    Generate chbridge:// deeplink URL based on song metadata.
+
+    Args:
+        song_title: Song title (e.g., "Afterglow")
+        song_artist: Artist name (e.g., "Syncatto")
+        charter: Charter name (e.g., "RLOMBARDI")
+
+    Returns:
+        URL string or None if insufficient metadata
+    """
+    # Need at least title or artist to make a useful search
+    if not song_title and not song_artist:
+        return None
+
+    params = []
+
+    if song_title:
+        params.append(f"name={urllib.parse.quote(song_title)}")
+
+    if song_artist:
+        params.append(f"artist={urllib.parse.quote(song_artist)}")
+
+    if charter:
+        # Strip color tags before encoding
+        clean_charter = strip_color_tags(charter)
+        params.append(f"charter={urllib.parse.quote(clean_charter)}")
+
+    return f"chbridge://search?{'&'.join(params)}"
 
 
 class ScoreAPI:
@@ -187,13 +241,18 @@ class ScoreAPI:
             print(f"  Result: {'RECORD BROKEN!' if result['is_record_broken'] else 'High Score' if result['is_high_score'] else 'Not a record'}")
 
             # Post announcements based on achievement type
-            # Check if record broken, first-time score, or personal best
-            should_announce_record = result.get('is_record_broken', False)
-            should_announce_first_time = result.get('is_first_time_score', False)
+            # Check if each announcement type is enabled in config
+            record_breaks_enabled = self.config.config.get('announcements', {}).get('record_breaks', {}).get('enabled', True) if self.config else True
+            first_time_enabled = self.config.config.get('announcements', {}).get('first_time_scores', {}).get('enabled', True) if self.config else True
+            personal_bests_enabled = self.config.config.get('announcements', {}).get('personal_bests', {}).get('enabled', False) if self.config else False
+
+            # Check if record broken, first-time score, or personal best (and if announcements are enabled)
+            should_announce_record = record_breaks_enabled and result.get('is_record_broken', False)
+            should_announce_first_time = first_time_enabled and result.get('is_first_time_score', False)
             should_announce_pb = False
 
-            # Check personal best with improvement thresholds
-            if result.get('is_personal_best', False):
+            # Check personal best with improvement thresholds (only if personal bests are enabled)
+            if personal_bests_enabled and result.get('is_personal_best', False):
                 user_prev = result.get('user_previous_score', 0)
                 new_score = data.get('score', 0)
 
@@ -413,7 +472,9 @@ class ScoreAPI:
                 if fields_config.get('charter', False):
                     charter_name = score_data.get('song_charter')
                     if charter_name:
-                        embed.add_field(name="Charter", value=charter_name, inline=True)
+                        # Strip color tags for clean display
+                        clean_charter = strip_color_tags(charter_name)
+                        embed.add_field(name="Charter", value=clean_charter, inline=True)
 
                 if fields_config.get('accuracy', False):
                     accuracy = score_data.get('completion_percent', 0)
@@ -459,7 +520,7 @@ class ScoreAPI:
                     if enchor_url:
                         embed.add_field(
                             name="Find This Chart",
-                            value=f"[Search on enchor.us]({enchor_url})",
+                            value=f"[View on Enchor.us]({enchor_url})",
                             inline=True  # Inline to pair with chart hash if both shown
                         )
 
@@ -656,9 +717,11 @@ class ScoreAPI:
             if full_fields_config.get('charter', True):
                 charter_name = score_data.get('song_charter')
                 if charter_name:
+                    # Strip color tags for clean display
+                    clean_charter = strip_color_tags(charter_name)
                     embed.add_field(
                         name="Charter",
-                        value=charter_name,
+                        value=clean_charter,
                         inline=True
                     )
 
@@ -696,7 +759,7 @@ class ScoreAPI:
                         inline=True
                     )
 
-            # Generate enchor.us link if we have metadata
+            # Generate chart search link if we have metadata
             chart_hash = score_data['chart_hash']
             enchor_url = generate_enchor_url(
                 score_data.get('song_title'),
@@ -704,12 +767,12 @@ class ScoreAPI:
                 score_data.get('song_charter')
             )
 
-            # Show enchor.us link if available and enabled (full width for spacing)
+            # Show Enchor.us link if available and enabled (full width for spacing)
             if full_fields_config.get('enchor_link', True):
                 if enchor_url:
                     embed.add_field(
                         name="Find This Chart",
-                        value=f"[Search on enchor.us]({enchor_url})",
+                        value=f"[View on Enchor.us]({enchor_url})",
                         inline=False  # Full width creates spacing like v2.4.13
                     )
 
@@ -810,8 +873,9 @@ class ScoreAPI:
                     footer_text = "Previous record: " + " • ".join(footer_parts)
                     embed.set_footer(text=footer_text)
 
-                # Ping previous record holder if enabled
-                ping_enabled = self.config.config.get('announcements', {}).get(announcement_type, {}).get('ping_previous_holder', True) if self.config else True
+            # Ping previous record holder if enabled
+            ping_enabled = self.config.config.get('announcements', {}).get(announcement_type, {}).get('ping_previous_holder', True) if self.config else True
+            if is_record_broken and prev_discord_id:
                 if ping_enabled and str(prev_discord_id) != str(result['discord_id']):
                     await channel.send(f"{prev_mention} - your record was beaten!", embed=embed)
                 else:

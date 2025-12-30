@@ -47,7 +47,7 @@ class ScoreState:
                     else:
                         self.known_scores = {}
                 if not self.needs_migration:
-                    print(f"[+] Loaded {len(self.known_scores)} known scores from state file")
+                    print(f"[+] Tracking {len(self.known_scores)} known personal bests")
             except Exception as e:
                 print(f"[!] Could not load state file: {e}")
                 self.known_scores = {}
@@ -174,9 +174,9 @@ class ScoreFileHandler(FileSystemEventHandler):
             elif failed_improvements:
                 # Skip detailed feedback on first check (would show all existing scores)
                 if self.first_check:
-                    print("[-] No new scores detected")
+                    print("[-] Monitoring active - waiting for new scores...")
                 else:
-                    print(f"[-] Score updated but did not improve personal best:")
+                    print(f"[-] Score recorded, but below your personal best:")
                     print()
                     for score in failed_improvements:
                         # Get personal best from state
@@ -201,7 +201,7 @@ class ScoreFileHandler(FileSystemEventHandler):
             # No changes at all (file modified but scores identical)
             elif not changed_scores:
                 if not self.first_check:
-                    print("[-] No score changes detected (file modified but scores unchanged)")
+                    print("[-] Clone Hero saved, but no score changes detected")
 
             # Update snapshot for next comparison
             self.previous_scores_snapshot = current_snapshot
@@ -276,7 +276,7 @@ class CloneHeroWatcher:
                 for score in new_scores:
                     self.on_new_score(score)
             else:
-                print("[+] No new offline scores detected")
+                print("[+] All scores up to date (no offline plays detected)")
 
         except Exception as e:
             print(f"[!] Error during catch-up scan: {e}")
@@ -285,7 +285,7 @@ class CloneHeroWatcher:
         """Start watching for score changes"""
         print(f"[*] Starting Clone Hero score watcher...")
         print(f"[*] Monitoring: {self.scoredata_path}")
-        print(f"[*] Tracking {len(self.state.known_scores)} known scores")
+        print(f"[*] Tracking {len(self.state.known_scores)} personal bests across all instruments/difficulties")
 
         event_handler = ScoreFileHandler(
             self.scoredata_path,

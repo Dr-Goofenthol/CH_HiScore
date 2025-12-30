@@ -6,11 +6,12 @@ Main bot file with Discord commands and HTTP API
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 import asyncio
 import os
 import sys
 from pathlib import Path
+from datetime import datetime, timedelta
 
 try:
     import requests
@@ -41,6 +42,25 @@ BOT_VERSION = os.environ.get('BOT_VERSION', '2.4.14')
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
 
 
+def strip_color_tags(text: str) -> str:
+    """
+    Strip HTML color tags from text (e.g., from Clone Hero's currentsong.txt).
+
+    Example: "<color=#FFDE2B>R</color><color=#FFDE2B>L</color>" -> "RL"
+
+    Args:
+        text: Text potentially containing color tags
+
+    Returns:
+        Clean text with color tags removed
+    """
+    import re
+    if not text:
+        return text
+    # Remove <color=...> and </color> tags
+    return re.sub(r'</?color[^>]*>', '', text)
+
+
 def build_enchor_url(title: str, artist: str = None, charter: str = None) -> str:
     """
     Build Enchor.us search URL from song metadata
@@ -61,9 +81,42 @@ def build_enchor_url(title: str, artist: str = None, charter: str = None) -> str
         url += f"&artist={quote(artist)}"
 
     if charter and charter not in ('*Unknown*', ''):
-        url += f"&charter={quote(charter)}"
+        # Strip color tags before encoding
+        clean_charter = strip_color_tags(charter)
+        url += f"&charter={quote(clean_charter)}"
 
     return url
+
+
+def build_bridge_url(title: str, artist: str = None, charter: str = None) -> str:
+    """
+    Build chbridge:// deeplink URL from song metadata
+
+    Args:
+        title: Song title/name
+        artist: Artist name (optional)
+        charter: Charter name (optional)
+
+    Returns:
+        Formatted chbridge:// deeplink URL
+    """
+    from urllib.parse import quote
+
+    url = "chbridge://search?"
+    params = []
+
+    if title:
+        params.append(f"name={quote(title)}")
+
+    if artist and artist not in ('*No artist*', ''):
+        params.append(f"artist={quote(artist)}")
+
+    if charter and charter not in ('*Unknown*', ''):
+        # Strip color tags before encoding
+        clean_charter = strip_color_tags(charter)
+        params.append(f"charter={quote(clean_charter)}")
+
+    return url + "&".join(params)
 
 
 def extract_update_highlights(release_notes: str) -> str:
@@ -242,6 +295,10 @@ class CloneHeroBot(commands.Bot):
         # Check for updates and notify Discord channel
         await self.check_and_notify_update()
 
+        # Start daily activity log task
+        if not self.daily_activity_log_task.is_running():
+            self.daily_activity_log_task.start()
+
     async def check_and_notify_update(self):
         """
         Check if bot was just updated to a new version.
@@ -324,6 +381,96 @@ class CloneHeroBot(commands.Bot):
         except Exception as e:
             print_error(f"Error sending update notification: {e}")
             log_exception(e)
+
+    @tasks.loop(minutes=30)
+    async def daily_activity_log_task(self):
+        """Background task to generate daily activity logs at configured time"""
+        try:
+            # Check if feature is enabled
+            if not self.config_manager:
+                return
+
+            enabled = self.config_manager.get('daily_activity_log.enabled', False)
+            if not enabled:
+                return
+
+            # Get configured generation time (default: midnight)
+            target_time = self.config_manager.get('daily_activity_log.generation_time', '00:00')
+            target_hour, target_minute = map(int, target_time.split(':'))
+
+            # Check if it's time to generate the log
+            now = datetime.now()
+            current_hour = now.hour
+            current_minute = now.minute
+
+            # Only generate if we're within the 30-minute window and haven't generated today yet
+            time_match = (current_hour == target_hour and abs(current_minute - target_minute) < 30)
+
+            if not time_match:
+                return
+
+            # Check if we've already generated a log today
+            last_generated = self.db.get_metadata('last_activity_log_date')
+            today_str = now.strftime('%Y-%m-%d')
+
+            if last_generated == today_str:
+                return  # Already generated today
+
+            # Generate the log
+            print_info(f"[Activity Log] Generating daily activity log for {today_str}")
+
+            # Get yesterday's date range (the day we're logging)
+            yesterday = now - timedelta(days=1)
+            start_time = yesterday.strftime('%Y-%m-%d 00:00:00')
+            end_time = today_str + ' 00:00:00'
+
+            # Get activity data from database
+            activity_data = self.db.get_daily_activity(start_time, end_time)
+
+            # Generate log text
+            from .activity_log import generate_daily_log, save_daily_log
+            log_text = generate_daily_log(activity_data, yesterday.strftime('%Y-%m-%d'))
+
+            # Save to file
+            log_dir = Path(self.db.db_path).parent / 'logs'
+            log_path = save_daily_log(log_text, log_dir, yesterday.strftime('%Y-%m-%d'))
+
+            print_success(f"[Activity Log] Generated: {log_path}")
+
+            # Update last generated date
+            self.db.set_metadata('last_activity_log_date', today_str)
+
+            # Cleanup old logs
+            keep_days = self.config_manager.get('daily_activity_log.keep_days', 30)
+            self._cleanup_old_activity_logs(log_dir, keep_days)
+
+        except Exception as e:
+            print_error(f"[Activity Log] Error generating log: {e}")
+            log_exception(e)
+
+    def _cleanup_old_activity_logs(self, log_dir: Path, keep_days: int):
+        """Remove activity logs older than keep_days"""
+        try:
+            log_dir = Path(log_dir)
+            if not log_dir.exists():
+                return
+
+            cutoff_date = datetime.now() - timedelta(days=keep_days)
+
+            for log_file in log_dir.glob('activity_*.txt'):
+                # Extract date from filename (activity_YYYY-MM-DD.txt)
+                try:
+                    date_str = log_file.stem.replace('activity_', '')
+                    file_date = datetime.strptime(date_str, '%Y-%m-%d')
+
+                    if file_date < cutoff_date:
+                        log_file.unlink()
+                        print_info(f"[Activity Log] Deleted old log: {log_file.name}")
+                except:
+                    pass  # Skip files that don't match the pattern
+
+        except Exception as e:
+            print_warning(f"[Activity Log] Error cleaning up old logs: {e}")
 
 
 # Create bot instance
@@ -488,7 +635,7 @@ async def leaderboard(
             if not is_mystery:
                 charter = score.get('song_charter')
                 enchor_url = build_enchor_url(song_title, artist, charter)
-                entry += f"   🔗 [Enchor.us]({enchor_url})\n"
+                entry += f"   🔗 [Search on Enchor.us]({enchor_url})\n"
 
             entry += "\n"  # Blank line after entry
             entries.append(entry)
@@ -619,7 +766,7 @@ async def mystats(interaction: discord.Interaction, user: discord.Member = None)
                 # Add Enchor.us link if we have metadata
                 if not is_mystery:
                     enchor_url = build_enchor_url(song_title, artist, charter)
-                    records_text += f"  🔗 [Enchor.us]({enchor_url})\n"
+                    records_text += f"  🔗 [Search on Enchor.us]({enchor_url})\n"
 
                 records_text += "\n"  # Blank line between records
 
@@ -687,11 +834,13 @@ async def lookupsong(interaction: discord.Interaction, query: str):
         title = song.get('title', '[Unknown]')
         artist = song.get('artist') or '*No artist*'
         charter = song.get('charter') or '*Unknown*'
+        # Strip color tags from charter for clean display
+        charter_display = strip_color_tags(charter) if charter else '*Unknown*'
         hash_short = song['chart_hash'][:8]
 
         results_text += f"**{i}.** {title}\n"
         results_text += f"   Artist: {artist}\n"
-        results_text += f"   Charter: {charter}\n"
+        results_text += f"   Charter: {charter_display}\n"
         results_text += f"   Chart Hash: `{hash_short}`\n"
 
         # Get all records for this chart
@@ -712,16 +861,8 @@ async def lookupsong(interaction: discord.Interaction, query: str):
         # Add Enchor.us link if we have song metadata
         # Skip if title is missing or is a mystery hash (starts with '[')
         if title and not title.startswith('['):
-            # Build URL with name (not title!) and artist
-            enchor_url = f"https://enchor.us/search?name={quote(title)}"
-            if artist and artist != '*No artist*':
-                enchor_url += f"&artist={quote(artist)}"
-
-            # Only add charter if it's not Unknown
-            if charter and charter != '*Unknown*':
-                enchor_url += f"&charter={quote(charter)}"
-
-            results_text += f"   🔗 [View on Enchor.us]({enchor_url})\n"
+            enchor_url = build_enchor_url(title, artist, charter)
+            results_text += f"   🔗 [Search on Enchor.us]({enchor_url})\n"
         else:
             results_text += f"   *(No Enchor.us link available - missing song metadata)*\n"
 
@@ -986,36 +1127,85 @@ async def recent(interaction: discord.Interaction, count: int = 5):
 
     if records:
         instruments = {0: "Lead", 1: "Bass", 2: "Rhythm", 3: "Keys", 4: "Drums"}
-        difficulties = {0: "Easy", 1: "Med", 2: "Hard", 3: "Expert"}
+        difficulties = {0: "Easy", 1: "Medium", 2: "Hard", 3: "Expert"}
 
-        records_text = ""
-        for rec in records:
+        # Build record entries with beautified formatting
+        entries = []
+        for i, rec in enumerate(records, 1):
             inst = instruments.get(rec['instrument_id'], '?')
             diff = difficulties.get(rec['difficulty_id'], '?')
-            song = rec.get('song_title', f"[{rec['chart_hash'][:8]}]")
+
+            # Display song info
+            song_title = rec.get('song_title')
             artist = rec.get('song_artist')
-            if artist:
-                song = f"{song} - {artist}"
+            charter = rec.get('song_charter')
+            chart_hash = rec['chart_hash']
 
-            # Format the timestamp
-            broken_at = rec['broken_at'][:10] if rec.get('broken_at') else '?'
+            # Check if this is a mystery hash
+            is_mystery = not song_title or song_title.startswith('[')
 
-            # Build the record text
-            records_text += f"**{rec['breaker_name']}** broke the record on:\n"
-            records_text += f"  {song} ({diff} {inst})\n"
-            records_text += f"  Score: {rec['new_score']:,}"
+            # Build song display with difficulty/instrument
+            if is_mystery:
+                song_display = f"🔍 `[{chart_hash[:8]}]` ({diff} {inst})"
+            else:
+                song_display = f"{song_title}"
+                if artist:
+                    song_display += f" - {artist}"
+                song_display += f" ({diff} {inst})"
+
+            # Format the date nicely
+            if rec.get('broken_at'):
+                from datetime import datetime
+                broken_date = datetime.fromisoformat(rec['broken_at'])
+                date_display = broken_date.strftime("%Y-%m-%d")
+            else:
+                date_display = '?'
+
+            # Build entry with cleaner formatting
+            entry = f"**{rec['breaker_name']}** broke the record on:\n"
+            entry += f"{song_display}\n"
+            entry += f"**Score:** {rec['new_score']:,}"
+
+            # Show previous record info inline
             if rec.get('previous_score'):
-                records_text += f" (was {rec['previous_score']:,}"
+                entry += f" (was {rec['previous_score']:,}"
                 if rec.get('previous_holder_name'):
-                    records_text += f" by {rec['previous_holder_name']}"
-                records_text += ")"
-            records_text += f"\n  *{broken_at}*\n\n"
+                    entry += f" by {rec['previous_holder_name']}"
+                entry += ")"
 
-        embed.add_field(
-            name=f"Last {len(records)} Record Break(s)",
-            value=records_text[:1024] if len(records_text) > 1024 else records_text,
-            inline=False
-        )
+            entry += f"\n*{date_display}*"
+
+            # Add Enchor.us link if we have metadata
+            if not is_mystery:
+                enchor_url = build_enchor_url(song_title, artist, charter)
+                entry += f"\n🔗 [Search on Enchor.us]({enchor_url})"
+
+            entry += "\n\n"
+            entries.append(entry)
+
+        # Split entries into fields to avoid Discord's 1024 char limit
+        current_field = ""
+        field_count = 1
+        for entry in entries:
+            if len(current_field) + len(entry) > 1024:
+                # Add current field and start new one
+                embed.add_field(
+                    name=f"Records {field_count}" if field_count > 1 else f"Last {len(records)} Record Break(s)",
+                    value=current_field,
+                    inline=False
+                )
+                current_field = entry
+                field_count += 1
+            else:
+                current_field += entry
+
+        # Add final field
+        if current_field:
+            embed.add_field(
+                name=f"Records {field_count}" if field_count > 1 else f"Last {len(records)} Record Break(s)",
+                value=current_field,
+                inline=False
+            )
     else:
         embed.add_field(
             name="No Records Yet",

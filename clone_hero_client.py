@@ -4,7 +4,7 @@ Clone Hero High Score Client
 Monitors your Clone Hero scores and submits them to the Discord scoreboard.
 """
 
-VERSION = "2.5.4"
+VERSION = "2.5.5"
 
 # GitHub repository for auto-updates
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
@@ -689,6 +689,95 @@ def do_pairing(is_existing_user=False):
             print("Your Discord account is now linked.")
             print("Scores will be automatically submitted!")
         print("=" * 50 + "\n")
+
+        # Offer Bridge integration setup for new users
+        from client.bridge_integration import is_bridge_installed, run_bridge_setup
+        import sys
+
+        print_header("BRIDGE INTEGRATION SETUP", width=50)
+        print("\nBridge Integration allows you to search for charts directly")
+        print("in the Bridge desktop app by clicking links in Discord.")
+        print("\nEnable Bridge Integration? (Y/n)")
+        print("(You can change this later in Settings)")
+
+        choice = input("> ").strip().lower()
+
+        if choice in ['y', 'yes', '']:
+            print_info("\nRunning Bridge integration setup...")
+
+            # Get tracker exe path
+            if getattr(sys, 'frozen', False):
+                tracker_exe = sys.executable
+            else:
+                tracker_exe = str(Path(__file__).resolve())
+
+            # Check if Bridge is installed
+            is_installed, bridge_path = is_bridge_installed()
+
+            if not is_installed:
+                print_warning("\nBridge not found in common installation locations.")
+                print("Please enter the full path to Bridge.exe:")
+                print("(or press Enter to skip setup)")
+
+                custom_path = input("> ").strip()
+
+                if custom_path:
+                    bridge_path = Path(custom_path)
+                    if not bridge_path.exists():
+                        print_error(f"Path does not exist: {custom_path}")
+                        print_info("Skipping Bridge setup. You can enable it later in Settings.")
+                    elif not bridge_path.name.lower() == 'bridge.exe':
+                        print_error("File must be Bridge.exe")
+                        print_info("Skipping Bridge setup. You can enable it later in Settings.")
+                    else:
+                        # Run setup with custom path
+                        try:
+                            success, message = run_bridge_setup(tracker_exe)
+                            if success:
+                                settings = load_settings()
+                                if 'bridge_integration' not in settings:
+                                    settings['bridge_integration'] = {}
+                                settings['bridge_integration']['enabled'] = True
+                                settings['bridge_integration']['bridge_path'] = str(bridge_path)
+                                settings['bridge_integration']['protocol_registered'] = True
+                                settings['bridge_integration']['prompted'] = True
+                                save_settings(settings)
+                                print_success(f"\n{message}")
+                                print_success("Bridge Integration enabled!")
+                            else:
+                                print_error(f"\nSetup failed: {message}")
+                                print_info("You can enable it later in Settings.")
+                        except PermissionError:
+                            print_error("\nSetup failed: Permission denied")
+                            print_warning("Re-launch the tracker as Administrator to enable Bridge integration.")
+                else:
+                    print_info("Skipping Bridge setup. You can enable it later in Settings.")
+            else:
+                # Run setup with auto-detected path
+                try:
+                    success, message = run_bridge_setup(tracker_exe)
+                    if success:
+                        settings = load_settings()
+                        if 'bridge_integration' not in settings:
+                            settings['bridge_integration'] = {}
+                        settings['bridge_integration']['enabled'] = True
+                        settings['bridge_integration']['bridge_path'] = str(bridge_path)
+                        settings['bridge_integration']['protocol_registered'] = True
+                        settings['bridge_integration']['prompted'] = True
+                        save_settings(settings)
+                        print_success(f"\n{message}")
+                        print_success("Bridge Integration enabled!")
+                    else:
+                        print_error(f"\nSetup failed: {message}")
+                        print_info("You can enable it later in Settings.")
+                except PermissionError:
+                    print_error("\nSetup failed: Permission denied")
+                    print_warning("Re-launch the tracker as Administrator to enable Bridge integration.")
+        else:
+            print_info("Bridge Integration skipped. You can enable it later in Settings.")
+
+        print("=" * 50 + "\n")
+
         return auth_token
     else:
         print("\n" + "-" * 50)
@@ -1632,10 +1721,23 @@ def settings_menu():
         else:
             print_plain("    Disabled", indent=1)
 
+        # Bridge Integration option
+        bridge_config = settings.get('bridge_integration', {})
+        bridge_enabled = bridge_config.get('enabled', False)
+        bridge_path = bridge_config.get('bridge_path', '')
+
+        print_plain(f"\n[6] Bridge Integration")
+        if bridge_enabled:
+            print_success("Enabled", indent=1)
+            if bridge_path:
+                print_plain(f"    Path: {bridge_path}", indent=1)
+        else:
+            print_plain("    Disabled", indent=1)
+
         print_plain(f"\n[0] Back to main menu")
         print("\n" + "=" * 50)
 
-        choice = input("Select option (0-5): ").strip()
+        choice = input("Select option (0-6): ").strip()
 
         if choice == '0':
             break
@@ -1780,6 +1882,104 @@ def settings_menu():
                     print_success("Start with Windows disabled")
                 else:
                     print_error("Failed to disable startup - see error above")
+
+        elif choice == '6':
+            from client.bridge_integration import run_bridge_setup, is_protocol_registered, unregister_protocol, is_bridge_installed
+
+            bridge_config = settings.get('bridge_integration', {})
+            bridge_enabled = bridge_config.get('enabled', False)
+
+            print(f"\nBridge Integration is currently: {'Enabled' if bridge_enabled else 'Disabled'}")
+            print("\nBridge Integration allows you to search for charts directly in the")
+            print("Bridge desktop app by clicking links in Discord announcements.")
+            print("\nRequires:")
+            print("  - Bridge desktop app installed")
+            print("  - Protocol registration (chbridge://)")
+            print("  - Shortcut modifications for remote debugging")
+
+            print(f"\n  1. Enable Bridge Integration")
+            print(f"  2. Disable Bridge Integration")
+            print(f"  0. Cancel")
+
+            bridge_choice = input("\nSelect option: ").strip()
+
+            if bridge_choice == '1':
+                # Enable Bridge Integration - run setup
+                print_info("\nRunning Bridge integration setup...")
+
+                # Get tracker exe path
+                import sys
+                if getattr(sys, 'frozen', False):
+                    # Running as compiled exe
+                    tracker_exe = sys.executable
+                else:
+                    # Running from source (for testing)
+                    tracker_exe = str(Path(__file__).resolve())
+
+                # Check if Bridge is installed first
+                is_installed, bridge_path = is_bridge_installed()
+
+                if not is_installed:
+                    print_warning("\nBridge not found in common installation locations.")
+                    print("Please enter the full path to Bridge.exe:")
+                    print("(or press Enter to cancel)")
+
+                    custom_path = input("> ").strip()
+
+                    if custom_path:
+                        bridge_path = Path(custom_path)
+                        if not bridge_path.exists():
+                            print_error(f"Path does not exist: {custom_path}")
+                            continue
+                        elif not bridge_path.name.lower() == 'bridge.exe':
+                            print_error("File must be Bridge.exe")
+                            continue
+                    else:
+                        print_info("Setup cancelled")
+                        continue
+
+                # Run setup
+                success, message = run_bridge_setup(tracker_exe)
+
+                if success:
+                    # Save settings
+                    if 'bridge_integration' not in settings:
+                        settings['bridge_integration'] = {}
+
+                    settings['bridge_integration']['enabled'] = True
+                    settings['bridge_integration']['bridge_path'] = str(bridge_path)
+                    settings['bridge_integration']['protocol_registered'] = True
+                    settings['bridge_integration']['setup_completed'] = True
+
+                    save_settings(settings)
+                    print_success(f"\n{message}")
+                    print_success("Bridge Integration enabled")
+                else:
+                    print_error(f"\nSetup failed: {message}")
+
+            elif bridge_choice == '2':
+                # Disable Bridge Integration
+                print_info("\nDisabling Bridge Integration...")
+
+                # Optionally unregister protocol
+                if is_protocol_registered():
+                    print("\nDo you want to unregister the chbridge:// protocol?")
+                    print("(Shortcuts will keep remote debugging flag)")
+                    unregister = input("Unregister protocol? (y/n): ").strip().lower()
+
+                    if unregister == 'y':
+                        if unregister_protocol():
+                            print_success("Protocol unregistered")
+                        else:
+                            print_warning("Failed to unregister protocol")
+
+                # Update settings
+                if 'bridge_integration' not in settings:
+                    settings['bridge_integration'] = {}
+
+                settings['bridge_integration']['enabled'] = False
+                save_settings(settings)
+                print_success("Bridge Integration disabled")
 
         else:
             print_warning("Invalid option")
@@ -2451,6 +2651,54 @@ def resolve_hashes_command():
 
 
 def main():
+    import sys
+
+    # Check for --bridge-deeplink command-line argument
+    if len(sys.argv) > 1 and sys.argv[1] == '--bridge-deeplink':
+        # Handle Bridge deeplink
+        if len(sys.argv) > 2:
+            bridge_url = sys.argv[2]
+
+            # Load settings to get Bridge configuration
+            settings = load_settings()
+            bridge_config = settings.get('bridge_integration', {})
+            bridge_enabled = bridge_config.get('enabled', False)
+            bridge_path = bridge_config.get('bridge_path')
+
+            if not bridge_enabled:
+                print_error("Bridge Integration is disabled.")
+                print_info("Enable it in Settings to use Bridge links.")
+                input("\nPress Enter to exit...")
+                return
+
+            # Handle the deeplink
+            from client.bridge_integration import handle_bridge_deeplink
+
+            print_info("Connecting to Bridge...")
+
+            if bridge_path:
+                success, message = handle_bridge_deeplink(bridge_url, Path(bridge_path))
+            else:
+                success, message = handle_bridge_deeplink(bridge_url)
+
+            if success:
+                print_success(message)
+                print_info("Closing in 2 seconds...")
+                time.sleep(2)
+                return
+            else:
+                print_error(f"Bridge link failed: {message}")
+                print_info("You can try:")
+                print("  1. Make sure Bridge is installed")
+                print("  2. Check Bridge integration settings")
+                print("  3. Close Bridge and try again")
+                input("\nPress Enter to exit...")
+                return
+        else:
+            print_error("No Bridge URL provided")
+            input("\nPress Enter to exit...")
+            return
+
     print_header(f"Clone Hero High Score Tracker v{VERSION}", width=50)
 
     # Check for single instance
@@ -2549,6 +2797,140 @@ def main():
             return
     else:
         print_success("Already paired (auth token found)")
+
+        # Check if Bridge integration setup is needed (upgrade detection)
+        bridge_config = settings.get('bridge_integration', {})
+        bridge_prompted = bridge_config.get('prompted', False)
+
+        if not bridge_prompted:
+            # This is an existing user who hasn't been prompted about Bridge yet
+            from client.bridge_integration import is_protocol_registered
+
+            if not is_protocol_registered():
+                print("\n" + "=" * 50)
+                print_header("NEW FEATURE: Bridge Integration", width=50)
+                print("\nBridge Integration allows you to search for charts directly")
+                print("in the Bridge desktop app by clicking links in Discord.")
+                print("\nThis is a one-time setup that requires:")
+                print("  - Bridge desktop app installed (optional)")
+                print("  - Protocol registration (chbridge://)")
+                print("  - Shortcut modifications")
+                print("\n" + "=" * 50)
+                print("\nEnable Bridge Integration now? (Y/n)")
+                print("(You can change this later in Settings)")
+
+                choice = input("> ").strip().lower()
+
+                if choice in ['y', 'yes', '']:
+                    # Run setup
+                    from client.bridge_integration import run_bridge_setup, is_bridge_installed
+                    import sys
+
+                    print_info("\nRunning Bridge integration setup...")
+
+                    # Get tracker exe path
+                    if getattr(sys, 'frozen', False):
+                        tracker_exe = sys.executable
+                    else:
+                        tracker_exe = str(Path(__file__).resolve())
+
+                    # Check if Bridge is installed
+                    is_installed, bridge_path = is_bridge_installed()
+
+                    if not is_installed:
+                        print_warning("\nBridge not found in common installation locations.")
+                        print("Please enter the full path to Bridge.exe:")
+                        print("(or press Enter to skip setup)")
+
+                        custom_path = input("> ").strip()
+
+                        if custom_path:
+                            bridge_path = Path(custom_path)
+                            if not bridge_path.exists():
+                                print_error(f"Path does not exist: {custom_path}")
+                                print_info("Skipping Bridge setup. You can enable it later in Settings.")
+                                # Mark as prompted to not ask again
+                                if 'bridge_integration' not in settings:
+                                    settings['bridge_integration'] = {}
+                                settings['bridge_integration']['prompted'] = True
+                                settings['bridge_integration']['enabled'] = False
+                                save_settings(settings)
+                            elif not bridge_path.name.lower() == 'bridge.exe':
+                                print_error("File must be Bridge.exe")
+                                print_info("Skipping Bridge setup. You can enable it later in Settings.")
+                                if 'bridge_integration' not in settings:
+                                    settings['bridge_integration'] = {}
+                                settings['bridge_integration']['prompted'] = True
+                                settings['bridge_integration']['enabled'] = False
+                                save_settings(settings)
+                            else:
+                                # Run setup with custom path
+                                try:
+                                    success, message = run_bridge_setup(tracker_exe)
+                                    if success:
+                                        if 'bridge_integration' not in settings:
+                                            settings['bridge_integration'] = {}
+                                        settings['bridge_integration']['enabled'] = True
+                                        settings['bridge_integration']['bridge_path'] = str(bridge_path)
+                                        settings['bridge_integration']['protocol_registered'] = True
+                                        settings['bridge_integration']['prompted'] = True
+                                        save_settings(settings)
+                                        print_success(f"\n{message}")
+                                        print_success("Bridge Integration enabled!")
+                                    else:
+                                        print_error(f"\nSetup failed: {message}")
+                                        print_warning("Setup will retry on next launch.")
+                                        print_info("TIP: Try running the tracker as Administrator if you see permission errors.")
+                                        # Don't set prompted=True - let it retry next time
+                                except PermissionError:
+                                    print_error("\nSetup failed: Permission denied")
+                                    print_warning("Please close the tracker and re-launch as Administrator:")
+                                    print("  1. Right-click CloneHeroScoreTracker.exe")
+                                    print("  2. Select 'Run as administrator'")
+                                    print("  3. Setup will retry automatically")
+                                    # Don't set prompted=True - let it retry next time
+                        else:
+                            print_info("Skipping Bridge setup. You can enable it later in Settings.")
+                            if 'bridge_integration' not in settings:
+                                settings['bridge_integration'] = {}
+                            settings['bridge_integration']['prompted'] = True
+                            settings['bridge_integration']['enabled'] = False
+                            save_settings(settings)
+                    else:
+                        # Run setup with auto-detected path
+                        try:
+                            success, message = run_bridge_setup(tracker_exe)
+                            if success:
+                                if 'bridge_integration' not in settings:
+                                    settings['bridge_integration'] = {}
+                                settings['bridge_integration']['enabled'] = True
+                                settings['bridge_integration']['bridge_path'] = str(bridge_path)
+                                settings['bridge_integration']['protocol_registered'] = True
+                                settings['bridge_integration']['prompted'] = True
+                                save_settings(settings)
+                                print_success(f"\n{message}")
+                                print_success("Bridge Integration enabled!")
+                            else:
+                                print_error(f"\nSetup failed: {message}")
+                                print_warning("Setup will retry on next launch.")
+                                print_info("TIP: Try running the tracker as Administrator if you see permission errors.")
+                                # Don't set prompted=True - let it retry next time
+                        except PermissionError:
+                            print_error("\nSetup failed: Permission denied")
+                            print_warning("Please close the tracker and re-launch as Administrator:")
+                            print("  1. Right-click CloneHeroScoreTracker.exe")
+                            print("  2. Select 'Run as administrator'")
+                            print("  3. Setup will retry automatically")
+                            # Don't set prompted=True - let it retry next time
+                else:
+                    print_info("Bridge Integration skipped. You can enable it later in Settings.")
+                    if 'bridge_integration' not in settings:
+                        settings['bridge_integration'] = {}
+                    settings['bridge_integration']['prompted'] = True
+                    settings['bridge_integration']['enabled'] = False
+                    save_settings(settings)
+
+                print()
 
     # Find Clone Hero directory
     ch_dir = find_clone_hero_directory()
