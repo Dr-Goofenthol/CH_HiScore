@@ -16,6 +16,7 @@ import zipfile
 import tempfile
 import shutil
 import asyncio
+import signal
 from pathlib import Path
 
 # Suppress Windows ProactorEventLoop connection errors (Discord.py known issue)
@@ -615,9 +616,9 @@ def setup_environment(config):
     api = config.get('api', {})
 
     # Discord settings - try new format first, fall back to old format
-    os.environ['DISCORD_TOKEN'] = discord.get('bot_token', config.get('DISCORD_TOKEN', ''))
-    os.environ['DISCORD_APP_ID'] = discord.get('app_id', config.get('DISCORD_APP_ID', ''))
-    os.environ['DISCORD_CHANNEL_ID'] = discord.get('announcement_channel_id', config.get('DISCORD_CHANNEL_ID', ''))
+    os.environ['DISCORD_TOKEN'] = str(discord.get('bot_token', config.get('DISCORD_TOKEN', '')))
+    os.environ['DISCORD_APP_ID'] = str(discord.get('app_id', config.get('DISCORD_APP_ID', '')))
+    os.environ['DISCORD_CHANNEL_ID'] = str(discord.get('announcement_channel_id', config.get('DISCORD_CHANNEL_ID', '')))
 
     # API settings
     os.environ['API_PORT'] = str(api.get('port', config.get('API_PORT', 8080)))
@@ -626,13 +627,16 @@ def setup_environment(config):
     # Pass bot version to bot module
     os.environ['BOT_VERSION'] = VERSION
 
-    # Optional: Guild ID for fast command sync
+    # Guild ID for fast command sync - CRITICAL: must be set for slash commands to work quickly
     guild_id = discord.get('guild_id', config.get('DISCORD_GUILD_ID', ''))
     if guild_id:
-        os.environ['DISCORD_GUILD_ID'] = guild_id
+        os.environ['DISCORD_GUILD_ID'] = str(guild_id)
+    else:
+        # Clear the env var if not set to avoid using stale value
+        os.environ.pop('DISCORD_GUILD_ID', None)
 
     # Debug password for client authorization
-    os.environ['DEBUG_PASSWORD'] = api.get('debug_password', config.get('DEBUG_PASSWORD', 'admin123'))
+    os.environ['DEBUG_PASSWORD'] = str(api.get('debug_password', config.get('DEBUG_PASSWORD', 'admin123')))
 
 
 def send_manual_update_notification(config):
@@ -1254,6 +1258,22 @@ def main():
             await bot.close()
             raise  # Re-raise to be caught by outer handler
 
+    # Set up signal handler for immediate Ctrl+C feedback
+    shutdown_requested = {'flag': False}  # Use dict for mutability in nested function
+
+    def signal_handler(signum, frame):
+        """Provide immediate feedback on Ctrl+C"""
+        if not shutdown_requested['flag']:
+            shutdown_requested['flag'] = True
+            print("\n")
+            print_warning("⚠ Shutdown requested - cleaning up, please wait...")
+            print()
+        # Let the KeyboardInterrupt propagate normally
+        raise KeyboardInterrupt
+
+    # Register the handler (save original to restore later)
+    original_handler = signal.signal(signal.SIGINT, signal_handler)
+
     try:
         import time
         bot_start_time = time.time()
@@ -1279,6 +1299,9 @@ def main():
         print_info("Check log file for details")
         input("\nPress Enter to continue...")
         return main()  # Return to launcher menu even on error
+    finally:
+        # Restore original signal handler
+        signal.signal(signal.SIGINT, original_handler)
 
 
 if __name__ == '__main__':
