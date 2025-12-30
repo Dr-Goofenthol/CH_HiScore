@@ -1048,10 +1048,8 @@ def check_bot_status():
 
 
 def main():
-    show_ascii_banner()
-
     # Check for updates on startup
-    print("\n[*] Checking for updates...")
+    print("[*] Checking for updates...")
     check_and_prompt_update(silent_if_current=True)
 
     # Migrate old config if needed (from exe directory to AppData)
@@ -1101,8 +1099,11 @@ def main():
     # Set environment variables
     setup_environment(config)
 
+    # Show ASCII banner before menu
+    show_ascii_banner()
+
     # Show startup menu
-    print("\n┌─────────────────────────────────────────────────┐")
+    print("┌─────────────────────────────────────────────────┐")
     print("│                  MAIN MENU                      │")
     print("├─────────────────────────────────────────────────┤")
     print("│  [1] Start Bot                                  │")
@@ -1242,7 +1243,9 @@ def main():
 
     async def run_bot_async():
         """Run bot with proper async handling for Ctrl+C"""
-        from bot.bot import bot
+        from bot.bot import CloneHeroBot
+        # Create a fresh bot instance each time to avoid session reuse issues
+        bot = CloneHeroBot()
         try:
             async with bot:
                 await bot.start(config['DISCORD_TOKEN'])
