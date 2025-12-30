@@ -15,8 +15,8 @@ from shared.console import print_success, print_info, print_warning, print_error
 class ConfigManager:
     """Manages bot configuration with version tracking and migrations"""
 
-    CONFIG_VERSION = 5  # Current config version for v2.5.3
-    BOT_VERSION = "2.5.3"
+    CONFIG_VERSION = 5  # Current config version for v2.5.6
+    BOT_VERSION = "2.5.6"
 
     def __init__(self, config_path: Optional[Path] = None):
         """
@@ -48,15 +48,19 @@ class ConfigManager:
         """Ensure config directory exists"""
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
 
-    def load(self) -> Dict[str, Any]:
+    def load(self, silent: bool = False) -> Dict[str, Any]:
         """
         Load configuration from file, creating default if not exists
+
+        Args:
+            silent: If True, suppress success message (used when config already loaded by launcher)
 
         Returns:
             Configuration dictionary
         """
         if not self.config_path.exists():
-            print_info(f"[Config] No config file found, creating default at {self.config_path}")
+            if not silent:
+                print_info(f"[Config] No config file found, creating default at {self.config_path}")
             self.config = self._create_default_config()
             self.save()
             return self.config
@@ -72,7 +76,8 @@ class ConfigManager:
                 self._migrate_config(current_version)
                 self.save()
 
-            print_success(f"[Config] Loaded configuration from {self.config_path}")
+            if not silent:
+                print_success(f"[Config] Loaded configuration from {self.config_path}")
             return self.config
 
         except json.JSONDecodeError as e:
@@ -380,15 +385,45 @@ class ConfigManager:
         # Migrate old top-level Discord settings to nested structure
         if 'DISCORD_TOKEN' in self.config and 'bot_token' not in self.config['discord']:
             self.config['discord']['bot_token'] = self.config['DISCORD_TOKEN']
+            del self.config['DISCORD_TOKEN']  # Remove old key after migration
+
+        if 'DISCORD_APP_ID' in self.config and 'app_id' not in self.config['discord']:
+            self.config['discord']['app_id'] = self.config['DISCORD_APP_ID']
+            del self.config['DISCORD_APP_ID']
 
         if 'DISCORD_GUILD_ID' in self.config and 'guild_id' not in self.config['discord']:
             self.config['discord']['guild_id'] = self.config['DISCORD_GUILD_ID']
+            del self.config['DISCORD_GUILD_ID']
 
         if 'DISCORD_CHANNEL_ID' in self.config and 'announcement_channel_id' not in self.config['discord']:
             self.config['discord']['announcement_channel_id'] = self.config['DISCORD_CHANNEL_ID']
+            del self.config['DISCORD_CHANNEL_ID']
 
         if 'command_privacy' not in self.config['discord']:
             self.config['discord']['command_privacy'] = default['discord']['command_privacy']
+
+        # Ensure api section exists before accessing nested keys
+        self.config.setdefault('api', {})
+
+        # Migrate old top-level API settings to nested structure
+        if 'DEBUG_PASSWORD' in self.config and 'debug_password' not in self.config['api']:
+            self.config['api']['debug_password'] = self.config['DEBUG_PASSWORD']
+            del self.config['DEBUG_PASSWORD']
+
+        if 'API_PORT' in self.config and 'port' not in self.config['api']:
+            self.config['api']['port'] = self.config['API_PORT']
+            del self.config['API_PORT']
+
+        # Migrate EXTERNAL_URL (deprecated - clients should use bot URL from pairing)
+        # Keep it for backward compatibility but don't migrate to new structure
+        if 'EXTERNAL_URL' in self.config:
+            print_info("[Config] EXTERNAL_URL is deprecated (clients get URL from pairing)")
+
+        # Ensure api section has all required fields
+        if 'host' not in self.config['api']:
+            self.config['api']['host'] = default['api']['host']
+        if 'rate_limiting' not in self.config['api']:
+            self.config['api']['rate_limiting'] = default['api']['rate_limiting']
 
         # Ensure announcements section exists before accessing nested keys
         self.config.setdefault('announcements', {})

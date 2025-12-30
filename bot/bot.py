@@ -243,7 +243,7 @@ class CloneHeroBot(commands.Bot):
         self.pairing_codes = {}  # Store pairing codes temporarily
         self.db = Database()  # Database connection
         self.config_manager = ConfigManager()  # Configuration manager
-        self.config_manager.load()  # Load configuration
+        self.config_manager.load(silent=True)  # Load configuration (silent - already loaded by launcher)
         self.api = ScoreAPI(self, self.config_manager)  # HTTP API for score submission
 
     async def setup_hook(self):
