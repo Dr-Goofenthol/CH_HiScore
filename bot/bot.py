@@ -276,21 +276,43 @@ class CloneHeroBot(commands.Bot):
 
     async def on_ready(self):
         """Called when bot successfully connects to Discord"""
-        print("\n" + "=" * 50)
-        print_success("Bot is online and connected!")
-        print_success(f"Logged in as: {self.user.name} (ID: {self.user.id})")
-        print_success(f"Connected to {len(self.guilds)} server(s)")
-        print("=" * 50 + "\n")
+        print_header("BOT READY", width=60)
+        print_success(f"Logged in as: {self.user.name}")
+        print_info(f"  User ID: {self.user.id}")
+        print_info(f"  Servers: {len(self.guilds)}")
 
         # List servers
         if self.guilds:
-            print("Connected to servers:")
             for guild in self.guilds:
-                print(f"  - {guild.name} (ID: {guild.id})")
-            print()
+                print_info(f"  • {guild.name} (ID: {guild.id})")
+
+        # Show registered commands count
+        commands = await self.tree.fetch_commands()
+        print_info(f"  Commands: {len(commands)} registered")
 
         # Start HTTP API
+        print()
+        print_info("Starting HTTP API server...")
         await self.api.start()
+        print_success(f"  API listening on {Config.API_HOST}:{Config.API_PORT}")
+
+        # Show database stats
+        try:
+            cursor = self.db.conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM users")
+            total_users = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM scores")
+            total_scores = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(*) FROM songs WHERE title IS NOT NULL")
+            total_songs = cursor.fetchone()[0]
+            print()
+            print_info(f"Database: {total_users} users | {total_scores:,} scores | {total_songs:,} songs")
+        except Exception:
+            pass
+
+        print()
+        print("=" * 60)
+        print()
 
         # Check for updates and notify Discord channel
         await self.check_and_notify_update()
@@ -466,7 +488,7 @@ class CloneHeroBot(commands.Bot):
                     if file_date < cutoff_date:
                         log_file.unlink()
                         print_info(f"[Activity Log] Deleted old log: {log_file.name}")
-                except:
+                except Exception:
                     pass  # Skip files that don't match the pattern
 
         except Exception as e:

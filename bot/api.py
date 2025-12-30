@@ -362,7 +362,7 @@ class ScoreAPI:
                 action_text = "set a new server record!"
             elif is_first_time:
                 announcement_type = "first_time_scores"
-                title = "🎸 FIRST SCORE ON CHART!"
+                title = f"🎸 FIRST {difficulty_name.upper()} {instrument_name.upper()} SCORE ON CHART!"
                 # Read color from config (default: Blue)
                 if self.config:
                     color_hex = self.config.config.get('announcements', {}).get('first_time_scores', {}).get('embed_color', '#4169E1')

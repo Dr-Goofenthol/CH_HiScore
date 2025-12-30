@@ -4,7 +4,7 @@ Clone Hero High Score Bot Launcher
 Standalone executable for the Discord bot with first-time setup.
 """
 
-VERSION = "2.5.5"
+VERSION = "2.5.6"
 
 # GitHub repository for auto-updates
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
@@ -218,8 +218,8 @@ def download_update(update_info: dict):
             # Clean up temp zip
             try:
                 os.unlink(tmp_path)
-            except:
-                pass
+            except Exception:
+                pass  # Cleanup failures are non-critical
         else:
             # Download exe directly
             with open(new_exe_path, 'wb') as f:
@@ -318,24 +318,31 @@ def check_and_prompt_update(silent_if_current: bool = False) -> bool:
 
 
 def load_config():
-    """Load bot configuration from JSON file"""
-    if CONFIG_FILE.exists():
-        try:
-            with open(CONFIG_FILE, 'r') as f:
-                return json.load(f)
-        except:
-            pass
-    return None
+    """Load bot configuration using ConfigManager"""
+    from bot.config_manager import ConfigManager
+
+    config_manager = ConfigManager()
+    try:
+        config_manager.load()
+        return config_manager.config
+    except Exception as e:
+        print_warning(f"[Config] Error loading config: {e}")
+        return None
 
 
 def save_config(config):
-    """Save bot configuration to JSON file"""
-    with open(CONFIG_FILE, 'w') as f:
-        json.dump(config, f, indent=2)
+    """Save bot configuration using ConfigManager"""
+    from bot.config_manager import ConfigManager
+
+    config_manager = ConfigManager()
+    config_manager.config = config
+    config_manager.save()
 
 
 def first_time_setup():
-    """Run first-time setup wizard"""
+    """Run first-time setup wizard using ConfigManager"""
+    from bot.config_manager import ConfigManager
+
     print("\n" + "=" * 60)
     print("   CLONE HERO HIGH SCORE BOT - FIRST TIME SETUP")
     print("=" * 60)
@@ -347,7 +354,6 @@ You'll need:
 2. Your Discord Application ID
 3. Your Discord Server ID (Guild ID) - OPTIONAL but recommended
 4. The Channel ID where scores should be announced
-5. A debug password for client testing features
 
 If you don't have these yet:
 1. Go to https://discord.com/developers/applications
@@ -362,37 +368,41 @@ If you don't have these yet:
     print("=" * 60)
     input("\nPress Enter to continue...")
 
-    config = {}
+    # Create config manager and start with defaults
+    config_manager = ConfigManager()
+    config = config_manager._create_default_config()
+
+    # ==================== DISCORD SETTINGS ====================
 
     # Discord Token
-    print("\n" + "-" * 50)
+    print("\n" + "-" * 60)
     print("STEP 1: Discord Bot Token")
-    print("-" * 50)
+    print("-" * 60)
     print("This is the secret token from your bot's settings.")
     print("Keep this private - anyone with this token can control your bot!")
     while True:
         token = input("\nEnter your Discord Bot Token: ").strip()
         if token and len(token) > 50:
-            config['DISCORD_TOKEN'] = token
+            config['discord']['bot_token'] = token
             break
         print("[!] Token seems too short. Please enter the full token.")
 
     # Application ID
-    print("\n" + "-" * 50)
+    print("\n" + "-" * 60)
     print("STEP 2: Discord Application ID")
-    print("-" * 50)
+    print("-" * 60)
     print("This is the numeric ID from your app's General Information page.")
     while True:
         app_id = input("\nEnter your Discord Application ID: ").strip()
         if app_id and app_id.isdigit():
-            config['DISCORD_APP_ID'] = app_id
+            config['discord']['app_id'] = app_id
             break
         print("[!] Application ID should be a number.")
 
     # Guild ID (Server ID)
-    print("\n" + "-" * 50)
+    print("\n" + "-" * 60)
     print("STEP 3: Discord Server ID (Guild ID) - OPTIONAL")
-    print("-" * 50)
+    print("-" * 60)
     print("This is your Discord server's ID (right-click server icon > Copy Server ID).")
     print("")
     print("WHY THIS MATTERS:")
@@ -403,7 +413,7 @@ If you don't have these yet:
     guild_id = input("\nEnter Guild ID (or press Enter to skip): ").strip()
     if guild_id:
         if guild_id.isdigit():
-            config['DISCORD_GUILD_ID'] = guild_id
+            config['discord']['guild_id'] = guild_id
             print("[+] Guild ID set - commands will sync instantly!")
         else:
             print("[!] Invalid Guild ID (should be a number). Skipping...")
@@ -411,75 +421,187 @@ If you don't have these yet:
         print("[*] Skipped - commands will sync globally (slower)")
 
     # Channel ID
-    print("\n" + "-" * 50)
+    print("\n" + "-" * 60)
     print("STEP 4: Announcement Channel ID")
-    print("-" * 50)
+    print("-" * 60)
     print("This is the channel where high score announcements will be posted.")
     print("Right-click the channel in Discord and select 'Copy Channel ID'.")
     while True:
         channel_id = input("\nEnter the Channel ID: ").strip()
         if channel_id and channel_id.isdigit():
-            config['DISCORD_CHANNEL_ID'] = channel_id
+            config['discord']['announcement_channel_id'] = channel_id
             break
         print("[!] Channel ID should be a number.")
 
+    # ==================== API SETTINGS ====================
+
     # Debug Password
-    print("\n" + "-" * 50)
+    print("\n" + "-" * 60)
     print("STEP 5: Client Debug Password")
-    print("-" * 50)
+    print("-" * 60)
     print("This password is required when clients want to enter debug mode.")
     print("Debug mode allows testing features like sending test scores.")
     print("")
-    print("Security tip: Use a strong password if your bot is public!")
+    print("SECURITY WARNING: Change this if your bot is accessible outside")
+    print("your local network! The default 'admin123' is NOT secure.")
     debug_password = input("\nEnter debug password [admin123]: ").strip()
     if debug_password:
-        config['DEBUG_PASSWORD'] = debug_password
+        config['api']['debug_password'] = debug_password
         print("[+] Custom debug password set")
     else:
-        config['DEBUG_PASSWORD'] = 'admin123'
-        print("[*] Using default password: admin123")
+        config['api']['debug_password'] = 'admin123'
+        print("[!] WARNING: Using default password 'admin123'")
 
     # API Port
-    print("\n" + "-" * 50)
+    print("\n" + "-" * 60)
     print("STEP 6: API Port")
-    print("-" * 50)
+    print("-" * 60)
     print("The port that clients will connect to (default: 8080).")
     print("Make sure to forward this port on your router if hosting externally.")
     port_input = input("\nEnter API Port [8080]: ").strip()
-    config['API_PORT'] = int(port_input) if port_input.isdigit() else 8080
+    config['api']['port'] = int(port_input) if port_input.isdigit() else 8080
 
-    # External URL (optional)
-    print("\n" + "-" * 50)
-    print("STEP 7: External URL (Optional)")
-    print("-" * 50)
-    print("If hosting on a home server with a domain, enter the URL clients should use.")
-    print("Example: http://myhome.duckdns.org:8080")
-    print("Leave blank if only using on local network (http://localhost:8080)")
-    external_url = input("\nEnter External URL (or press Enter to skip): ").strip()
-    if external_url:
-        config['EXTERNAL_URL'] = external_url
+    # ==================== DISPLAY SETTINGS ====================
 
-    # Save config
+    print("\n" + "-" * 60)
+    print("STEP 7: Display Settings")
+    print("-" * 60)
+    print("Configure how timestamps and dates appear in Discord embeds.")
+    print("")
+
+    # Timezone
+    print("Timezone options:")
+    print("  - UTC (default)")
+    print("  - US/Eastern")
+    print("  - US/Central")
+    print("  - US/Mountain")
+    print("  - US/Pacific")
+    print("  - Europe/London")
+    print("  - Or any other IANA timezone (e.g., America/New_York)")
+    timezone = input("\nEnter timezone [UTC]: ").strip()
+    if timezone:
+        config['display']['timezone'] = timezone
+        print(f"[+] Timezone set to: {timezone}")
+    else:
+        print("[*] Using default timezone: UTC")
+
+    # Time format
+    print("\nTime format:")
+    print("  [1] 12-hour (e.g., 2:30 PM) - default")
+    print("  [2] 24-hour (e.g., 14:30)")
+    time_choice = input("Choose time format [1]: ").strip()
+    if time_choice == '2':
+        config['display']['time_format'] = '24-hour'
+        print("[+] Using 24-hour time format")
+    else:
+        config['display']['time_format'] = '12-hour'
+        print("[*] Using 12-hour time format")
+
+    # ==================== ANNOUNCEMENT SETTINGS ====================
+
+    print("\n" + "-" * 60)
+    print("STEP 8: Announcement Preferences")
+    print("-" * 60)
+    print("Choose which types of scores to announce in Discord.")
+    print("")
+
+    # Record breaks
+    print("[Record Breaks] When someone beats an existing high score:")
+    record_enabled = input("  Enable record break announcements? [yes]: ").strip().lower()
+    if record_enabled in ('n', 'no'):
+        config['announcements']['record_breaks']['enabled'] = False
+        print("  [-] Record break announcements disabled")
+    else:
+        config['announcements']['record_breaks']['enabled'] = True
+        print("  [+] Record break announcements enabled")
+
+        # Ping previous holder
+        ping_holder = input("  Ping (@mention) the previous record holder? [yes]: ").strip().lower()
+        if ping_holder in ('n', 'no'):
+            config['announcements']['record_breaks']['ping_previous_holder'] = False
+            print("  [-] Will not ping previous holders")
+        else:
+            print("  [+] Will ping previous holders")
+
+    # First-time scores
+    print("\n[First-Time Scores] When someone plays a chart for the first time:")
+    first_enabled = input("  Enable first-time score announcements? [yes]: ").strip().lower()
+    if first_enabled in ('n', 'no'):
+        config['announcements']['first_time_scores']['enabled'] = False
+        print("  [-] First-time score announcements disabled")
+    else:
+        config['announcements']['first_time_scores']['enabled'] = True
+        print("  [+] First-time score announcements enabled")
+
+    # Personal bests
+    print("\n[Personal Bests] When someone improves their own score (not server record):")
+    print("  Note: This can be noisy if enabled for small improvements.")
+    pb_enabled = input("  Enable personal best announcements? [no]: ").strip().lower()
+    if pb_enabled in ('y', 'yes'):
+        config['announcements']['personal_bests']['enabled'] = True
+        print("  [+] Personal best announcements enabled")
+
+        # Thresholds
+        print("\n  To reduce spam, only announce improvements above a threshold:")
+        percent_str = input("    Minimum improvement percent [5.0]: ").strip()
+        points_str = input("    Minimum improvement points [10000]: ").strip()
+
+        if percent_str:
+            try:
+                config['announcements']['personal_bests']['min_improvement_percent'] = float(percent_str)
+            except ValueError:
+                print("    [!] Invalid number, using default 5.0%")
+
+        if points_str:
+            try:
+                config['announcements']['personal_bests']['min_improvement_points'] = int(points_str)
+            except ValueError:
+                print("    [!] Invalid number, using default 10000")
+    else:
+        print("  [*] Personal best announcements disabled (recommended)")
+
+    # ==================== SUMMARY ====================
+
     print("\n" + "=" * 60)
     print("CONFIGURATION SUMMARY")
     print("=" * 60)
-    print(f"  Discord App ID: {config['DISCORD_APP_ID']}")
-    print(f"  Discord Token: {'*' * 20}...")
-    if config.get('DISCORD_GUILD_ID'):
-        print(f"  Guild ID: {config['DISCORD_GUILD_ID']} (fast command sync)")
+    print("\nDiscord Settings:")
+    print(f"  App ID: {config['discord']['app_id']}")
+    print(f"  Bot Token: {'*' * 20}... (hidden)")
+    if config['discord']['guild_id']:
+        print(f"  Guild ID: {config['discord']['guild_id']} (fast command sync)")
     else:
         print(f"  Guild ID: (not set - global sync, slower)")
-    print(f"  Channel ID: {config['DISCORD_CHANNEL_ID']}")
-    print(f"  Debug Password: {'*' * len(config.get('DEBUG_PASSWORD', 'admin123'))}")
-    print(f"  API Port: {config['API_PORT']}")
-    if config.get('EXTERNAL_URL'):
-        print(f"  External URL: {config['EXTERNAL_URL']}")
+    print(f"  Channel ID: {config['discord']['announcement_channel_id']}")
+
+    print("\nAPI Settings:")
+    print(f"  Port: {config['api']['port']}")
+    print(f"  Debug Password: {'*' * len(config['api']['debug_password'])} (hidden)")
+
+    print("\nDisplay Settings:")
+    print(f"  Timezone: {config['display']['timezone']}")
+    print(f"  Time Format: {config['display']['time_format']}")
+
+    print("\nAnnouncements:")
+    print(f"  Record Breaks: {'Enabled' if config['announcements']['record_breaks']['enabled'] else 'Disabled'}")
+    if config['announcements']['record_breaks']['enabled']:
+        ping_status = "Yes" if config['announcements']['record_breaks']['ping_previous_holder'] else "No"
+        print(f"    Ping previous holder: {ping_status}")
+    print(f"  First-Time Scores: {'Enabled' if config['announcements']['first_time_scores']['enabled'] else 'Disabled'}")
+    print(f"  Personal Bests: {'Enabled' if config['announcements']['personal_bests']['enabled'] else 'Disabled'}")
+    if config['announcements']['personal_bests']['enabled']:
+        print(f"    Min improvement: {config['announcements']['personal_bests']['min_improvement_percent']}% or {config['announcements']['personal_bests']['min_improvement_points']:,} points")
+
+    print("=" * 60)
+    print("\nNote: You can change these settings later using the Settings Menu")
     print("=" * 60)
 
     confirm = input("\nSave this configuration? (yes/no): ").strip().lower()
-    if confirm == 'yes' or confirm == 'y':
-        save_config(config)
-        print(f"\n[+] Configuration saved to: {CONFIG_FILE}")
+    if confirm in ('yes', 'y'):
+        # Save using ConfigManager
+        config_manager.config = config
+        config_manager.save()
+        print(f"\n[+] Configuration saved to: {config_manager.config_path}")
         return config
     else:
         print("\n[!] Configuration not saved. Please run setup again.")
@@ -488,21 +610,29 @@ If you don't have these yet:
 
 def setup_environment(config):
     """Set environment variables from config for the bot modules"""
-    os.environ['DISCORD_TOKEN'] = config.get('DISCORD_TOKEN', '')
-    os.environ['DISCORD_APP_ID'] = config.get('DISCORD_APP_ID', '')
-    os.environ['DISCORD_CHANNEL_ID'] = config.get('DISCORD_CHANNEL_ID', '')
-    os.environ['API_PORT'] = str(config.get('API_PORT', 8080))
+    # Handle both old flat format and new nested format for backward compatibility
+    discord = config.get('discord', {})
+    api = config.get('api', {})
+
+    # Discord settings - try new format first, fall back to old format
+    os.environ['DISCORD_TOKEN'] = discord.get('bot_token', config.get('DISCORD_TOKEN', ''))
+    os.environ['DISCORD_APP_ID'] = discord.get('app_id', config.get('DISCORD_APP_ID', ''))
+    os.environ['DISCORD_CHANNEL_ID'] = discord.get('announcement_channel_id', config.get('DISCORD_CHANNEL_ID', ''))
+
+    # API settings
+    os.environ['API_PORT'] = str(api.get('port', config.get('API_PORT', 8080)))
     os.environ['API_HOST'] = '0.0.0.0'  # Listen on all interfaces
 
     # Pass bot version to bot module
     os.environ['BOT_VERSION'] = VERSION
 
     # Optional: Guild ID for fast command sync
-    if config.get('DISCORD_GUILD_ID'):
-        os.environ['DISCORD_GUILD_ID'] = config.get('DISCORD_GUILD_ID')
+    guild_id = discord.get('guild_id', config.get('DISCORD_GUILD_ID', ''))
+    if guild_id:
+        os.environ['DISCORD_GUILD_ID'] = guild_id
 
     # Debug password for client authorization
-    os.environ['DEBUG_PASSWORD'] = config.get('DEBUG_PASSWORD', 'admin123')
+    os.environ['DEBUG_PASSWORD'] = api.get('debug_password', config.get('DEBUG_PASSWORD', 'admin123'))
 
 
 def send_manual_update_notification(config):
@@ -651,11 +781,274 @@ def send_manual_update_notification(config):
         print_info("\nCancelled by user")
 
 
-def main():
+def show_ascii_banner():
+    """Display ASCII art banner with dynamic version"""
+    try:
+        print()
+        print("        ██████╗██╗  ██╗    ██╗  ██╗██╗███████╗ ██████╗ ██████╗ ██████╗ ███████╗")
+        print("       ██╔════╝██║  ██║    ██║  ██║██║██╔════╝██╔════╝██╔═══██╗██╔══██╗██╔════╝")
+        print("       ██║     ███████║    ███████║██║███████╗██║     ██║   ██║██████╔╝█████╗  ")
+        print("       ██║     ██╔══██║    ██╔══██║██║╚════██║██║     ██║   ██║██╔══██╗██╔══╝  ")
+        print("       ╚██████╗██║  ██║    ██║  ██║██║███████║╚██████╗╚██████╔╝██║  ██║███████╗")
+        print("        ╚═════╝╚═╝  ╚═╝    ╚═╝  ╚═╝╚═╝╚══════╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝")
+        print()
+        print(f"                            DISCORD BOT v{VERSION}")
+        print("                        Track • Announce • Infuriate")
+        print()
+        print("=" * 80)
+        print()
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        # Fallback to simple ASCII if Unicode fails
+        print()
+        print("=" * 80)
+        print(f"         CLONE HERO HIGH SCORE BOT v{VERSION}")
+        print("                 Track • Announce • Infuriate")
+        print("=" * 80)
+        print()
+
+
+def export_logs_command():
+    """Export bot logs to a zip file"""
+    try:
+        import zipfile
+        from datetime import datetime
+
+        log_dir = get_config_dir()
+        log_file = log_dir / 'bot.log'
+
+        if not log_file.exists():
+            print_warning("No log file found")
+            return
+
+        # Create zip file with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        zip_name = f"bot_logs_{timestamp}.zip"
+        zip_path = log_dir / zip_name
+
+        print_info(f"Creating log archive: {zip_name}...")
+
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            # Add main log
+            zf.write(log_file, log_file.name)
+
+            # Add any backup logs (from rotation)
+            for i in range(1, 6):
+                backup_log = log_dir / f'bot.log.{i}'
+                if backup_log.exists():
+                    zf.write(backup_log, backup_log.name)
+
+        print_success(f"Logs exported to: {zip_path}")
+        print_info(f"File size: {zip_path.stat().st_size / 1024:.1f} KB")
+
+    except Exception as e:
+        print_error(f"Export failed: {e}")
+
+
+def backup_database_command():
+    """Manually create database backup"""
+    try:
+        from bot.database import Database
+
+        db_path = get_config_dir() / 'scores.db'
+        if not db_path.exists():
+            print_error("Database not found")
+            return
+
+        print_info("Creating database backup...")
+        db = Database(str(db_path))
+        success = db.create_backup(keep_count=7)
+
+        if success:
+            print_success("Database backup created successfully")
+            # Show backup info
+            backup_dir = db_path.parent / 'backups'
+            if backup_dir.exists():
+                backups = list(backup_dir.glob('scores_*.db'))
+                if backups:
+                    print_info(f"Total backups: {len(backups)}")
+                    latest = max(backups, key=lambda p: p.stat().st_mtime)
+                    print_info(f"Latest: {latest.name} ({latest.stat().st_size / 1024:.1f} KB)")
+        else:
+            print_error("Backup failed")
+
+    except Exception as e:
+        print_error(f"Backup failed: {e}")
+
+
+def show_stats_command():
+    """Show quick stats overview"""
+    try:
+        from bot.database import Database
+
+        db_path = get_config_dir() / 'scores.db'
+        if not db_path.exists():
+            print_error("Database not found")
+            return
+
+        print_header("BOT STATISTICS", width=60)
+
+        db = Database(str(db_path))
+        db.connect()
+
+        # Get stats
+        cursor = db.conn.cursor()
+
+        # Total users
+        cursor.execute("SELECT COUNT(*) FROM users")
+        total_users = cursor.fetchone()[0]
+
+        # Total scores
+        cursor.execute("SELECT COUNT(*) FROM scores")
+        total_scores = cursor.fetchone()[0]
+
+        # Total songs
+        cursor.execute("SELECT COUNT(*) FROM songs WHERE title IS NOT NULL")
+        total_songs = cursor.fetchone()[0]
+
+        # Total record breaks
+        cursor.execute("SELECT COUNT(*) FROM record_breaks")
+        total_records = cursor.fetchone()[0]
+
+        # Most recent score
+        cursor.execute("SELECT submitted_at FROM scores ORDER BY submitted_at DESC LIMIT 1")
+        recent_result = cursor.fetchone()
+
+        db.close()
+
+        print_plain(f"  Total Users: {total_users}")
+        print_plain(f"  Total Scores: {total_scores:,}")
+        print_plain(f"  Total Songs: {total_songs:,}")
+        print_plain(f"  Record Breaks: {total_records:,}")
+
+        if recent_result:
+            from datetime import datetime
+            recent_time = datetime.fromisoformat(recent_result[0])
+            print_plain(f"  Last Score: {recent_time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+        print()
+
+    except Exception as e:
+        print_error(f"Failed to get stats: {e}")
+
+
+def show_configuration_summary(config):
+    """Show detailed configuration summary (read-only)"""
+    print_header("CONFIGURATION SUMMARY", width=70)
+
+    discord = config.get('discord', {})
+    api = config.get('api', {})
+    display = config.get('display', {})
+    announcements = config.get('announcements', {})
+
+    try:
+        from colorama import Fore, Style
+        has_colors = True
+    except ImportError:
+        has_colors = False
+
+    # Discord Settings
+    print(f"\n{Fore.CYAN}Discord Settings:{Style.RESET_ALL}" if has_colors else "\n=== Discord Settings ===")
+    print(f"  Bot Token: {'*' * 40} (secured)")
+    print(f"  App ID: {discord.get('app_id', config.get('DISCORD_APP_ID', 'Not set'))}")
+    print(f"  Guild ID: {discord.get('guild_id', config.get('DISCORD_GUILD_ID', 'Not set (global sync)'))}")
+    print(f"  Channel ID: {discord.get('announcement_channel_id', config.get('DISCORD_CHANNEL_ID', 'Not set'))}")
+
+    # API Settings
+    print(f"\n{Fore.CYAN}API Settings:{Style.RESET_ALL}" if has_colors else "\n=== API Settings ===")
+    print(f"  Port: {api.get('port', config.get('API_PORT', 8080))}")
+    print(f"  Host: 0.0.0.0 (all interfaces)")
+    debug_pass = api.get('debug_password', config.get('DEBUG_PASSWORD', 'admin123'))
+    print(f"  Debug Password: {'*' * len(debug_pass)}")
+
+    # Display Settings
+    print(f"\n{Fore.CYAN}Display Settings:{Style.RESET_ALL}" if has_colors else "\n=== Display Settings ===")
+    print(f"  Timezone: {display.get('timezone', 'UTC')}")
+    print(f"  Date Format: {display.get('date_format', 'MM/DD/YYYY')}")
+    print(f"  Time Format: {display.get('time_format', '12-hour')}")
+    print(f"  Show Timezone: {display.get('show_timezone_in_embeds', True)}")
+
+    # Announcement Settings
+    print(f"\n{Fore.CYAN}Announcement Settings:{Style.RESET_ALL}" if has_colors else "\n=== Announcement Settings ===")
+    record_breaks = announcements.get('record_breaks', {})
+    first_time = announcements.get('first_time_scores', {})
+    personal_bests = announcements.get('personal_bests', {})
+
+    print(f"  Record Breaks: {'Enabled' if record_breaks.get('enabled', True) else 'Disabled'}")
+    if record_breaks.get('enabled'):
+        print(f"    Ping Previous Holder: {record_breaks.get('ping_previous_holder', True)}")
+
+    print(f"  First-Time Scores: {'Enabled' if first_time.get('enabled', True) else 'Disabled'}")
+    print(f"  Personal Bests: {'Enabled' if personal_bests.get('enabled', False) else 'Disabled'}")
+    if personal_bests.get('enabled'):
+        print(f"    Min Improvement: {personal_bests.get('min_improvement_percent', 5.0)}% or {personal_bests.get('min_improvement_points', 10000):,} points")
+
+    # Database Settings
+    database = config.get('database', {})
+    print(f"\n{Fore.CYAN}Database Settings:{Style.RESET_ALL}" if has_colors else "\n=== Database Settings ===")
+    print(f"  Auto Backup: {'Enabled' if database.get('auto_backup', True) else 'Disabled'}")
+    print(f"  Backup Keep Count: {database.get('backup_keep_count', 7)}")
+
+    # Activity Log
+    activity_log = config.get('daily_activity_log', {})
+    print(f"\n{Fore.CYAN}Activity Log:{Style.RESET_ALL}" if has_colors else "\n=== Activity Log ===")
+    print(f"  Enabled: {'Yes' if activity_log.get('enabled', True) else 'No'}")
+    if activity_log.get('enabled'):
+        print(f"  Generation Time: {activity_log.get('generation_time', '00:00')}")
+        print(f"  Keep Days: {activity_log.get('keep_days', 30)}")
+
     print()
-    print("=" * 60)
-    print(f"   Clone Hero High Score Bot v{VERSION}")
-    print("=" * 60)
+
+
+def check_bot_status():
+    """Check bot health and configuration status"""
+    print_header("BOT STATUS CHECK", width=60)
+
+    # Check config file
+    config_path = get_config_path()
+    if config_path.exists():
+        print_success(f"Configuration: Found")
+        print_info(f"  Location: {config_path}")
+    else:
+        print_error("Configuration: Not found")
+        return
+
+    # Check database
+    db_path = get_config_dir() / 'scores.db'
+    if db_path.exists():
+        size_mb = db_path.stat().st_size / (1024 * 1024)
+        print_success(f"Database: Connected")
+        print_info(f"  Size: {size_mb:.2f} MB")
+        print_info(f"  Location: {db_path}")
+    else:
+        print_warning("Database: Not initialized")
+
+    # Check Discord token
+    config = load_config()
+    if config:
+        discord = config.get('discord', {})
+        token = discord.get('bot_token', config.get('DISCORD_TOKEN', ''))
+        if token:
+            print_success("Discord Token: Configured")
+        else:
+            print_error("Discord Token: Missing")
+
+        # Check channel
+        channel_id = discord.get('announcement_channel_id', config.get('DISCORD_CHANNEL_ID', ''))
+        if channel_id:
+            print_success(f"Announcement Channel: {channel_id}")
+        else:
+            print_warning("Announcement Channel: Not configured")
+
+        # Check API port
+        api = config.get('api', {})
+        port = api.get('port', config.get('API_PORT', 8080))
+        print_info(f"API Port: {port}")
+
+    print()
+
+
+def main():
+    show_ascii_banner()
 
     # Check for updates on startup
     print("\n[*] Checking for updates...")
@@ -675,43 +1068,56 @@ def main():
             input("\nPress Enter to exit...")
             return
 
-    # Show current config
-    print("\n[+] Configuration loaded")
-    print(f"    App ID: {config.get('DISCORD_APP_ID')}")
-    if config.get('DISCORD_GUILD_ID'):
-        print(f"    Guild ID: {config.get('DISCORD_GUILD_ID')} (fast sync)")
-    print(f"    Channel: {config.get('DISCORD_CHANNEL_ID')}")
-    print(f"    API Port: {config.get('API_PORT', 8080)}")
-    if config.get('EXTERNAL_URL'):
-        print(f"    External URL: {config.get('EXTERNAL_URL')}")
+    # Show current config - handle both old and new formats
+    discord = config.get('discord', {})
+    api = config.get('api', {})
+    display = config.get('display', {})
+
+    print_header("CONFIGURATION LOADED", width=60)
+
+    print(f"\n{Fore.CYAN}Discord Settings:{Style.RESET_ALL}" if 'Fore' in dir() else "\nDiscord Settings:")
+    app_id = discord.get('app_id', config.get('DISCORD_APP_ID'))
+    print_info(f"App ID: {app_id}")
+
+    guild_id = discord.get('guild_id', config.get('DISCORD_GUILD_ID'))
+    if guild_id:
+        print_info(f"Guild ID: {guild_id} (fast sync)")
+
+    channel_id = discord.get('announcement_channel_id', config.get('DISCORD_CHANNEL_ID'))
+    print_info(f"Channel: {channel_id}")
+
+    print(f"\n{Fore.CYAN}API Settings:{Style.RESET_ALL}" if 'Fore' in dir() else "\nAPI Settings:")
+    port = api.get('port', config.get('API_PORT', 8080))
+    print_info(f"Port: {port}")
+    debug_pass = api.get('debug_password', config.get('DEBUG_PASSWORD', 'admin123'))
+    print_info(f"Debug Password: {'*' * len(debug_pass)} (secured)")
+
+    # Display settings if using new format
+    if display.get('timezone'):
+        print(f"\n{Fore.CYAN}Display Settings:{Style.RESET_ALL}" if 'Fore' in dir() else "\nDisplay Settings:")
+        print_info(f"Timezone: {display.get('timezone')}")
+        print_info(f"Time Format: {display.get('time_format', '12-hour')}")
 
     # Set environment variables
     setup_environment(config)
 
     # Show startup menu
-    print("\n" + "-" * 60)
-    print("OPTIONS:")
-    print("  [1] Start Bot")
-    print("  [2] Settings Menu")
-    print("  [3] Send Update Notification")
-    print("  [Q] Quit")
-    print("-" * 60)
+    print("\n┌─────────────────────────────────────────────────┐")
+    print("│                  MAIN MENU                      │")
+    print("├─────────────────────────────────────────────────┤")
+    print("│  [1] Start Bot                                  │")
+    print("│  [2] Settings Menu                              │")
+    print("│  [3] View Configuration                         │")
+    print("│  [4] Check Status                               │")
+    print("│  [5] Show Statistics                            │")
+    print("│  [6] Backup Database                            │")
+    print("│  [7] Export Logs                                │")
+    print("│  [8] Send Update Notification                   │")
+    print("│  [Q] Quit                                       │")
+    print("└─────────────────────────────────────────────────┘")
     choice = input("\nChoice: ").strip().lower()
 
-    if choice == '3':
-        # Manually send update notification
-        try:
-            send_manual_update_notification(config)
-            input("\nPress Enter to continue...")
-            return main()  # Return to launcher
-        except Exception as e:
-            print_error(f"Error sending update notification: {e}")
-            import traceback
-            traceback.print_exc()
-            input("\nPress Enter to continue...")
-            return main()
-
-    elif choice == '2':
+    if choice == '2':
         # Open settings menu
         try:
             from bot.settings_menu import SettingsMenu
@@ -720,29 +1126,80 @@ def main():
             config_manager.load()  # Load configuration
             menu = SettingsMenu(config_manager)
             menu.run()
-            print("\n[*] Returning to launcher...")
+            print_info("\nReturning to launcher...")
             input("Press Enter to continue...")
             return main()  # Restart launcher to apply settings
         except Exception as e:
             print_error(f"Error opening settings menu: {e}")
-            import traceback
-            traceback.print_exc()
+            print_info("Check log file for details")
             input("\nPress Enter to continue...")
             return main()
+
+    elif choice == '3':
+        # View configuration (read-only)
+        print()
+        show_configuration_summary(config)
+        input("\nPress Enter to continue...")
+        return main()
+
+    elif choice == '4':
+        # Check status
+        print()
+        check_bot_status()
+        input("\nPress Enter to continue...")
+        return main()
+
+    elif choice == '5':
+        # Show statistics
+        print()
+        show_stats_command()
+        input("\nPress Enter to continue...")
+        return main()
+
+    elif choice == '6':
+        # Backup database
+        print()
+        backup_database_command()
+        input("\nPress Enter to continue...")
+        return main()
+
+    elif choice == '7':
+        # Export logs
+        print()
+        export_logs_command()
+        input("\nPress Enter to continue...")
+        return main()
+
+    elif choice == '8':
+        # Manually send update notification
+        try:
+            send_manual_update_notification(config)
+            input("\nPress Enter to continue...")
+            return main()  # Return to launcher
+        except Exception as e:
+            print_error(f"Error sending update notification: {e}")
+            print_info("Check log file for details")
+            input("\nPress Enter to continue...")
+            return main()
+
     elif choice == 'q':
-        print("[*] Exiting...")
+        print_info("Exiting...")
         return
+
     # If choice == '1' or anything else, continue to start bot
 
+    print_header("STARTING BOT", width=60)
+
     # Run database migrations before starting the bot
-    print("\n[*] Running database migrations...")
+    print_info("Running database migrations...")
     try:
         from bot.migrations import run_migrations
         db_path = get_config_dir() / 'scores.db'
         run_migrations(db_path)
+        print_success("  Migrations complete")
     except Exception as e:
-        print_error(f"Migration failed: {e}")
-        print("[!] Bot may not function correctly")
+        print_error(f"  Migration failed: {e}")
+        print_warning("  Bot may not function correctly")
         import traceback
         traceback.print_exc()
 
@@ -754,20 +1211,34 @@ def main():
     backup_keep_count = config_manager.config.get('database', {}).get('backup_keep_count', 7)
 
     if auto_backup_enabled:
-        print("\n[*] Creating database backup...")
+        print_info("Creating database backup...")
         try:
             from bot.database import Database
             db = Database(str(db_path))
             success = db.create_backup(keep_count=backup_keep_count)
             if success:
-                print_success("Database backup created successfully")
+                print_success("  Backup created")
+                # Show backup details
+                backup_dir = db_path.parent / 'backups'
+                if backup_dir.exists():
+                    backups = list(backup_dir.glob('scores_*.db'))
+                    print_info(f"  Keeping {len(backups)} backups (max {backup_keep_count})")
         except Exception as e:
-            print_warning(f"Backup failed: {e}")
-            print("[*] Bot will continue without backup")
+            print_warning(f"  Backup failed: {e}")
+            print_info("  Bot will continue without backup")
+
+    # Show activity log status
+    activity_log_config = config_manager.config.get('daily_activity_log', {})
+    if activity_log_config.get('enabled', True):
+        print_info(f"Activity Log: Enabled")
+        print_info(f"  Generates at {activity_log_config.get('generation_time', '00:00')}")
+        print_info(f"  Keeping logs for {activity_log_config.get('keep_days', 30)} days")
 
     # Start the bot
-    print("\n[*] Starting Discord bot...")
-    print("[*] Press Ctrl+C to return to launcher\n")
+    print()
+    print_success("Connecting to Discord...")
+    print_info("Press Ctrl+C to return to launcher")
+    print()
 
     async def run_bot_async():
         """Run bot with proper async handling for Ctrl+C"""
@@ -781,16 +1252,28 @@ def main():
             raise  # Re-raise to be caught by outer handler
 
     try:
+        import time
+        bot_start_time = time.time()
         asyncio.run(run_bot_async())
     except KeyboardInterrupt:
-        print("[*] Bot stopped by user")
-        print("[*] Returning to launcher...")
-        input("\nPress Enter to continue...")
+        # Calculate uptime
+        uptime_seconds = int(time.time() - bot_start_time)
+        hours = uptime_seconds // 3600
+        minutes = (uptime_seconds % 3600) // 60
+        seconds = uptime_seconds % 60
+
+        print()
+        print_header("BOT SHUTDOWN", width=60)
+        print_success("Bot stopped gracefully")
+        print_info(f"  Session duration: {hours}h {minutes}m {seconds}s")
+        print()
+        print_info("Returning to launcher...")
+        input("Press Enter to continue...")
         return main()  # Return to launcher menu
     except Exception as e:
-        print(f"\n[!] Error starting bot: {e}")
-        import traceback
-        traceback.print_exc()
+        print()
+        print_error(f"Error starting bot: {e}")
+        print_info("Check log file for details")
         input("\nPress Enter to continue...")
         return main()  # Return to launcher menu even on error
 
