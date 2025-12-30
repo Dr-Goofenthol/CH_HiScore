@@ -1265,12 +1265,16 @@ def main():
     shutdown_requested = {'flag': False}  # Use dict for mutability in nested function
 
     def signal_handler(signum, frame):
-        """Provide immediate feedback on Ctrl+C"""
+        """Provide immediate feedback on Ctrl+C - bypasses I/O blocking"""
         if not shutdown_requested['flag']:
             shutdown_requested['flag'] = True
-            print("\n")
-            print_warning("⚠ Shutdown requested - cleaning up, please wait...")
-            print()
+            # Use sys.stdout.write for immediate output (bypasses print buffering)
+            import sys
+            sys.stdout.write("\n")
+            # Use colorama for colored output
+            from colorama import Fore, Style
+            sys.stdout.write(f"{Fore.YELLOW}⚠ Shutdown requested - cleaning up, please wait...{Style.RESET_ALL}\n\n")
+            sys.stdout.flush()  # Force immediate display
         # Let the KeyboardInterrupt propagate normally
         raise KeyboardInterrupt
 

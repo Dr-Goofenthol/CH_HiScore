@@ -287,7 +287,13 @@ class CloneHeroBot(commands.Bot):
                 print_info(f"  • {guild.name} (ID: {guild.id})")
 
         # Show registered commands count
-        commands = await self.tree.fetch_commands()
+        if Config.DISCORD_GUILD_ID:
+            # Fetch from guild if we synced to a guild
+            guild = discord.Object(id=int(Config.DISCORD_GUILD_ID))
+            commands = await self.tree.fetch_commands(guild=guild)
+        else:
+            # Fetch global commands
+            commands = await self.tree.fetch_commands()
         print_info(f"  Commands: {len(commands)} registered")
 
         # Start HTTP API
@@ -320,6 +326,14 @@ class CloneHeroBot(commands.Bot):
         # Start daily activity log task
         if not self.daily_activity_log_task.is_running():
             self.daily_activity_log_task.start()
+
+    async def close(self):
+        """Override close to ensure API server is stopped"""
+        # Stop API server first
+        if hasattr(self, 'api') and self.api:
+            await self.api.stop()
+        # Call parent close
+        await super().close()
 
     async def check_and_notify_update(self):
         """
