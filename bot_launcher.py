@@ -1247,15 +1247,18 @@ def main():
 
     async def run_bot_async():
         """Run bot with proper async handling for Ctrl+C"""
-        from bot.bot import CloneHeroBot
-        # Create a fresh bot instance each time to avoid session reuse issues
-        bot = CloneHeroBot()
+        # Reload bot module to get fresh instance with all commands registered
+        import importlib
+        import bot.bot
+        importlib.reload(bot.bot)
+        bot_instance = bot.bot.bot  # Get the global singleton from reloaded module
+
         try:
-            async with bot:
-                await bot.start(config['DISCORD_TOKEN'])
+            async with bot_instance:
+                await bot_instance.start(config['DISCORD_TOKEN'])
         except KeyboardInterrupt:
             print("\n[*] Shutting down bot...")
-            await bot.close()
+            await bot_instance.close()
             raise  # Re-raise to be caught by outer handler
 
     # Set up signal handler for immediate Ctrl+C feedback
