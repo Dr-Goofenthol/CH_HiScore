@@ -15,8 +15,8 @@ from shared.console import print_success, print_info, print_warning, print_error
 class ConfigManager:
     """Manages bot configuration with version tracking and migrations"""
 
-    CONFIG_VERSION = 5  # Current config version for v2.5.6
-    BOT_VERSION = "2.5.6"
+    CONFIG_VERSION = 6  # Current config version for v2.6.0
+    BOT_VERSION = "2.6.0"
 
     def __init__(self, config_path: Optional[Path] = None):
         """
@@ -145,7 +145,9 @@ class ConfigManager:
                     "recent": "public",
                     "updatesong": "private",
                     "setartist": "private",
-                    "missingartists": "private"
+                    "missingartists": "private",
+                    "hardest": "public",
+                    "server_status": "public"
                 }
             },
 
@@ -306,10 +308,102 @@ class ConfigManager:
                         "footer_show_improvement": True
                     }
                 },
+                "full_combos": {
+                    "enabled": True,
+                    "announce_regular_fc": True,
+                    "announce_first_fc": True,
+                    "announce_fc_record_break": True,
+                    "announce_retroactive_fcs": True,
+                    "embed_color": "#FF0000",
+                    "style": "full",
+                    "full_fields": {
+                        "song_title": True,
+                        "artist": True,
+                        "difficulty_instrument": True,
+                        "score": True,
+                        "stars": True,
+                        "charter": True,
+                        "accuracy": True,
+                        "play_count": True,
+                        "chart_intensity": True,
+                        "enchor_link": True,
+                        "chart_hash": True,
+                        "chart_hash_format": "full",
+                        "timestamp": True,
+                        "footer_show_fc_type": True
+                    },
+                    "minimalist_fields": {
+                        "song_title": True,
+                        "artist": True,
+                        "difficulty_instrument": True,
+                        "score": True,
+                        "stars": True,
+                        "charter": True,
+                        "accuracy": True,
+                        "play_count": False,
+                        "chart_intensity": True,
+                        "enchor_link": False,
+                        "chart_hash": True,
+                        "chart_hash_format": "abbreviated",
+                        "timestamp": True,
+                        "footer_show_fc_type": True
+                    }
+                },
+                "accuracy_display": {
+                    "record_breaks": {
+                        "format": "combined_percentage_first",
+                        "show_notes_label": True
+                    },
+                    "first_time_scores": {
+                        "format": "combined_percentage_first",
+                        "show_notes_label": True
+                    },
+                    "personal_bests": {
+                        "format": "combined_percentage_first",
+                        "show_notes_label": True
+                    },
+                    "full_combos": {
+                        "format": "combined_percentage_first",
+                        "show_notes_label": True
+                    }
+                },
                 "formatting": {
                     "include_thumbnail": False,
                     "footer_style": "full"
                 }
+            },
+
+            "difficulty_tiers": {
+                "tier1": {
+                    "name": "Chill",
+                    "emoji": "🟢",
+                    "min_nps": 1.0,
+                    "max_nps": 3.0
+                },
+                "tier2": {
+                    "name": "Shred",
+                    "emoji": "🟡",
+                    "min_nps": 3.0,
+                    "max_nps": 5.0
+                },
+                "tier3": {
+                    "name": "Brutal",
+                    "emoji": "🟠",
+                    "min_nps": 5.0,
+                    "max_nps": 6.0
+                },
+                "tier4": {
+                    "name": "Insane",
+                    "emoji": "🔴",
+                    "min_nps": 6.0,
+                    "max_nps": 999.0
+                }
+            },
+
+            "hardest_command": {
+                "min_notes_filter": 100,
+                "default_min_nps": 0.0,
+                "default_max_nps": 10.0
             },
 
             "database": {
@@ -321,6 +415,12 @@ class ConfigManager:
                     "keep_days": 7,
                     "location": ""  # Set by get_default_backup_path()
                 }
+            },
+
+            "daily_activity_log": {
+                "enabled": False,
+                "generation_time": "00:00",
+                "keep_days": 30
             }
         }
 
@@ -341,12 +441,74 @@ class ConfigManager:
         if from_version < 3:
             self._migrate_v2_to_v3()
 
+        # Migration v5 -> v6 (v2.6.0)
+        if from_version < 6:
+            self._migrate_v5_to_v6()
+
         print_success(f"[Config] Migration complete!")
 
     def _migrate_v1_to_v2(self):
         """Migrate from v1 to v2"""
         # Placeholder for future migrations
         pass
+
+    def _migrate_v5_to_v6(self):
+        """Migrate from v5 to v6 (add v2.6.0 features)"""
+        print_info("[Config] Adding v2.6.0 features (Full Combo announcements, difficulty tiers, /hardest command)")
+
+        default = self._create_default_config()
+
+        # Add Full Combo announcements config if missing
+        if 'announcements' in self.config:
+            if 'full_combos' not in self.config['announcements']:
+                self.config['announcements']['full_combos'] = default['announcements']['full_combos']
+                print_success("[Config] Added Full Combo announcement settings")
+
+            # Add accuracy_display config if missing
+            if 'accuracy_display' not in self.config['announcements']:
+                self.config['announcements']['accuracy_display'] = default['announcements']['accuracy_display']
+                print_success("[Config] Added accuracy/notes display format settings")
+
+            # Add ping_previous_holder and min_score_threshold to record_breaks if missing
+            if 'record_breaks' in self.config['announcements']:
+                if 'ping_previous_holder' not in self.config['announcements']['record_breaks']:
+                    self.config['announcements']['record_breaks']['ping_previous_holder'] = default['announcements']['record_breaks']['ping_previous_holder']
+                if 'min_score_threshold' not in self.config['announcements']['record_breaks']:
+                    self.config['announcements']['record_breaks']['min_score_threshold'] = default['announcements']['record_breaks']['min_score_threshold']
+                print_success("[Config] Added ping_previous_holder and min_score_threshold to record breaks")
+
+        # Add difficulty tiers config if missing
+        if 'difficulty_tiers' not in self.config:
+            self.config['difficulty_tiers'] = default['difficulty_tiers']
+            print_success("[Config] Added difficulty tier settings (Chill/Shred/Brutal/Insane)")
+
+        # Add hardest command config if missing
+        if 'hardest_command' not in self.config:
+            self.config['hardest_command'] = default['hardest_command']
+            print_success("[Config] Added /hardest command settings")
+        else:
+            # Add default NPS range if missing from existing hardest_command config
+            if 'default_min_nps' not in self.config['hardest_command']:
+                self.config['hardest_command']['default_min_nps'] = default['hardest_command']['default_min_nps']
+            if 'default_max_nps' not in self.config['hardest_command']:
+                self.config['hardest_command']['default_max_nps'] = default['hardest_command']['default_max_nps']
+
+        # Add daily_activity_log config if missing
+        if 'daily_activity_log' not in self.config:
+            self.config['daily_activity_log'] = default['daily_activity_log']
+            print_success("[Config] Added daily activity log settings")
+
+        # Add new command privacy settings
+        if 'discord' in self.config and 'command_privacy' in self.config['discord']:
+            if 'hardest' not in self.config['discord']['command_privacy']:
+                self.config['discord']['command_privacy']['hardest'] = 'public'
+            if 'server_status' not in self.config['discord']['command_privacy']:
+                self.config['discord']['command_privacy']['server_status'] = 'public'
+            print_success("[Config] Added command privacy for /hardest and /server_status")
+
+        # Update config version
+        self.config['config_version'] = 6
+        print_success("[Config] v2.6.0 migration complete - all existing settings preserved!")
 
     def _deep_merge_config(self, user_config: dict, default_config: dict) -> dict:
         """

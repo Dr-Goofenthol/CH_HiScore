@@ -318,7 +318,8 @@ class Database:
     def submit_score(self, auth_token: str, chart_hash: str, instrument_id: int,
                     difficulty_id: int, score: int, completion_percent: float,
                     stars: int, song_title: str = "", song_artist: str = "",
-                    song_charter: str = "") -> Dict:
+                    song_charter: str = "", notes_hit: int = None, notes_total: int = None,
+                    total_notes_in_chart: int = None) -> Dict:
         """
         Submit a score and check if it's a new high score
 
@@ -333,9 +334,12 @@ class Database:
             song_title: Song title (optional)
             song_artist: Song artist (optional)
             song_charter: Charter name (optional)
+            notes_hit: Notes hit from OCR/scoredata (optional)
+            notes_total: Notes total from OCR (optional)
+            total_notes_in_chart: Total notes from chart file parsing (v2.6.0, optional)
 
         Returns:
-            Dictionary with result info (is_high_score, previous_score, etc)
+            Dictionary with result info (is_high_score, previous_score, is_full_combo, etc)
         """
         # Get user
         user = self.get_user_by_auth_token(auth_token)
@@ -347,6 +351,26 @@ class Database:
         # Save/update song info if provided
         if song_title:
             self.save_song_info(chart_hash, song_title, song_artist, song_charter)
+
+        # v2.6.0: Full Combo Detection
+        is_full_combo = False
+        is_first_fc_on_chart = False
+
+        if total_notes_in_chart is not None and notes_hit is not None:
+            # FC detection: notes_hit == total_notes_in_chart AND 100% accuracy
+            is_full_combo = (notes_hit == total_notes_in_chart and completion_percent >= 99.99)
+
+            # Check if this is the first FC on this chart (any user)
+            if is_full_combo:
+                self.cursor.execute("""
+                    SELECT COUNT(*) as fc_count FROM scores
+                    WHERE chart_hash = ?
+                    AND instrument_id = ?
+                    AND difficulty_id = ?
+                    AND is_full_combo = 1
+                """, (chart_hash, instrument_id, difficulty_id))
+                fc_result = self.cursor.fetchone()
+                is_first_fc_on_chart = (fc_result['fc_count'] == 0)
 
         # Get current high score for this chart/instrument/difficulty
         self.cursor.execute("""
@@ -406,16 +430,18 @@ class Database:
         # Insert or update user's score
         self.cursor.execute("""
             INSERT INTO scores (user_id, chart_hash, instrument_id, difficulty_id,
-                              score, completion_percent, stars)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                              score, completion_percent, stars, is_full_combo, notes_total)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(chart_hash, instrument_id, difficulty_id, user_id)
             DO UPDATE SET
                 score = excluded.score,
                 completion_percent = excluded.completion_percent,
                 stars = excluded.stars,
+                is_full_combo = excluded.is_full_combo,
+                notes_total = excluded.notes_total,
                 submitted_at = CURRENT_TIMESTAMP
         """, (user_id, chart_hash, instrument_id, difficulty_id, score,
-              completion_percent, stars))
+              completion_percent, stars, 1 if is_full_combo else 0, total_notes_in_chart))
 
         # Record the record break if applicable
         if is_record_broken:
@@ -451,6 +477,8 @@ class Database:
             'is_record_broken': is_record_broken,  # Only true when beating existing record
             'is_first_time_score': is_first_time_score,  # True when first score on chart
             'is_personal_best': is_personal_best,  # True when improving own score (not server record)
+            'is_full_combo': is_full_combo,  # v2.6.0: True when hitting all notes perfectly
+            'is_first_fc': is_first_fc_on_chart,  # v2.6.0: True when first FC on this chart
             'score': score,
             'previous_score': current_high_score['score'] if current_high_score else None,
             'previous_holder': previous_holder,
@@ -608,6 +636,284 @@ class Database:
 
         self.cursor.execute(query, params)
         return [dict(row) for row in self.cursor.fetchall()]
+
+    def get_hardest_songs(self, instrument_id: int, difficulty_id: int,
+                         limit: int = 3, min_notes: int = 100,
+                         min_nps: float = 0.0, max_nps: float = 999.0) -> List[Dict]:
+        """
+        Get hardest songs ranked by note density (NPS)
+
+        Args:
+            instrument_id: Instrument to filter by
+            difficulty_id: Difficulty to filter by
+            limit: Number of songs to return (default: 3)
+            min_notes: Minimum notes required (default: 100)
+            min_nps: Minimum NPS (default: 0.0)
+            max_nps: Maximum NPS (default: 999.0)
+
+        Returns:
+            List of chart metadata ordered by note_density DESC
+        """
+        query = """
+            SELECT
+                song_name,
+                artist,
+                charter,
+                total_notes,
+                note_density,
+                song_length_ms,
+                chart_hash
+            FROM chart_metadata
+            WHERE instrument_id = ?
+              AND difficulty_id = ?
+              AND total_notes >= ?
+              AND note_density >= ?
+              AND note_density <= ?
+            ORDER BY note_density DESC
+            LIMIT ?
+        """
+
+        self.cursor.execute(query, (instrument_id, difficulty_id, min_notes, min_nps, max_nps, limit))
+        return [dict(row) for row in self.cursor.fetchall()]
+
+    def batch_insert_chart_metadata(self, charts: List[Dict]) -> Dict:
+        """
+        Bulk insert/update chart metadata (v2.6.0)
+
+        Args:
+            charts: List of chart metadata dictionaries with keys:
+                - chart_hash (required)
+                - instrument_id (required)
+                - difficulty_id (required)
+                - total_notes (required)
+                - chord_count (optional)
+                - tap_count (optional)
+                - open_note_count (optional)
+                - star_power_phrases (optional)
+                - song_length_ms (optional)
+                - note_density (optional)
+                - song_name (optional)
+                - artist (optional)
+                - charter (optional)
+                - genre (optional)
+                - chart_file_path (optional)
+
+        Returns:
+            Dict with counts: {'inserted': X, 'updated': Y, 'failed': Z}
+        """
+        inserted = 0
+        updated = 0
+        failed = 0
+
+        for chart in charts:
+            try:
+                # Extract required fields
+                chart_hash = chart.get('chart_hash')
+                instrument_id = chart.get('instrument_id')
+                difficulty_id = chart.get('difficulty_id')
+                total_notes = chart.get('total_notes')
+
+                # Validate required fields
+                if chart_hash is None or instrument_id is None or difficulty_id is None or total_notes is None:
+                    failed += 1
+                    continue
+
+                # Extract optional fields with defaults
+                chord_count = chart.get('chord_count', 0)
+                tap_count = chart.get('tap_count', 0)
+                open_note_count = chart.get('open_note_count', 0)
+                star_power_phrases = chart.get('star_power_phrases', 0)
+                song_length_ms = chart.get('song_length_ms', 0)
+                note_density = chart.get('note_density', 0.0)
+                song_name = chart.get('song_name', '')
+                artist = chart.get('artist', '')
+                charter = chart.get('charter', '')
+                genre = chart.get('genre', '')
+                chart_file_path = chart.get('chart_file_path', '')
+
+                # Check if record exists
+                self.cursor.execute("""
+                    SELECT id FROM chart_metadata
+                    WHERE chart_hash = ? AND instrument_id = ? AND difficulty_id = ?
+                """, (chart_hash, instrument_id, difficulty_id))
+                existing = self.cursor.fetchone()
+
+                # Insert or replace
+                self.cursor.execute("""
+                    INSERT OR REPLACE INTO chart_metadata (
+                        chart_hash, instrument_id, difficulty_id,
+                        total_notes, chord_count, tap_count, open_note_count,
+                        star_power_phrases, song_length_ms, note_density,
+                        song_name, artist, charter, genre,
+                        parsed_at, chart_file_path
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+                """, (
+                    chart_hash, instrument_id, difficulty_id,
+                    total_notes, chord_count, tap_count, open_note_count,
+                    star_power_phrases, song_length_ms, note_density,
+                    song_name, artist, charter, genre,
+                    chart_file_path
+                ))
+
+                # Track whether this was an insert or update
+                if existing:
+                    updated += 1
+                else:
+                    inserted += 1
+
+            except Exception as e:
+                print_warning(f"[DB] Failed to insert chart metadata: {e}")
+                failed += 1
+                continue
+
+        # Commit all changes
+        self.conn.commit()
+
+        print_success(f"[DB] Batch chart metadata: {inserted} inserted, {updated} updated, {failed} failed")
+
+        return {
+            'inserted': inserted,
+            'updated': updated,
+            'failed': failed
+        }
+
+    def scan_historical_fcs(self, announce_to_discord: bool = False) -> Dict:
+        """
+        Scan existing scores for historical Full Combos (v2.6.0)
+
+        This checks all scores that have notes_total data but is_full_combo is not set,
+        and updates them if they meet FC criteria.
+
+        Args:
+            announce_to_discord: If True, return list of FCs for retroactive announcements
+
+        Returns:
+            Dict with counts and optionally a list of FCs to announce:
+            {
+                'scanned': X,
+                'fcs_found': Y,
+                'fcs_to_announce': [...]  # Only if announce_to_discord=True
+            }
+        """
+        print_info("[DB] Scanning for historical Full Combos...")
+
+        # Get all scores that have notes_total data but is_full_combo might not be set
+        # We'll check scores where we have chart metadata available
+        self.cursor.execute("""
+            SELECT s.id, s.user_id, s.chart_hash, s.instrument_id, s.difficulty_id,
+                   s.score, s.completion_percent, s.notes_total, s.is_full_combo,
+                   s.submitted_at,
+                   u.discord_username, u.discord_id,
+                   cm.total_notes as chart_total_notes,
+                   COALESCE(songs.title, '[' || SUBSTR(s.chart_hash, 1, 8) || ']') as song_title,
+                   songs.artist as song_artist,
+                   songs.charter as song_charter
+            FROM scores s
+            JOIN users u ON s.user_id = u.id
+            LEFT JOIN chart_metadata cm ON s.chart_hash = cm.chart_hash
+                                        AND s.instrument_id = cm.instrument_id
+                                        AND s.difficulty_id = cm.difficulty_id
+            LEFT JOIN songs ON s.chart_hash = songs.chart_hash
+            WHERE s.notes_total IS NOT NULL
+              AND s.notes_total > 0
+              AND cm.total_notes IS NOT NULL
+        """)
+
+        all_scores = [dict(row) for row in self.cursor.fetchall()]
+
+        scanned = 0
+        fcs_found = 0
+        fcs_to_announce = []
+
+        for score in all_scores:
+            scanned += 1
+
+            # Show progress
+            if scanned % 100 == 0:
+                print_info(f"  Scanned {scanned} scores... (found {fcs_found} FCs)", end='\r')
+
+            # Check if this is an FC
+            notes_total_in_chart = score['chart_total_notes']
+            notes_total_in_score = score['notes_total']
+            completion_percent = score['completion_percent']
+            is_currently_marked_fc = score['is_full_combo']
+
+            # FC criteria: notes_total matches AND completion >= 99.99%
+            is_fc = (notes_total_in_score == notes_total_in_chart and completion_percent >= 99.99)
+
+            if is_fc and not is_currently_marked_fc:
+                # This is an FC that wasn't previously detected!
+                fcs_found += 1
+
+                # Update the score
+                self.cursor.execute("""
+                    UPDATE scores
+                    SET is_full_combo = 1
+                    WHERE id = ?
+                """, (score['id'],))
+
+                # Check if this was the first FC on this chart
+                self.cursor.execute("""
+                    SELECT COUNT(*) as fc_count FROM scores
+                    WHERE chart_hash = ?
+                    AND instrument_id = ?
+                    AND difficulty_id = ?
+                    AND is_full_combo = 1
+                    AND submitted_at < ?
+                """, (score['chart_hash'], score['instrument_id'], score['difficulty_id'], score['submitted_at']))
+                fc_result = self.cursor.fetchone()
+                is_first_fc = (fc_result['fc_count'] == 0)
+
+                # Check if this FC also beat the previous record
+                self.cursor.execute("""
+                    SELECT s2.score, s2.user_id, u2.discord_username
+                    FROM scores s2
+                    JOIN users u2 ON s2.user_id = u2.id
+                    WHERE s2.chart_hash = ?
+                    AND s2.instrument_id = ?
+                    AND s2.difficulty_id = ?
+                    AND s2.submitted_at < ?
+                    AND s2.score < ?
+                    ORDER BY s2.score DESC
+                    LIMIT 1
+                """, (score['chart_hash'], score['instrument_id'], score['difficulty_id'],
+                     score['submitted_at'], score['score']))
+                prev_record = self.cursor.fetchone()
+                is_fc_record_break = (prev_record is not None)
+
+                if announce_to_discord:
+                    fcs_to_announce.append({
+                        'user_id': score['user_id'],
+                        'username': score['discord_username'],
+                        'discord_id': score['discord_id'],
+                        'chart_hash': score['chart_hash'],
+                        'instrument_id': score['instrument_id'],
+                        'difficulty_id': score['difficulty_id'],
+                        'score': score['score'],
+                        'song_title': score['song_title'],
+                        'song_artist': score['song_artist'],
+                        'song_charter': score['song_charter'],
+                        'submitted_at': score['submitted_at'],
+                        'is_first_fc': is_first_fc,
+                        'is_fc_record_break': is_fc_record_break,
+                        'previous_holder': prev_record['discord_username'] if prev_record else None,
+                        'previous_score': prev_record['score'] if prev_record else None
+                    })
+
+        # Commit all updates
+        self.conn.commit()
+
+        print_success(f"\n[DB] Historical FC scan complete: {scanned} scanned, {fcs_found} FCs found")
+
+        result = {
+            'scanned': scanned,
+            'fcs_found': fcs_found
+        }
+
+        if announce_to_discord:
+            result['fcs_to_announce'] = fcs_to_announce
+
+        return result
 
     def get_user_stats(self, discord_id: str) -> Optional[Dict]:
         """
@@ -995,7 +1301,8 @@ class Database:
                    u.discord_id as breaker_discord_id,
                    prev.discord_username as previous_holder_name,
                    COALESCE(songs.title, '[' || SUBSTR(rb.chart_hash, 1, 8) || ']') as song_title,
-                   songs.artist as song_artist
+                   songs.artist as song_artist,
+                   songs.charter as song_charter
             FROM record_breaks rb
             JOIN users u ON rb.user_id = u.id
             LEFT JOIN users prev ON rb.previous_holder_id = prev.id
@@ -1091,6 +1398,144 @@ class Database:
             'most_active_user': most_active_user,
             'most_competitive_song': most_competitive_song,
             'db_size_mb': round(db_size_mb, 2)
+        }
+
+    def get_daily_activity(self, start_time: str, end_time: str) -> Dict:
+        """
+        Get comprehensive daily activity data for a specific time period
+
+        Args:
+            start_time: ISO format timestamp (e.g., '2025-12-29 00:00:00')
+            end_time: ISO format timestamp (e.g., '2025-12-30 00:00:00')
+
+        Returns:
+            Dictionary with all daily activity data for log generation
+        """
+        # All submissions in the time period
+        self.cursor.execute("""
+            SELECT s.*, u.discord_username,
+                   COALESCE(songs.title, '[' || SUBSTR(s.chart_hash, 1, 8) || ']') as song_title,
+                   songs.artist as song_artist
+            FROM scores s
+            JOIN users u ON s.user_id = u.id
+            LEFT JOIN songs ON s.chart_hash = songs.chart_hash
+            WHERE s.submitted_at >= ? AND s.submitted_at < ?
+            ORDER BY s.submitted_at ASC
+        """, (start_time, end_time))
+        all_submissions = [dict(row) for row in self.cursor.fetchall()]
+
+        # Per-user submission counts
+        self.cursor.execute("""
+            SELECT u.discord_username, COUNT(*) as submission_count,
+                   SUM(CASE WHEN rb.user_id IS NOT NULL THEN 1 ELSE 0 END) as records_broken
+            FROM scores s
+            JOIN users u ON s.user_id = u.id
+            LEFT JOIN record_breaks rb ON rb.user_id = u.id
+                AND rb.chart_hash = s.chart_hash
+                AND rb.instrument_id = s.instrument_id
+                AND rb.difficulty_id = s.difficulty_id
+                AND rb.broken_at >= ? AND rb.broken_at < ?
+            WHERE s.submitted_at >= ? AND s.submitted_at < ?
+            GROUP BY u.id
+            ORDER BY submission_count DESC
+        """, (start_time, end_time, start_time, end_time))
+        user_activity = [dict(row) for row in self.cursor.fetchall()]
+
+        # Record breaks in the time period
+        self.cursor.execute("""
+            SELECT rb.*,
+                   u.discord_username as breaker_name,
+                   prev.discord_username as previous_holder_name,
+                   COALESCE(songs.title, '[' || SUBSTR(rb.chart_hash, 1, 8) || ']') as song_title,
+                   songs.artist as song_artist
+            FROM record_breaks rb
+            JOIN users u ON rb.user_id = u.id
+            LEFT JOIN users prev ON rb.previous_holder_id = prev.id
+            LEFT JOIN songs ON rb.chart_hash = songs.chart_hash
+            WHERE rb.broken_at >= ? AND rb.broken_at < ?
+            ORDER BY rb.broken_at ASC
+        """, (start_time, end_time))
+        record_breaks = [dict(row) for row in self.cursor.fetchall()]
+
+        # Statistics
+        total_submissions = len(all_submissions)
+        unique_users = len(user_activity)
+        unique_charts = len(set(s['chart_hash'] for s in all_submissions))
+        total_records_broken = len(record_breaks)
+
+        # Count first-time scores (records with no previous holder)
+        first_time_scores = len([r for r in record_breaks if not r['previous_holder_id']])
+
+        # Difficulty breakdown
+        difficulty_counts = {}
+        for s in all_submissions:
+            diff_id = s['difficulty_id']
+            difficulty_counts[diff_id] = difficulty_counts.get(diff_id, 0) + 1
+
+        # Instrument breakdown
+        instrument_counts = {}
+        for s in all_submissions:
+            inst_id = s['instrument_id']
+            instrument_counts[inst_id] = instrument_counts.get(inst_id, 0) + 1
+
+        # Most played chart
+        chart_play_counts = {}
+        for s in all_submissions:
+            key = (s['chart_hash'], s.get('song_title', ''))
+            chart_play_counts[key] = chart_play_counts.get(key, 0) + 1
+
+        most_played_chart = None
+        if chart_play_counts:
+            most_played = max(chart_play_counts.items(), key=lambda x: x[1])
+            most_played_chart = {'title': most_played[0][1], 'count': most_played[1]}
+
+        # Most active hour (hour of day with most submissions)
+        hour_counts = {}
+        for s in all_submissions:
+            # Parse hour from submitted_at timestamp
+            timestamp = s['submitted_at']
+            hour = int(timestamp.split(' ')[1].split(':')[0]) if ' ' in timestamp else 0
+            hour_counts[hour] = hour_counts.get(hour, 0) + 1
+
+        most_active_hour = None
+        if hour_counts:
+            most_active = max(hour_counts.items(), key=lambda x: x[1])
+            most_active_hour = {'hour': most_active[0], 'count': most_active[1]}
+
+        # Score statistics
+        scores_list = [s['score'] for s in all_submissions]
+        avg_score = sum(scores_list) / len(scores_list) if scores_list else 0
+        max_score = max(scores_list) if scores_list else 0
+        min_score = min(scores_list) if scores_list else 0
+
+        # 5-star count
+        five_star_count = len([s for s in all_submissions if s.get('stars', 0) == 5])
+
+        # Mystery hash count
+        mystery_count = len([s for s in all_submissions if s.get('song_title', '').startswith('[')])
+
+        return {
+            'all_submissions': all_submissions,
+            'user_activity': user_activity,
+            'record_breaks': record_breaks,
+            'summary': {
+                'total_submissions': total_submissions,
+                'unique_users': unique_users,
+                'unique_charts': unique_charts,
+                'total_records_broken': total_records_broken,
+                'first_time_scores': first_time_scores
+            },
+            'statistics': {
+                'most_active_hour': most_active_hour,
+                'most_played_chart': most_played_chart,
+                'difficulty_counts': difficulty_counts,
+                'instrument_counts': instrument_counts,
+                'avg_score': int(avg_score),
+                'max_score': max_score,
+                'min_score': min_score,
+                'five_star_count': five_star_count,
+                'mystery_count': mystery_count
+            }
         }
 
     def get_metadata(self, key: str) -> Optional[str]:

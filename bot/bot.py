@@ -712,6 +712,178 @@ async def leaderboard(
     await interaction.followup.send(embed=embed)
 
 
+@bot.tree.command(name="hardest", description="Show the hardest songs ranked by note density (NPS)")
+@app_commands.describe(
+    instrument="Filter by instrument (default: Lead Guitar)",
+    difficulty="Filter by difficulty (default: Expert)",
+    limit="Number of songs to show (default: 3, max: 25)",
+    min_notes="Minimum notes required (default: 100)",
+    min_nps="Minimum NPS (default: 0)",
+    max_nps="Maximum NPS (default: 10 for playable songs)"
+)
+@app_commands.choices(
+    difficulty=[
+        app_commands.Choice(name="Easy", value=0),
+        app_commands.Choice(name="Medium", value=1),
+        app_commands.Choice(name="Hard", value=2),
+        app_commands.Choice(name="Expert", value=3),
+    ],
+    instrument=[
+        app_commands.Choice(name="Lead Guitar", value=0),
+        app_commands.Choice(name="Bass", value=1),
+        app_commands.Choice(name="Rhythm", value=2),
+        app_commands.Choice(name="Keys", value=3),
+        app_commands.Choice(name="Drums", value=4),
+    ]
+)
+async def hardest(
+    interaction: discord.Interaction,
+    difficulty: app_commands.Choice[int] = None,
+    instrument: app_commands.Choice[int] = None,
+    limit: int = 3,
+    min_notes: int = None,
+    min_nps: float = None,
+    max_nps: float = None
+):
+    """Show hardest songs by note density (NPS)"""
+    # Command privacy: read from config (default: public)
+    is_private = interaction.client.config_manager.config.get('discord', {}).get('command_privacy', {}).get('hardest', 'public') == 'private'
+    await interaction.response.defer(ephemeral=is_private)
+
+    # Apply defaults
+    difficulty_id = difficulty.value if difficulty else 3  # Default: Expert
+    instrument_id = instrument.value if instrument else 0  # Default: Lead Guitar
+
+    # Get min_notes from config if not specified
+    if min_notes is None:
+        min_notes = interaction.client.config_manager.config.get('hardest_command', {}).get('min_notes_filter', 100)
+
+    # Get NPS range from config or use defaults
+    if min_nps is None:
+        min_nps = interaction.client.config_manager.config.get('hardest_command', {}).get('default_min_nps', 0.0)
+    if max_nps is None:
+        max_nps = interaction.client.config_manager.config.get('hardest_command', {}).get('default_max_nps', 10.0)
+
+    # Validate limit
+    if limit < 1:
+        limit = 3
+    elif limit > 25:
+        limit = 25
+
+    # Get difficulty tier config
+    tier_config = interaction.client.config_manager.config.get('difficulty_tiers', {
+        "tier1": {"name": "Chill", "emoji": "🟢", "min_nps": 1.0, "max_nps": 3.0},
+        "tier2": {"name": "Shred", "emoji": "🟡", "min_nps": 3.0, "max_nps": 5.0},
+        "tier3": {"name": "Brutal", "emoji": "🟠", "min_nps": 5.0, "max_nps": 6.0},
+        "tier4": {"name": "Insane", "emoji": "🔴", "min_nps": 6.0, "max_nps": 999.0}
+    })
+
+    # Get hardest songs from database
+    songs = bot.db.get_hardest_songs(
+        instrument_id=instrument_id,
+        difficulty_id=difficulty_id,
+        limit=limit,
+        min_notes=min_notes,
+        min_nps=min_nps,
+        max_nps=max_nps
+    )
+
+    # Build filter text
+    instruments = {0: "Lead Guitar", 1: "Bass", 2: "Rhythm", 3: "Keys", 4: "Drums"}
+    difficulties = {0: "Easy", 1: "Medium", 2: "Hard", 3: "Expert"}
+
+    inst_name = instruments.get(instrument_id, "Unknown")
+    diff_name = difficulties.get(difficulty_id, "Unknown")
+    filter_text = f"{diff_name} {inst_name}"
+
+    # Add NPS range to description
+    nps_range_text = f"NPS Range: {min_nps:.1f} - {max_nps:.1f}"
+
+    embed = discord.Embed(
+        title=f"🔥 HARDEST SONGS ({filter_text})",
+        description=f"Ranked by note density (Notes Per Second)\n{nps_range_text}",
+        color=discord.Color.red()
+    )
+
+    if songs:
+        # Helper function to get tier for NPS value
+        def get_tier(nps):
+            for tier_key in ['tier1', 'tier2', 'tier3', 'tier4']:
+                tier = tier_config.get(tier_key, {})
+                min_nps = tier.get('min_nps', 0)
+                max_nps = tier.get('max_nps', 999)
+                if min_nps <= nps < max_nps:
+                    return tier.get('emoji', ''), tier.get('name', '')
+            # Fallback for tier4 (Insane)
+            tier4 = tier_config.get('tier4', {})
+            return tier4.get('emoji', '🔴'), tier4.get('name', 'Insane')
+
+        # Build song entries
+        entries = []
+        for i, song in enumerate(songs, 1):
+            song_name = song.get('song_name', 'Unknown')
+            artist = song.get('artist', '')
+            charter = song.get('charter', '')
+            total_notes = song.get('total_notes', 0)
+            nps = song.get('note_density', 0.0)
+
+            # Get tier badge and name
+            emoji, tier_name = get_tier(nps)
+
+            # Build entry
+            entry = f"**{i}.** {emoji} {song_name}"
+            if artist:
+                entry += f" - {artist}"
+            entry += "\n"
+            entry += f"   • {total_notes:,} notes • {nps:.1f} NPS • {tier_name}\n"
+            if charter:
+                entry += f"   • Charter: {charter}\n"
+            entry += "\n"
+
+            entries.append(entry)
+
+        # Combine all entries
+        all_entries = "".join(entries)
+
+        # Add to embed
+        embed.add_field(
+            name="Top Songs",
+            value=all_entries if len(all_entries) <= 1024 else all_entries[:1020] + "...",
+            inline=False
+        )
+
+        # Build legend
+        legend_parts = []
+        for tier_key in ['tier1', 'tier2', 'tier3', 'tier4']:
+            tier = tier_config.get(tier_key, {})
+            emoji = tier.get('emoji', '')
+            name = tier.get('name', '')
+            min_nps = tier.get('min_nps', 0)
+            max_nps = tier.get('max_nps', 999)
+
+            if max_nps >= 999:
+                legend_parts.append(f"{emoji} {name} ({min_nps:.0f}+ NPS)")
+            else:
+                legend_parts.append(f"{emoji} {name} ({min_nps:.0f}-{max_nps:.0f} NPS)")
+
+        legend = " • ".join(legend_parts)
+        embed.add_field(
+            name="Legend",
+            value=legend,
+            inline=False
+        )
+    else:
+        embed.add_field(
+            name="No Data",
+            value=f"No chart data available yet.\nChart metadata is populated when you play songs or run `/scancharts`.",
+            inline=False
+        )
+
+    embed.set_footer(text=f"Showing top {limit} | Min notes: {min_notes}")
+
+    await interaction.followup.send(embed=embed)
+
+
 @bot.tree.command(name="mystats", description="Show Clone Hero statistics for yourself or another user")
 @app_commands.describe(user="The user to look up (leave empty for your own stats)")
 async def mystats(interaction: discord.Interaction, user: discord.Member = None):
