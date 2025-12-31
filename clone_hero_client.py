@@ -4,7 +4,7 @@ Clone Hero High Score Client
 Monitors your Clone Hero scores and submits them to the Discord scoreboard.
 """
 
-VERSION = "2.5.5"
+VERSION = "2.6.1"
 
 # GitHub repository for auto-updates
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
@@ -24,6 +24,7 @@ from pathlib import Path
 import requests
 from client.file_watcher import CloneHeroWatcher
 from shared.parsers import SongCacheParser, get_artist_for_song, parse_song_ini
+from shared.chart_parser import parse_chart_file, Instrument, Difficulty
 from client.ocr_capture import capture_and_extract, check_ocr_available, OCRResult
 from shared.console import (
     print_success, print_info, print_warning, print_error,
@@ -45,6 +46,45 @@ except ImportError:
 
 # Initialize logger
 logger = get_client_logger()
+
+
+def show_ascii_banner():
+    """Display ASCII art banner with dynamic version"""
+    try:
+        print()
+        print("        ██████╗██╗  ██╗    ██╗  ██╗██╗███████╗ ██████╗ ██████╗ ██████╗ ███████╗")
+        print("       ██╔════╝██║  ██║    ██║  ██║██║██╔════╝██╔════╝██╔═══██╗██╔══██╗██╔════╝")
+        print("       ██║     ███████║    ███████║██║███████╗██║     ██║   ██║██████╔╝█████╗  ")
+        print("       ██║     ██╔══██║    ██╔══██║██║╚════██║██║     ██║   ██║██╔══██╗██╔══╝  ")
+        print("       ╚██████╗██║  ██║    ██║  ██║██║███████║╚██████╗╚██████╔╝██║  ██║███████╗")
+        print("        ╚═════╝╚═╝  ╚═╝    ╚═╝  ╚═╝╚═╝╚══════╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝")
+        print()
+        print(f"                         SCORE TRACKER CLIENT v{VERSION}")
+        print("                          Track • Compete • Dominate")
+        print()
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        # Fallback to simple ASCII if Unicode fails
+        print()
+        print("=" * 80)
+        print(f"         CLONE HERO HIGH SCORE TRACKER v{VERSION}")
+        print("                 Track • Compete • Dominate")
+        print("=" * 80)
+        print()
+
+
+
+def is_admin():
+    """Check if running with administrator privileges"""
+    if sys.platform == 'win32':
+        try:
+            import ctypes
+            return ctypes.windll.shell32.IsUserAnAdmin() != 0
+        except Exception:
+            return False
+    else:
+        # For non-Windows, check if running as root
+        return os.geteuid() == 0 if hasattr(os, 'geteuid') else False
+
 
 # Windows startup management
 if sys.platform == 'win32':
@@ -72,6 +112,16 @@ _cached_song_info = {
 }
 _song_cache_thread = None
 _song_cache_running = False
+
+# OCR Statistics tracking
+_ocr_stats = {
+    'attempts': 0,
+    'successes': 0,
+    'last_attempt': None
+}
+
+# Chart file cache for v2.6.0 chart parsing (chart_hash -> Path to chart file)
+_chart_file_cache = {}
 
 # Config files will be stored in Clone Hero directory for persistence
 CONFIG_FILE = None  # Set after finding CH directory
@@ -126,8 +176,9 @@ def load_settings():
                 saved = json.load(f)
                 # Merge with defaults
                 default_settings.update(saved)
-        except:
-            pass
+        except Exception as e:
+            print_warning(f"Could not load settings (using defaults): {e}")
+            log_exception(logger, "Failed to load settings", e)
 
     return default_settings
 
@@ -506,13 +557,13 @@ def monitor_window_minimize():
                                 title="Clone Hero Score Tracker",
                                 message="Minimized to system tray"
                             )
-                    except:
-                        pass
+                    except Exception:
+                        pass  # Notification failures are non-critical
 
                 last_was_minimized = is_minimized
                 time.sleep(0.5)  # Check twice per second
-            except:
-                time.sleep(1)
+            except Exception:
+                time.sleep(1)  # On any error, wait and retry
 
     # Start monitor thread
     monitor_thread = threading.Thread(target=check_window_state, daemon=True)
@@ -532,8 +583,9 @@ def load_config():
         try:
             with open(config_path, 'r') as f:
                 return json.load(f)
-        except:
-            pass
+        except Exception as e:
+            print_warning(f"Could not load config (using defaults): {e}")
+            log_exception(logger, "Failed to load config", e)
     return {}
 
 
@@ -599,6 +651,7 @@ def poll_for_pairing(timeout=300):
     """Poll the API to check if pairing is complete"""
     client_id = get_or_create_client_id()
     start_time = time.time()
+    last_status_message = 0
 
     while time.time() - start_time < timeout:
         try:
@@ -611,8 +664,17 @@ def poll_for_pairing(timeout=300):
                 data = response.json()
                 if data.get('paired') and data.get('auth_token'):
                     return data['auth_token']
-        except:
-            pass
+        except requests.exceptions.ConnectionError:
+            # Show periodic status if connection keeps failing
+            elapsed = time.time() - start_time
+            if elapsed - last_status_message >= 30:  # Every 30 seconds
+                mins = int(elapsed / 60)
+                secs = int(elapsed % 60)
+                print_warning(f"Still waiting... ({mins}m {secs}s elapsed - bot may be offline)")
+                last_status_message = elapsed
+        except Exception as e:
+            # Log other exceptions but continue polling
+            log_exception(logger, "Error during pairing poll", e)
 
         time.sleep(2)  # Check every 2 seconds
 
@@ -663,16 +725,17 @@ def do_pairing(is_existing_user=False):
     # Get server info for display
     bot_url = get_bot_url()
 
+    print("\n" + "=" * 50)
+    print_success(f"   YOUR PAIRING CODE: {pairing_code}")
     print("=" * 50)
-    print(f"YOUR PAIRING CODE: {pairing_code}")
-    print("=" * 50)
-    print(f"\nSTEP 1: Open Discord")
-    print(f"STEP 2: Go to the server running the score bot")
+    print_info("\nSTEP 1: Open Discord")
+    print_info(f"STEP 2: Go to the server running the score bot")
     print(f"        (Bot server: {bot_url})")
-    print(f"STEP 3: Type this command in any channel:")
-    print(f"\n        /pair {pairing_code}")
-    print(f"\nWaiting for you to complete pairing...")
-    print("(Code expires in 5 minutes)")
+    print_info(f"STEP 3: Type this command in any channel:")
+    print_success(f"\n        /pair {pairing_code}")
+    print()
+    print_plain("Waiting for you to complete pairing...")
+    print_warning("(Code expires in 5 minutes)")
     print("=" * 50 + "\n")
 
     # Poll for completion
@@ -697,6 +760,21 @@ def do_pairing(is_existing_user=False):
         print_header("BRIDGE INTEGRATION SETUP", width=50)
         print("\nBridge Integration allows you to search for charts directly")
         print("in the Bridge desktop app by clicking links in Discord.")
+
+        # Check for admin rights
+        if not is_admin():
+            print_warning("\nWARNING: Not running as Administrator!")
+            print("         Bridge Integration requires Administrator rights to:")
+            print("         - Register the chbridge:// protocol")
+            print("         - Modify Windows shortcuts")
+            print()
+            print("To enable Bridge Integration:")
+            print("  1. Close this tracker")
+            print("  2. Right-click the tracker exe")
+            print("  3. Select 'Run as administrator'")
+            print("  4. Complete setup again")
+            print()
+
         print("\nEnable Bridge Integration? (Y/n)")
         print("(You can change this later in Settings)")
 
@@ -775,6 +853,128 @@ def do_pairing(is_existing_user=False):
                     print_warning("Re-launch the tracker as Administrator to enable Bridge integration.")
         else:
             print_info("Bridge Integration skipped. You can enable it later in Settings.")
+
+        # Always mark as prompted to prevent repeated asking
+        settings = load_settings()
+        if 'bridge_integration' not in settings:
+            settings['bridge_integration'] = {}
+        settings['bridge_integration']['prompted'] = True
+        save_settings(settings)
+
+        # ==================== FEATURE CONFIGURATION ====================
+        print("\n" + "=" * 50)
+        print_header("FEATURE CONFIGURATION", width=50)
+        print("Let's configure some helpful features for your tracker.")
+        print("=" * 50 + "\n")
+
+        settings = load_settings()
+
+        # System Tray
+        print_plain("[1] Minimize to System Tray")
+        print("    When enabled, the tracker minimizes to your system tray")
+        print("    instead of the taskbar. Keeps your taskbar clean!")
+        print()
+        tray_choice = input("    Enable minimize to tray? (Y/n): ").strip().lower()
+        if tray_choice not in ('n', 'no'):
+            settings['minimize_to_tray'] = True
+            print_success("    System tray enabled!")
+        else:
+            settings['minimize_to_tray'] = False
+            print_info("    System tray disabled")
+
+        # Start with Windows
+        print()
+        print_plain("[2] Start with Windows")
+        print("    Automatically start the tracker when Windows boots.")
+        print("    Ensures your scores are always tracked!")
+        print()
+        startup_choice = input("    Enable start with Windows? (Y/n): ").strip().lower()
+        if startup_choice not in ('n', 'no'):
+            try:
+                success = set_windows_startup(True)
+                if success:
+                    settings['start_with_windows'] = True
+                else:
+                    settings['start_with_windows'] = False
+                    print_info("    You can enable this later in Settings")
+            except Exception as e:
+                settings['start_with_windows'] = False
+                print_error(f"    Failed to enable: {e}")
+                print_info("    You can enable this later in Settings")
+        else:
+            settings['start_with_windows'] = False
+            print_info("    Auto-start disabled")
+
+        # Clone Hero Path Verification
+        print()
+        print_plain("[3] Clone Hero Path")
+        auto_detected = find_clone_hero_directory_internal()
+        if auto_detected:
+            print_success(f"    Auto-detected: {auto_detected}")
+            print()
+            verify = input("    Is this correct? (Y/n): ").strip().lower()
+            if verify in ('n', 'no'):
+                print("    Enter custom Clone Hero data path:")
+                custom_path = input("    > ").strip()
+                if custom_path and Path(custom_path).exists():
+                    settings['clone_hero_path'] = custom_path
+                    print_success(f"    Custom path saved: {custom_path}")
+                else:
+                    print_warning("    Invalid path, using auto-detect")
+                    settings['clone_hero_path'] = None
+            else:
+                settings['clone_hero_path'] = None  # Use auto-detect
+                print_info("    Using auto-detected path")
+        else:
+            print_warning("    Could not auto-detect Clone Hero")
+            print("    Enter Clone Hero data path (or press Enter to configure later):")
+            custom_path = input("    > ").strip()
+            if custom_path and Path(custom_path).exists():
+                settings['clone_hero_path'] = custom_path
+                print_success(f"    Custom path saved: {custom_path}")
+            else:
+                settings['clone_hero_path'] = None
+                print_info("    You can set this later in Settings")
+
+        # Save all settings
+        save_settings(settings)
+
+        # ==================== SETUP COMPLETE SUMMARY ====================
+        print("\n" + "=" * 50)
+        print_header("SETUP COMPLETE!", width=50)
+        print("=" * 50)
+        print()
+        print_success("Your Clone Hero Score Tracker is ready!")
+        print()
+        print("Configured Features:")
+        if settings.get('minimize_to_tray'):
+            print_success("  + Minimize to system tray")
+        else:
+            print_plain("  - System tray (disabled)")
+        if settings.get('start_with_windows'):
+            print_success("  + Start with Windows")
+        else:
+            print_plain("  - Auto-start (disabled)")
+        if settings.get('bridge_integration', {}).get('enabled'):
+            print_success("  + Bridge Integration")
+        else:
+            print_plain("  - Bridge Integration (disabled)")
+        if settings.get('clone_hero_path'):
+            print_success(f"  + Clone Hero path: {settings.get('clone_hero_path')}")
+        else:
+            print_info("  + Clone Hero path: Auto-detect")
+
+        print()
+        print("-" * 50)
+        print("NEXT STEPS:")
+        print("-" * 50)
+        print("  1. The tracker will now monitor your Clone Hero scores")
+        print("  2. Play Clone Hero - scores will auto-submit!")
+        print("  3. High scores are announced in Discord")
+        print("  4. Check Settings menu to customize further")
+        print("-" * 50)
+        print()
+        input("Press Enter to start tracking...")
 
         print("=" * 50 + "\n")
 
@@ -941,6 +1141,133 @@ def clear_song_cache():
     }
 
 
+def find_chart_file_by_hash(chart_hash: str):
+    """
+    Find a chart file (.chart or .mid) by its hash.
+
+    Scans Clone Hero's song folders from settings.ini to find the chart file
+    that matches the given hash. Results are cached for performance.
+
+    Args:
+        chart_hash: The MD5 hash of the chart file to find
+
+    Returns:
+        Path to chart file, or None if not found
+    """
+    global _chart_file_cache
+
+    # Check cache first
+    if chart_hash in _chart_file_cache:
+        return _chart_file_cache[chart_hash]
+
+    # Get Clone Hero song folders from settings.ini
+    ch_dir = Path.home() / 'Documents' / 'Clone Hero'
+    settings_path = ch_dir / "settings.ini"
+
+    song_folders = []
+
+    if settings_path.exists():
+        try:
+            # Parse settings.ini using configparser to handle sections properly
+            config = configparser.ConfigParser()
+            config.read(str(settings_path))
+
+            # Look for path entries in all sections
+            for section in config.sections():
+                for key in config.options(section):
+                    if key.startswith('path') and key[4:].isdigit():
+                        folder = config.get(section, key)
+                        if folder and Path(folder).exists():
+                            song_folders.append(Path(folder))
+        except Exception as e:
+            logger.debug(f"Could not parse Clone Hero settings: {e}")
+
+    if not song_folders:
+        # Cache negative result
+        _chart_file_cache[chart_hash] = None
+        return None
+
+    # Scan folders for matching chart
+    for songs_path in song_folders:
+        for root, dirs, files in os.walk(songs_path):
+            # Look for chart files
+            chart_files = [f for f in files if f.lower() in ['notes.chart', 'notes.mid', 'notes.midi']]
+
+            if not chart_files:
+                continue
+
+            chart_path = Path(root) / chart_files[0]
+
+            try:
+                # Calculate MD5 hash of chart file
+                with open(chart_path, 'rb') as f:
+                    file_hash = hashlib.md5(f.read()).hexdigest()
+
+                # Check if this matches the target hash
+                if file_hash == chart_hash or file_hash.startswith(chart_hash):
+                    # Cache and return
+                    _chart_file_cache[chart_hash] = chart_path
+                    return chart_path
+            except Exception:
+                continue
+
+    # Not found - cache negative result
+    _chart_file_cache[chart_hash] = None
+    return None
+
+
+def get_total_notes_from_chart(chart_hash: str, instrument_id: int, difficulty_id: int):
+    """
+    Get total_notes for a specific chart/instrument/difficulty by parsing the chart file.
+
+    This function finds the chart file by hash, parses it, and extracts the total note
+    count for the specified instrument and difficulty combination.
+
+    Args:
+        chart_hash: The MD5 hash of the chart file
+        instrument_id: Instrument ID (0=Lead, 1=Bass, 2=Rhythm, 3=Keys, 4=Drums)
+        difficulty_id: Difficulty ID (0=Easy, 1=Medium, 2=Hard, 3=Expert)
+
+    Returns:
+        Total notes count (int), or None if chart file not found or parsing failed
+    """
+    # Find the chart file
+    chart_path = find_chart_file_by_hash(chart_hash)
+
+    if not chart_path:
+        logger.debug(f"Chart file not found for hash {chart_hash[:8]}")
+        return None
+
+    try:
+        # Parse chart file
+        chart_data = parse_chart_file(chart_path)
+
+        if not chart_data:
+            logger.debug(f"Failed to parse chart file: {chart_path}")
+            return None
+
+        # Convert IDs to enums
+        try:
+            instrument = Instrument(instrument_id)
+            difficulty = Difficulty(difficulty_id)
+        except ValueError as e:
+            logger.debug(f"Invalid instrument/difficulty ID: {e}")
+            return None
+
+        # Get data for this instrument/difficulty combination
+        key = (instrument, difficulty)
+        if key not in chart_data.instruments:
+            logger.debug(f"No data for {instrument.name}/{difficulty.name} in chart")
+            return None
+
+        inst_diff_data = chart_data.instruments[key]
+        return inst_diff_data.total_notes
+
+    except Exception as e:
+        logger.warning(f"Failed to parse chart file {chart_path}: {e}")
+        return None
+
+
 def start_song_cache_polling():
     """
     Start a background thread that periodically polls currentsong.txt
@@ -1090,9 +1417,12 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
 
         if ocr_enabled:
             print_info("Attempting OCR capture of results screen...")
+            _ocr_stats['attempts'] += 1
+            _ocr_stats['last_attempt'] = time.time()
             ocr_result = capture_and_extract(delay_ms=500, save_debug=False)
 
             if ocr_result.success:
+                _ocr_stats['successes'] += 1
                 print_success("OCR extraction successful")
 
                 # Show what OCR found
@@ -1126,11 +1456,67 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
                 if not currentsong_used:
                     print("    (Score will be 'raw' with chart hash identifier only)")
 
+        # =====================================================
+        # STEP 3: Try songcache.bin for offline scores
+        # =====================================================
+        # If we still don't have metadata (offline score), try songcache.bin
+        if score_type == "raw" and song_cache:
+            try:
+                print_info("Checking songcache.bin for song metadata...")
+                # Look up song by chart hash in the cache dictionary
+                cached_song = song_cache.get(score.chart_hash)
+
+                if cached_song:
+                    print_success("Song found in cache!")
+                    print(f"    - Title: {cached_song.title}")
+                    if cached_song.artist:
+                        print(f"    - Artist: {cached_song.artist}")
+                    if hasattr(cached_song, 'charter') and cached_song.charter:
+                        print(f"    - Charter: {cached_song.charter}")
+
+                    # Use songcache.bin metadata
+                    song_title = cached_song.title if cached_song.title else song_title
+                    song_artist = cached_song.artist if cached_song.artist else ""
+                    if hasattr(cached_song, 'charter'):
+                        song_charter = cached_song.charter
+                    score_type = "rich"
+                else:
+                    print_warning("Song not found in cache (may need to refresh songcache in Clone Hero)")
+            except Exception as e:
+                print_warning(f"Failed to check songcache.bin: {e}")
+
+        # =====================================================
+        # STEP 4: Parse chart file for accurate note count (v2.6.0)
+        # =====================================================
+        total_notes_in_chart = None
+
+        try:
+            print_info("Parsing chart file for note data...")
+            total_notes_in_chart = get_total_notes_from_chart(
+                score.chart_hash,
+                score.instrument_id,
+                score.difficulty
+            )
+
+            if total_notes_in_chart is not None:
+                print_success(f"Chart parsed! Total notes: {total_notes_in_chart:,}")
+                # Update notes_total from chart data (more reliable than OCR)
+                notes_total = total_notes_in_chart
+            else:
+                print_warning("Chart file not found or could not be parsed")
+                print("    (Note counts will not be available for this score)")
+
+        except Exception as e:
+            logger.warning(f"Chart parsing failed: {e}")
+            print_warning(f"Chart parsing failed: {e}")
+
         # Determine data source for display
         if currentsong_used:
             data_source = "currentsong.txt"
         elif ocr_result and ocr_result.success:
             data_source = "OCR"
+        elif score_type == "rich":
+            data_source = "songcache.bin"
         else:
             data_source = "Chart hash only"
 
@@ -1183,6 +1569,10 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
                 payload["best_streak"] = best_streak
             if song_charter:
                 payload["song_charter"] = song_charter
+
+            # v2.6.0: Add chart-parsed total notes for FC detection
+            if total_notes_in_chart is not None:
+                payload["total_notes_in_chart"] = total_notes_in_chart
 
             response = requests.post(
                 f"{get_bot_url()}/api/score",
@@ -2242,6 +2632,33 @@ def check_and_prompt_update(silent_if_current: bool = False) -> bool:
     return False
 
 
+def show_ascii_logo():
+    """Display ASCII art logo with dynamic version"""
+    try:
+        # Try to display full Unicode logo
+        print()
+        print("        ██████╗██╗  ██╗    ██╗  ██╗██╗███████╗ ██████╗ ██████╗ ██████╗ ███████╗")
+        print("       ██╔════╝██║  ██║    ██║  ██║██║██╔════╝██╔════╝██╔═══██╗██╔══██╗██╔════╝")
+        print("       ██║     ███████║    ███████║██║███████╗██║     ██║   ██║██████╔╝█████╗  ")
+        print("       ██║     ██╔══██║    ██╔══██║██║╚════██║██║     ██║   ██║██╔══██╗██╔══╝  ")
+        print("       ╚██████╗██║  ██║    ██║  ██║██║███████║╚██████╗╚██████╔╝██║  ██║███████╗")
+        print("        ╚═════╝╚═╝  ╚═╝    ╚═╝  ╚═╝╚═╝╚══════╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═╝╚══════╝")
+        print()
+        print(f"                            SCORE TRACKER v{VERSION}")
+        print("                         Track • Compete • Dominate")
+        print()
+        print("=" * 80)
+        print()
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        # Fallback to simple ASCII if Unicode fails
+        print()
+        print("=" * 80)
+        print(f"        CLONE HERO HIGH SCORE TRACKER v{VERSION}")
+        print("                  Track • Compete • Dominate")
+        print("=" * 80)
+        print()
+
+
 def show_welcome_message():
     """Show welcome message for first-time users"""
     print("\n" + "=" * 50)
@@ -2593,7 +3010,17 @@ def resolve_hashes_command():
 
     if not resolved_metadata:
         print_warning("No matches found!")
-        print_info("Your unresolved hashes might be for songs not in your current folder.")
+        print()
+        print_info("Possible reasons:")
+        print("  • Your unresolved hashes are from songs you've deleted")
+        print("  • Clone Hero song folders might have changed")
+        print("  • Songs were from a different PC")
+        print()
+        print_info("What you can do:")
+        print("  • Check Settings > Clone Hero Path")
+        print("  • Run 'resync' to refresh your scores")
+        print("  • Re-download missing charts from Bridge")
+        print()
         return
 
     # Step 4: Show preview and confirm
@@ -2650,6 +3077,441 @@ def resolve_hashes_command():
         print_error(f"Failed to send updates: {e}")
 
 
+def scancharts_command():
+    """
+    Scan all local charts and upload metadata to server (v2.6.0)
+
+    This command parses ALL charts in your Clone Hero song folders and sends
+    detailed metadata (total notes, NPS, chord count, etc.) to the server.
+    This enables features like:
+    - /hardest command (shows hardest songs by NPS)
+    - Chart Intensity badges in announcements
+    - Accurate note counts
+    """
+    print_header("SCAN CHARTS FOR METADATA")
+    print()
+    print("This will:")
+    print("  1. Scan ALL charts in your Clone Hero songs folder(s)")
+    print("  2. Parse note data for each instrument/difficulty")
+    print("  3. Calculate note density (NPS)")
+    print("  4. Upload metadata to server")
+    print()
+    print_warning("This may take several minutes for large libraries!")
+    print()
+
+    # Check auth token
+    config = load_config()
+    auth_token = config.get('auth_token')
+    if not auth_token:
+        print_error("Not paired! Use Discord to pair first (/pair)")
+        return
+
+    bot_url = get_bot_url()
+
+    # Step 1: Find Clone Hero's song folders from settings.ini
+    print("[*] Looking for Clone Hero's settings...")
+
+    ch_dir = Path.home() / 'Documents' / 'Clone Hero'
+    settings_path = ch_dir / "settings.ini"
+
+    song_folders = []
+
+    if settings_path.exists():
+        try:
+            # Parse settings.ini using configparser
+            config_parser = configparser.ConfigParser()
+            config_parser.read(str(settings_path))
+
+            # Look for path entries in all sections
+            for section in config_parser.sections():
+                for key in config_parser.options(section):
+                    if key.startswith('path') and key[4:].isdigit():
+                        folder = config_parser.get(section, key)
+
+                        if folder and Path(folder).exists():
+                            song_folders.append(Path(folder))
+                            print_success(f"  Found song folder: {folder}")
+        except Exception as e:
+            print_warning(f"Could not parse Clone Hero settings: {e}")
+
+    # Fallback: Use tracker's configured songs folder
+    if not song_folders:
+        print_warning("Could not find folders in Clone Hero settings.ini")
+        print_info("Trying tracker's configured songs folder...")
+
+        settings = load_settings()
+        fallback_folder = settings.get('songs_folder')
+
+        if fallback_folder and Path(fallback_folder).exists():
+            song_folders.append(Path(fallback_folder))
+            print_success(f"  Using tracker folder: {fallback_folder}")
+
+    if not song_folders:
+        print_error("No song folders found!")
+        print_info("")
+        print_info("You can either:")
+        print_info("  1. Configure a songs folder in Clone Hero's settings")
+        print_info("  2. Configure a songs folder in the tracker's settings")
+        print_info("")
+        return
+
+    # Ask if user wants to add more folders
+    print()
+    while True:
+        add_more = input("Add another songs folder? (yes/no): ").strip().lower()
+        if add_more == 'yes' or add_more == 'y':
+            folder_path = input("Enter full path to songs folder: ").strip()
+            if folder_path:
+                folder_path = folder_path.strip('"').strip("'")
+                if Path(folder_path).exists():
+                    song_folders.append(Path(folder_path))
+                    print_success(f"  Added folder: {folder_path}")
+                else:
+                    print_error(f"  Folder not found: {folder_path}")
+        else:
+            break
+
+    print()
+    print(f"[*] Will scan {len(song_folders)} song folder(s)")
+    print()
+
+    # Step 2: Scan all charts and parse metadata
+    chart_metadata = []
+    scanned = 0
+    parsed = 0
+    failed = 0
+
+    for songs_path in song_folders:
+        print(f"[*] Scanning: {songs_path}")
+        for root, dirs, files in os.walk(songs_path):
+            # Look for chart files
+            chart_files = [f for f in files if f.lower() in ['notes.chart', 'notes.mid', 'notes.midi']]
+
+            if not chart_files:
+                continue
+
+            scanned += 1
+
+            # Show progress every 100 charts
+            if scanned % 100 == 0:
+                print(f"  Scanned {scanned} songs... ({parsed} parsed, {failed} failed)", end='\r')
+
+            chart_path = Path(root) / chart_files[0]
+
+            # Calculate MD5 hash
+            try:
+                with open(chart_path, 'rb') as f:
+                    chart_hash = hashlib.md5(f.read()).hexdigest()
+
+                # Parse chart file for metadata
+                chart_data = parse_chart_file(chart_path)
+
+                # Get song metadata from song.ini
+                ini_data = parse_song_ini(str(chart_path))
+
+                song_name = ''
+                artist = ''
+                charter = ''
+                genre = ''
+
+                if ini_data:
+                    song_name = ini_data.get('name', ini_data.get('title', ''))
+                    artist = ini_data.get('artist', '')
+                    charter = ini_data.get('charter', ini_data.get('frets', ''))
+                    genre = ini_data.get('genre', '')
+
+                # Fallback to folder name if no title
+                if not song_name:
+                    song_name = Path(root).name
+
+                # Extract metadata for each instrument/difficulty combo
+                for (instrument, difficulty), inst_data in chart_data.instruments.items():
+                    # Calculate note density (NPS)
+                    song_length_ms = chart_data.song_length_ms or 1000  # Avoid division by zero
+                    note_density = (inst_data.total_notes / song_length_ms) * 1000.0
+
+                    chart_metadata.append({
+                        'chart_hash': chart_hash,
+                        'instrument_id': instrument.value,
+                        'difficulty_id': difficulty.value,
+                        'total_notes': inst_data.total_notes,
+                        'chord_count': inst_data.chord_count,
+                        'tap_count': inst_data.tap_count,
+                        'open_note_count': inst_data.open_note_count,
+                        'star_power_phrases': len(inst_data.star_power_phrases),
+                        'song_length_ms': chart_data.song_length_ms,
+                        'note_density': round(note_density, 2),
+                        'song_name': song_name,
+                        'artist': artist,
+                        'charter': charter,
+                        'genre': genre,
+                        'chart_file_path': str(chart_path)
+                    })
+
+                parsed += 1
+
+            except Exception as e:
+                failed += 1
+                logger.debug(f"Failed to parse {chart_path}: {e}")
+                continue
+
+    print(f"\n\n[*] Scan complete!")
+    print(f"  • Charts scanned: {scanned}")
+    print(f"  • Successfully parsed: {parsed}")
+    print(f"  • Failed to parse: {failed}")
+    print(f"  • Total metadata entries: {len(chart_metadata)}")
+    print()
+
+    if not chart_metadata:
+        print_warning("No charts were successfully parsed!")
+        return
+
+    # Step 3: Confirm upload
+    print("="*60)
+    print()
+    confirm = input(f"Upload {len(chart_metadata)} metadata entries to server? (yes/no): ").strip().lower()
+
+    if confirm != "yes":
+        print("  Cancelled.")
+        return
+
+    # Step 4: Send to server in batches (to avoid timeouts)
+    print()
+    print(f"[*] Uploading metadata to server...")
+
+    batch_size = 500
+    total_inserted = 0
+    total_updated = 0
+    total_failed = 0
+
+    for i in range(0, len(chart_metadata), batch_size):
+        batch = chart_metadata[i:i+batch_size]
+        batch_num = (i // batch_size) + 1
+        total_batches = (len(chart_metadata) + batch_size - 1) // batch_size
+
+        print(f"  Uploading batch {batch_num}/{total_batches} ({len(batch)} entries)...", end='\r')
+
+        try:
+            response = requests.post(
+                f"{bot_url}/api/chart_metadata",
+                headers={'Authorization': f'Bearer {auth_token}'},
+                json={'charts': batch},
+                timeout=60
+            )
+
+            if response.status_code != 200:
+                print_error(f"\n  Server error on batch {batch_num}: {response.status_code}")
+                total_failed += len(batch)
+                continue
+
+            data = response.json()
+            if data.get('success'):
+                total_inserted += data.get('inserted', 0)
+                total_updated += data.get('updated', 0)
+                total_failed += data.get('failed', 0)
+            else:
+                print_error(f"\n  Server error on batch {batch_num}: {data.get('error', 'Unknown')}")
+                total_failed += len(batch)
+
+        except Exception as e:
+            print_error(f"\n  Failed to upload batch {batch_num}: {e}")
+            total_failed += len(batch)
+
+    print()
+    print()
+    print_header("UPLOAD COMPLETE", width=60)
+    print_success(f"  • Inserted: {total_inserted}")
+    print_success(f"  • Updated: {total_updated}")
+    if total_failed > 0:
+        print_warning(f"  • Failed: {total_failed}")
+    print()
+    print_info("Your charts are now indexed!")
+    print_info("Features now available:")
+    print("  • /hardest - See hardest songs by NPS")
+    print("  • Chart Intensity badges in announcements")
+    print("  • Accurate note counts")
+    print()
+
+
+def backup_config_command():
+    """Backup current configuration"""
+    try:
+        config_path = get_config_path()
+        settings_path = get_settings_path()
+
+        if not config_path or not settings_path:
+            print_error("Could not determine config paths")
+            return
+
+        # Create backups
+        backup_config = config_path.parent / f"{config_path.name}.backup"
+        backup_settings = settings_path.parent / f"{settings_path.name}.backup"
+
+        backed_up = []
+
+        if config_path.exists():
+            import shutil
+            shutil.copy2(config_path, backup_config)
+            backed_up.append(f"Config: {backup_config.name}")
+
+        if settings_path.exists():
+            import shutil
+            shutil.copy2(settings_path, backup_settings)
+            backed_up.append(f"Settings: {backup_settings.name}")
+
+        if backed_up:
+            print_header("BACKUP COMPLETE", width=50)
+            print_success("Backed up:")
+            for item in backed_up:
+                print(f"  • {item}")
+            print()
+            print(f"Location: {config_path.parent}")
+        else:
+            print_warning("No configuration files found to backup")
+
+    except Exception as e:
+        print_error(f"Backup failed: {e}")
+
+
+def restore_config_command():
+    """Restore configuration from backup"""
+    try:
+        config_path = get_config_path()
+        settings_path = get_settings_path()
+
+        if not config_path or not settings_path:
+            print_error("Could not determine config paths")
+            return
+
+        backup_config = config_path.parent / f"{config_path.name}.backup"
+        backup_settings = settings_path.parent / f"{settings_path.name}.backup"
+
+        if not backup_config.exists() and not backup_settings.exists():
+            print_error("No backup files found")
+            print(f"  Looking for: {backup_config.name} or {backup_settings.name}")
+            print(f"  Location: {config_path.parent}")
+            return
+
+        print_header("RESTORE FROM BACKUP", width=50)
+        print_warning("This will overwrite your current configuration!")
+        print()
+        confirm = input("Continue? (yes/no): ").strip().lower()
+
+        if confirm != "yes":
+            print_info("Restore cancelled")
+            return
+
+        restored = []
+
+        if backup_config.exists():
+            import shutil
+            shutil.copy2(backup_config, config_path)
+            restored.append("Config restored")
+
+        if backup_settings.exists():
+            import shutil
+            shutil.copy2(backup_settings, settings_path)
+            restored.append("Settings restored")
+
+        if restored:
+            print_success("Restore complete!")
+            for item in restored:
+                print(f"  • {item}")
+            print()
+            print_info("Restart the tracker for changes to take effect")
+
+    except Exception as e:
+        print_error(f"Restore failed: {e}")
+
+
+def export_logs_command():
+    """Export debug logs to a zip file"""
+    try:
+        import zipfile
+        from datetime import datetime
+
+        ch_dir = find_clone_hero_directory_internal()
+        if not ch_dir:
+            print_error("Could not find Clone Hero directory")
+            return
+
+        log_file = ch_dir / 'score_tracker.log'
+        if not log_file.exists():
+            print_warning("No log file found")
+            return
+
+        # Create zip file with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        zip_name = f"score_tracker_logs_{timestamp}.zip"
+        zip_path = ch_dir / zip_name
+
+        print_info(f"Creating log archive: {zip_name}...")
+
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            # Add main log
+            zf.write(log_file, log_file.name)
+
+            # Add any backup logs (from rotation)
+            for i in range(1, 6):
+                backup_log = ch_dir / f'score_tracker.log.{i}'
+                if backup_log.exists():
+                    zf.write(backup_log, backup_log.name)
+
+        print_success(f"Logs exported to: {zip_path}")
+        print_info(f"File size: {zip_path.stat().st_size / 1024:.1f} KB")
+
+    except Exception as e:
+        print_error(f"Export failed: {e}")
+
+
+def bridge_status_command():
+    """Check Bridge integration status"""
+    from client.bridge_integration import (
+        is_bridge_installed, is_bridge_running,
+        is_cdp_available, is_protocol_registered
+    )
+
+    print_header("BRIDGE INTEGRATION STATUS", width=50)
+
+    # Check installation
+    is_installed, bridge_path = is_bridge_installed()
+    if is_installed:
+        print_success(f"Bridge Installed: {bridge_path}")
+    else:
+        print_error("Bridge Not Installed")
+
+    # Check protocol registration
+    if is_protocol_registered():
+        print_success("Protocol Registered: chbridge:// is registered")
+    else:
+        print_error("Protocol Not Registered: chbridge:// not found")
+
+    # Check if Bridge is running
+    if is_bridge_running():
+        print_success("Bridge Status: Running")
+
+        # Check CDP
+        if is_cdp_available():
+            print_success("Remote Debugging: Enabled (port 9222)")
+        else:
+            print_warning("Remote Debugging: Not available")
+            print("  Bridge is running but remote debugging is disabled")
+    else:
+        print_info("Bridge Status: Not running")
+
+    # Check settings
+    settings = load_settings()
+    bridge_config = settings.get('bridge_integration', {})
+    enabled = bridge_config.get('enabled', False)
+
+    if enabled:
+        print_success("Integration: Enabled in settings")
+    else:
+        print_warning("Integration: Disabled in settings")
+
+    print()
+
+
 def main():
     import sys
 
@@ -2698,8 +3560,6 @@ def main():
             print_error("No Bridge URL provided")
             input("\nPress Enter to exit...")
             return
-
-    print_header(f"Clone Hero High Score Tracker v{VERSION}", width=50)
 
     # Check for single instance
     success, message, stale_pid = acquire_instance_lock()
@@ -2815,6 +3675,20 @@ def main():
                 print("  - Bridge desktop app installed (optional)")
                 print("  - Protocol registration (chbridge://)")
                 print("  - Shortcut modifications")
+                print("  - **Administrator rights**")
+
+                # Check for admin rights
+                if not is_admin():
+                    print_warning("\nWARNING: Not running as Administrator!")
+                    print("         Bridge Integration requires Administrator rights.")
+                    print()
+                    print("To enable Bridge Integration:")
+                    print("  1. Close this tracker")
+                    print("  2. Right-click the tracker exe")
+                    print("  3. Select 'Run as administrator'")
+                    print("  4. Answer 'Yes' when prompted")
+                    print()
+
                 print("\n" + "=" * 50)
                 print("\nEnable Bridge Integration now? (Y/n)")
                 print("(You can change this later in Settings)")
@@ -2879,16 +3753,19 @@ def main():
                                         print_success("Bridge Integration enabled!")
                                     else:
                                         print_error(f"\nSetup failed: {message}")
-                                        print_warning("Setup will retry on next launch.")
-                                        print_info("TIP: Try running the tracker as Administrator if you see permission errors.")
-                                        # Don't set prompted=True - let it retry next time
+                                        print_info("You can retry from Settings menu later.")
+                                        print_info("TIP: Run tracker as Administrator for Bridge integration.")
+                                        settings['bridge_integration']['prompted'] = True
+                                        save_settings(settings)
                                 except PermissionError:
                                     print_error("\nSetup failed: Permission denied")
-                                    print_warning("Please close the tracker and re-launch as Administrator:")
+                                    print_info("Bridge Integration requires Administrator rights.")
+                                    print("You can retry from Settings menu after relaunching as admin:")
                                     print("  1. Right-click CloneHeroScoreTracker.exe")
                                     print("  2. Select 'Run as administrator'")
-                                    print("  3. Setup will retry automatically")
-                                    # Don't set prompted=True - let it retry next time
+                                    print("  3. Open Settings > Bridge Integration")
+                                    settings['bridge_integration']['prompted'] = True
+                                    save_settings(settings)
                         else:
                             print_info("Skipping Bridge setup. You can enable it later in Settings.")
                             if 'bridge_integration' not in settings:
@@ -2912,16 +3789,19 @@ def main():
                                 print_success("Bridge Integration enabled!")
                             else:
                                 print_error(f"\nSetup failed: {message}")
-                                print_warning("Setup will retry on next launch.")
-                                print_info("TIP: Try running the tracker as Administrator if you see permission errors.")
-                                # Don't set prompted=True - let it retry next time
+                                print_info("You can retry from Settings menu later.")
+                                print_info("TIP: Run tracker as Administrator for Bridge integration.")
+                                settings['bridge_integration']['prompted'] = True
+                                save_settings(settings)
                         except PermissionError:
                             print_error("\nSetup failed: Permission denied")
-                            print_warning("Please close the tracker and re-launch as Administrator:")
+                            print_info("Bridge Integration requires Administrator rights.")
+                            print("You can retry from Settings menu after relaunching as admin:")
                             print("  1. Right-click CloneHeroScoreTracker.exe")
                             print("  2. Select 'Run as administrator'")
-                            print("  3. Setup will retry automatically")
-                            # Don't set prompted=True - let it retry next time
+                            print("  3. Open Settings > Bridge Integration")
+                            settings['bridge_integration']['prompted'] = True
+                            save_settings(settings)
                 else:
                     print_info("Bridge Integration skipped. You can enable it later in Settings.")
                     if 'bridge_integration' not in settings:
@@ -2958,8 +3838,6 @@ def main():
             return main()
         return
 
-    print_success(f"Found Clone Hero directory: {ch_dir}")
-
     # Check Clone Hero settings
     ch_settings = check_clone_hero_settings()
     if ch_settings['warnings']:
@@ -2975,13 +3853,11 @@ def main():
     songcache_path = ch_dir / 'songcache.bin'
     if songcache_path.exists():
         try:
-            print_info("Loading song cache...")
             parser = SongCacheParser(str(songcache_path))
             song_cache = parser.parse()
-            print_success(f"Loaded {len(song_cache)} songs from cache")
+            print_success(f"Song cache loaded ({len(song_cache)} songs)")
         except Exception as e:
-            print_warning("Could not load song cache")
-            print_plain("Song names will show as chart hashes", indent=1)
+            print_warning("Could not load song cache - songs will show as hashes")
             log_exception(logger, "Failed to load song cache", e)
 
     # Check OCR availability
@@ -3031,11 +3907,9 @@ def main():
             watcher.initialize_state()
         elif watcher.needs_state_migration():
             # Old format state file - re-initialize silently without submitting
-            print_info("Migrating state file to new format...")
+            print_info("Migrating state file...")
             watcher.initialize_state(silent=True)
-            print_info("Only NEW scores from this point forward will be detected.\n")
         else:
-            print_success("Loaded existing state")
             # Scan for any scores made while tracker was offline
             watcher.catch_up_scan()
 
@@ -3047,8 +3921,14 @@ def main():
         # Start background polling of currentsong.txt for song metadata caching
         start_song_cache_polling()
 
+        # Clear screen by adding blank lines (startup messages still accessible by scrolling up)
+        print("\n" * 15)
+
+        # Show ASCII banner
+        show_ascii_banner()
+
         # Show ready message with available commands
-        print("\n" + "=" * 50)
+        print("=" * 50)
         print("READY! Monitoring for new scores...")
         print("=" * 50)
         print("\nType 'help' for available commands")
@@ -3064,35 +3944,88 @@ def main():
 
                 elif cmd == "help" or cmd == "?":
                     print_header("AVAILABLE COMMANDS", width=50)
-                    print_plain("  help           Show this help message")
+
+                    print(f"{Fore.CYAN}Monitoring:{Style.RESET_ALL}")
                     print_plain("  status         Check connection and score tracking status")
+                    print_plain("  stats          Quick stats overview")
                     print_plain("  resync         Scan for scores made while offline")
                     print_plain("  resolvehashes  Fix mystery hashes by scanning songs")
+                    print_plain("  scancharts     Upload chart metadata (notes, NPS) to server")
                     print_plain("  reset          Clear state and re-submit ALL scores")
+
+                    print(f"\n{Fore.CYAN}Configuration:{Style.RESET_ALL}")
                     print_plain("  settings       Configure bot URL, paths, and options")
+                    print_plain("  backup         Backup current configuration")
+                    print_plain("  restore        Restore configuration from backup")
                     print_plain("  update         Check for and download updates")
+
+                    print(f"\n{Fore.CYAN}Utilities:{Style.RESET_ALL}")
+                    print_plain("  refreshcache   Reload song metadata from Clone Hero")
+                    print_plain("  bridgestatus   Check Bridge integration status")
+                    print_plain("  exportlogs     Export debug logs to zip file")
                     print_plain("  unpair         Disconnect from Discord account")
                     if tray_enabled:
                         print_plain("  minimize       Minimize to system tray")
                     print_plain("  debug          Enter debug mode (password required)")
+
+                    print(f"\n{Fore.CYAN}General:{Style.RESET_ALL}")
+                    print_plain("  help           Show this help message")
                     print_plain("  quit           Exit the tracker")
+
                     print("\n" + "=" * 50)
                     print("Type any command at the > prompt")
                     print("=" * 50 + "\n")
 
                 elif cmd == "status":
                     bot_url = get_bot_url()
-                    print_header("CONNECTION STATUS", width=50)
-                    print_plain(f"  Server: {bot_url}")
+                    print_header("STATUS OVERVIEW", width=50)
+
+                    # Connection status
+                    print(f"{Fore.CYAN}Server Connection:{Style.RESET_ALL}")
+                    print_plain(f"  URL: {bot_url}")
                     try:
                         response = requests.get(f"{bot_url}/health", timeout=5)
                         if response.status_code == 200:
-                            print_success("Connected", indent=1)
+                            print_success("Status: Connected", indent=1)
                         else:
-                            print_warning(f"Error (HTTP {response.status_code})", indent=1)
-                    except:
-                        print_error("Disconnected", indent=1)
-                    print_plain(f"  Tracking: {len(watcher.state.known_scores)} scores")
+                            print_warning(f"Status: Error (HTTP {response.status_code})", indent=1)
+                    except Exception:
+                        print_error("Status: Disconnected", indent=1)
+
+                    # Score tracking
+                    print(f"\n{Fore.CYAN}Score Tracking:{Style.RESET_ALL}")
+                    print_plain(f"  Known Scores: {len(watcher.state.known_scores)}")
+
+                    # OCR status
+                    print(f"\n{Fore.CYAN}OCR Status:{Style.RESET_ALL}")
+                    if settings.get('ocr_enabled', False):
+                        ocr_ok, ocr_msg = check_ocr_available()
+                        if ocr_ok:
+                            print_success("Enabled", indent=1)
+                            if _ocr_stats['attempts'] > 0:
+                                success_rate = (_ocr_stats['successes'] / _ocr_stats['attempts']) * 100
+                                print_plain(f"  Attempts: {_ocr_stats['attempts']}")
+                                print_plain(f"  Successes: {_ocr_stats['successes']} ({success_rate:.1f}%)")
+                            else:
+                                print_info("No attempts yet", indent=1)
+                        else:
+                            print_warning(f"Disabled: {ocr_msg}", indent=1)
+                    else:
+                        print_info("Disabled", indent=1)
+
+                    # System tray status
+                    print(f"\n{Fore.CYAN}Features:{Style.RESET_ALL}")
+                    tray_status = "Enabled" if settings.get('minimize_to_tray', False) else "Disabled"
+                    print_plain(f"  System Tray: {tray_status}")
+                    startup_status = "Enabled" if settings.get('start_with_windows', False) else "Disabled"
+                    print_plain(f"  Auto-Start: {startup_status}")
+
+                    # Bridge integration status
+                    bridge_config = settings.get('bridge_integration', {})
+                    bridge_enabled = bridge_config.get('enabled', False)
+                    bridge_status = "Enabled" if bridge_enabled else "Disabled"
+                    print_plain(f"  Bridge Integration: {bridge_status}")
+
                     print()
 
                 elif cmd == "resync":
@@ -3102,6 +4035,9 @@ def main():
 
                 elif cmd == "resolvehashes":
                     resolve_hashes_command()
+
+                elif cmd == "scancharts":
+                    scancharts_command()
 
                 elif cmd == "reset":
                     print("\n" + "=" * 50)
@@ -3132,12 +4068,100 @@ def main():
                     watcher.stop()
                     settings_menu()
                     print("\n[*] Restarting tracker with new settings...")
-                    watcher.stop()
                     release_instance_lock()  # v2.5.1: Release lock before restart
                     return main()  # Restart with new settings
 
                 elif cmd == "update":
                     check_and_prompt_update(silent_if_current=False)
+
+                elif cmd == "stats":
+                    print()
+                    print_header("QUICK STATS", width=50)
+                    print_plain(f"  Total Scores Tracked: {len(watcher.state.known_scores)}")
+
+                    # Last score submitted (from state file timestamp)
+                    state_file_path = ch_dir / '.score_tracker_state.json'
+                    if state_file_path.exists():
+                        try:
+                            with open(state_file_path, 'r') as f:
+                                state_data = json.load(f)
+                                last_updated = state_data.get('last_updated')
+                                if last_updated:
+                                    from datetime import datetime
+                                    dt = datetime.fromtimestamp(last_updated)
+                                    time_ago = time.time() - last_updated
+                                    if time_ago < 60:
+                                        time_str = f"{int(time_ago)}s ago"
+                                    elif time_ago < 3600:
+                                        time_str = f"{int(time_ago / 60)}m ago"
+                                    else:
+                                        time_str = f"{int(time_ago / 3600)}h ago"
+                                    print_plain(f"  Last Score: {dt.strftime('%Y-%m-%d %H:%M:%S')} ({time_str})")
+                        except Exception:
+                            pass
+
+                    # OCR status
+                    if settings.get('ocr_enabled', False):
+                        if _ocr_stats['attempts'] > 0:
+                            success_rate = (_ocr_stats['successes'] / _ocr_stats['attempts']) * 100
+                            print_plain(f"  OCR: {_ocr_stats['successes']}/{_ocr_stats['attempts']} successful ({success_rate:.1f}%)")
+                        else:
+                            print_plain("  OCR: Enabled (no attempts yet)")
+                    else:
+                        print_plain("  OCR: Disabled")
+
+                    # Features
+                    features_enabled = []
+                    if settings.get('minimize_to_tray', False):
+                        features_enabled.append("System Tray")
+                    if settings.get('start_with_windows', False):
+                        features_enabled.append("Auto-Start")
+                    bridge_config = settings.get('bridge_integration', {})
+                    if bridge_config.get('enabled', False):
+                        features_enabled.append("Bridge")
+
+                    if features_enabled:
+                        print_plain(f"  Features: {', '.join(features_enabled)}")
+                    else:
+                        print_plain("  Features: None enabled")
+
+                    print()
+
+                elif cmd == "backup":
+                    print()
+                    backup_config_command()
+                    print()
+
+                elif cmd == "restore":
+                    print()
+                    restore_config_command()
+                    print()
+
+                elif cmd == "exportlogs":
+                    print()
+                    export_logs_command()
+                    print()
+
+                elif cmd == "bridgestatus":
+                    print()
+                    bridge_status_command()
+                    print()
+
+                elif cmd == "refreshcache":
+                    print()
+                    print_info("Reloading song metadata from Clone Hero...")
+                    try:
+                        songcache_path = ch_dir / 'songcache.bin'
+                        if songcache_path.exists():
+                            parser = SongCacheParser(str(songcache_path))
+                            song_cache = parser.parse()
+                            print_success(f"Refreshed! Loaded {len(song_cache)} songs from cache")
+                        else:
+                            print_error("songcache.bin not found")
+                            print_info("Launch Clone Hero to generate the song cache")
+                    except Exception as e:
+                        print_error(f"Failed to refresh cache: {e}")
+                    print()
 
                 elif cmd == "unpair":
                     print("\n  This will disconnect this machine from your Discord account.")

@@ -14,6 +14,7 @@ from watchdog.events import FileSystemEventHandler, FileModifiedEvent
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
 from shared.parsers import ScoreDataParser
+from shared.console import print_success
 
 
 class ScoreState:
@@ -283,9 +284,7 @@ class CloneHeroWatcher:
 
     def start(self):
         """Start watching for score changes"""
-        print(f"[*] Starting Clone Hero score watcher...")
-        print(f"[*] Monitoring: {self.scoredata_path}")
-        print(f"[*] Tracking {len(self.state.known_scores)} personal bests across all instruments/difficulties")
+        print_success(f"Tracking {len(self.state.known_scores)} personal bests")
 
         event_handler = ScoreFileHandler(
             self.scoredata_path,
@@ -296,9 +295,6 @@ class CloneHeroWatcher:
         self.observer = Observer()
         self.observer.schedule(event_handler, str(self.clone_hero_dir), recursive=False)
         self.observer.start()
-
-        print("[+] Watcher started! Play some Clone Hero to test it.")
-        print("[*] Press Ctrl+C to stop\n")
 
     def stop(self):
         """Stop watching"""

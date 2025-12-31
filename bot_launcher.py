@@ -4,7 +4,7 @@ Clone Hero High Score Bot Launcher
 Standalone executable for the Discord bot with first-time setup.
 """
 
-VERSION = "2.5.6"
+VERSION = "2.6.1"
 
 # GitHub repository for auto-updates
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
@@ -935,6 +935,243 @@ def show_stats_command():
         print_error(f"Failed to get stats: {e}")
 
 
+def verify_config_command():
+    """Verify config has all required fields and offer to apply missing ones"""
+    try:
+        from bot.config_manager import ConfigManager
+
+        print_header("CONFIG VERIFICATION", width=70)
+        print()
+        print_info("Checking configuration for missing or incomplete fields...")
+        print()
+
+        # Load config and verify
+        config_manager = ConfigManager()
+        config_manager.load()
+        verification = config_manager.verify_config()
+
+        if verification['is_complete']:
+            print_success("✓ Configuration is complete!")
+            print_info("  All required fields are present and configured")
+            print()
+            return
+
+        # Show missing fields grouped by section
+        print_warning(f"⚠ Found {verification['total_missing']} missing field(s)")
+        print()
+
+        incomplete_sections = verification['incomplete_sections']
+        if incomplete_sections:
+            print_info("Missing fields by section:")
+            print()
+            for section, fields in sorted(incomplete_sections.items()):
+                section_display = section if section != "root" else "Top Level"
+                print(f"  [{section_display}]")
+                for field in fields:
+                    print(f"    - {field}")
+            print()
+
+        # Offer to apply missing fields
+        print_info("You can automatically apply default values for these missing fields.")
+        print()
+        apply = input("Apply missing fields from defaults? (yes/no): ").strip().lower()
+
+        if apply not in ('yes', 'y'):
+            print_info("Skipped. Configuration not modified.")
+            return
+
+        # Apply missing fields (dry run first to see what would change)
+        print()
+        print_info("Applying missing fields...")
+        result = config_manager.apply_missing_fields(dry_run=False)
+
+        # Show what was added
+        if result['fields_added']:
+            print()
+            print_success(f"✓ Added {len(result['fields_added'])} field(s):")
+            for field_path in sorted(result['fields_added']):
+                print(f"    + {field_path}")
+
+            # Save the updated config
+            config_manager.save()
+            print()
+            print_success("✓ Configuration updated and saved!")
+        else:
+            print()
+            print_info("No fields were added (config may have been fixed already)")
+
+        print()
+
+    except Exception as e:
+        print_error(f"Config verification failed: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+def scan_historical_fcs_command(config):
+    """Scan existing scores for historical Full Combos (v2.6.0)"""
+    try:
+        from bot.database import Database
+
+        db_path = get_config_dir() / 'scores.db'
+        if not db_path.exists():
+            print_error("Database not found")
+            return
+
+        print_header("SCAN HISTORICAL FULL COMBOS", width=60)
+        print()
+        print_info("This will:")
+        print("  1. Scan all scores with chart metadata")
+        print("  2. Identify scores that were Full Combos")
+        print("  3. Update the database with FC flags")
+        print("  4. Optionally post retroactive FC announcements")
+        print()
+        print_warning("Note: Only scores with chart metadata can be checked")
+        print_info("Run the client's 'scancharts' command first if needed")
+        print()
+
+        # Check if retroactive announcements are enabled
+        fc_config = config.get('announcements', {}).get('full_combos', {})
+        retroactive_enabled = fc_config.get('announce_retroactive_fcs', True)
+
+        if retroactive_enabled:
+            print_info("Retroactive FC announcements: ENABLED")
+            print_warning("Historical FCs will be posted to Discord!")
+            print()
+        else:
+            print_info("Retroactive FC announcements: DISABLED")
+            print_info("FCs will be flagged in database but not announced")
+            print()
+
+        confirm = input("Continue with FC scan? (yes/no): ").strip().lower()
+        if confirm != "yes":
+            print_info("Cancelled.")
+            return
+
+        print()
+        db = Database(str(db_path))
+        db.connect()
+
+        # Run the scan
+        result = db.scan_historical_fcs(announce_to_discord=retroactive_enabled)
+
+        db.close()
+
+        print()
+        print_header("SCAN COMPLETE", width=60)
+        print_success(f"  Scores scanned: {result['scanned']}")
+        print_success(f"  Full Combos found: {result['fcs_found']}")
+        print()
+
+        # If retroactive announcements are enabled and we found FCs, post them
+        if retroactive_enabled and result.get('fcs_to_announce'):
+            fcs_to_announce = result['fcs_to_announce']
+            print_info(f"Found {len(fcs_to_announce)} historical FCs to announce")
+            print()
+
+            post_confirm = input(f"Post {len(fcs_to_announce)} FC announcements to Discord? (yes/no): ").strip().lower()
+            if post_confirm == "yes":
+                print()
+                print_info("Posting FC announcements...")
+                post_retroactive_fc_announcements(config, fcs_to_announce)
+                print_success("Retroactive FC announcements posted!")
+            else:
+                print_info("Skipped Discord announcements")
+
+        print()
+
+    except Exception as e:
+        print_error(f"Failed to scan historical FCs: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+def post_retroactive_fc_announcements(config, fcs_to_announce):
+    """Post retroactive FC announcements to Discord (v2.6.0)"""
+    import asyncio
+    import discord
+    from discord import Embed
+
+    async def send_announcements():
+        try:
+            # Create Discord client
+            bot_token = config.get('discord', {}).get('bot_token', config.get('DISCORD_BOT_TOKEN'))
+            channel_id = config.get('discord', {}).get('announcement_channel_id', config.get('DISCORD_CHANNEL_ID'))
+
+            if not bot_token or not channel_id:
+                print_error("Discord credentials not configured")
+                return
+
+            # Create a minimal Discord client
+            intents = discord.Intents.default()
+            client = discord.Client(intents=intents)
+
+            @client.event
+            async def on_ready():
+                try:
+                    channel = client.get_channel(int(channel_id))
+                    if not channel:
+                        print_error(f"Channel not found: {channel_id}")
+                        await client.close()
+                        return
+
+                    print_info(f"Connected to Discord. Posting {len(fcs_to_announce)} announcements...")
+
+                    for i, fc in enumerate(fcs_to_announce, 1):
+                        # Create embed based on FC type
+                        if fc['is_fc_record_break']:
+                            title = "👑 C-C-C-COMBO BREAKER!!!"
+                            action_text = f"broke {fc['previous_holder']}'s FC record with an even higher Full Combo score!"
+                        elif fc['is_first_fc']:
+                            title = "👑 FIRST FULL COMBO ON CHART!"
+                            action_text = "is the FIRST to FC this chart!"
+                        else:
+                            title = "👑 FULL COMBO!"
+                            action_text = "hit every note perfectly!"
+
+                        # Create embed
+                        embed = Embed(
+                            title=title,
+                            description=f"**{fc['username']}** {action_text}",
+                            color=0xFF0000  # RED
+                        )
+
+                        # Song title
+                        song_display = fc['song_title']
+                        if fc['song_artist']:
+                            song_display += f" - {fc['song_artist']}"
+                        embed.add_field(name="Song", value=song_display, inline=False)
+
+                        # Score
+                        embed.add_field(name="Score", value=f"{fc['score']:,}", inline=True)
+
+                        # Add "RETROACTIVE" note in footer
+                        embed.set_footer(text=f"⏪ Historical FC (from {fc['submitted_at'][:10]})")
+
+                        await channel.send(embed=embed)
+
+                        print_success(f"  [{i}/{len(fcs_to_announce)}] Posted: {fc['username']} - {fc['song_title']}")
+
+                        # Small delay to avoid rate limiting
+                        await asyncio.sleep(1)
+
+                    print_success("All announcements posted!")
+                    await client.close()
+
+                except Exception as e:
+                    print_error(f"Error posting announcements: {e}")
+                    await client.close()
+
+            # Run the client
+            await client.start(bot_token)
+
+        except Exception as e:
+            print_error(f"Failed to connect to Discord: {e}")
+
+    # Run async function
+    asyncio.run(send_announcements())
+
+
 def show_configuration_summary(config):
     """Show detailed configuration summary (read-only)"""
     print_header("CONFIGURATION SUMMARY", width=70)
@@ -1118,6 +1355,8 @@ def main():
     print("│  [6] Backup Database                            │")
     print("│  [7] Export Logs                                │")
     print("│  [8] Send Update Notification                   │")
+    print("│  [9] Scan Historical FCs (v2.6.0)               │")
+    print("│  [10] Verify Config                             │")
     print("│  [Q] Quit                                       │")
     print("└─────────────────────────────────────────────────┘")
     choice = input("\nChoice: ").strip().lower()
@@ -1186,6 +1425,20 @@ def main():
             print_info("Check log file for details")
             input("\nPress Enter to continue...")
             return main()
+
+    elif choice == '9':
+        # Scan historical FCs (v2.6.0)
+        print()
+        scan_historical_fcs_command(config)
+        input("\nPress Enter to continue...")
+        return main()
+
+    elif choice == '10':
+        # Verify config
+        print()
+        verify_config_command()
+        input("\nPress Enter to continue...")
+        return main()
 
     elif choice == 'q':
         print_info("Exiting...")

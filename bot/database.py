@@ -353,24 +353,35 @@ class Database:
             self.save_song_info(chart_hash, song_title, song_artist, song_charter)
 
         # v2.6.0: Full Combo Detection
-        is_full_combo = False
+        # FC = 100% completion (reliable metric from scoredata.bin)
+        is_full_combo = (completion_percent >= 100.0)
         is_first_fc_on_chart = False
 
-        if total_notes_in_chart is not None and notes_hit is not None:
-            # FC detection: notes_hit == total_notes_in_chart AND 100% accuracy
-            is_full_combo = (notes_hit == total_notes_in_chart and completion_percent >= 99.99)
+        # Calculate notes_hit from completion_percent when we have chart data
+        # This allows accurate note display without requiring OCR
+        calculated_notes_hit = None
+        calculated_notes_total = None
 
-            # Check if this is the first FC on this chart (any user)
-            if is_full_combo:
-                self.cursor.execute("""
-                    SELECT COUNT(*) as fc_count FROM scores
-                    WHERE chart_hash = ?
-                    AND instrument_id = ?
-                    AND difficulty_id = ?
-                    AND is_full_combo = 1
-                """, (chart_hash, instrument_id, difficulty_id))
-                fc_result = self.cursor.fetchone()
-                is_first_fc_on_chart = (fc_result['fc_count'] == 0)
+        if total_notes_in_chart is not None and total_notes_in_chart > 0:
+            calculated_notes_total = total_notes_in_chart
+            calculated_notes_hit = round((completion_percent / 100.0) * total_notes_in_chart)
+
+            # If no OCR data was provided, use calculated values
+            if notes_hit is None or notes_total is None:
+                notes_hit = calculated_notes_hit
+                notes_total = calculated_notes_total
+
+        # Check if this is the first FC on this chart (any user)
+        if is_full_combo:
+            self.cursor.execute("""
+                SELECT COUNT(*) as fc_count FROM scores
+                WHERE chart_hash = ?
+                AND instrument_id = ?
+                AND difficulty_id = ?
+                AND is_full_combo = 1
+            """, (chart_hash, instrument_id, difficulty_id))
+            fc_result = self.cursor.fetchone()
+            is_first_fc_on_chart = (fc_result['fc_count'] == 0)
 
         # Get current high score for this chart/instrument/difficulty
         self.cursor.execute("""
@@ -864,7 +875,8 @@ class Database:
                 fc_result = self.cursor.fetchone()
                 is_first_fc = (fc_result['fc_count'] == 0)
 
-                # Check if this FC also beat the previous record
+                # Check if this FC also beat a previous FC record
+                # IMPORTANT: Only check against previous FCs, not all scores!
                 self.cursor.execute("""
                     SELECT s2.score, s2.user_id, u2.discord_username
                     FROM scores s2
@@ -874,6 +886,7 @@ class Database:
                     AND s2.difficulty_id = ?
                     AND s2.submitted_at < ?
                     AND s2.score < ?
+                    AND s2.is_full_combo = 1
                     ORDER BY s2.score DESC
                     LIMIT 1
                 """, (score['chart_hash'], score['instrument_id'], score['difficulty_id'],

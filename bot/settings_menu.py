@@ -9,6 +9,79 @@ from shared.console import print_success, print_info, print_warning, print_error
 from .config_manager import ConfigManager
 
 
+# Emoji mapping for difficulty tiers (supports Discord format)
+EMOJI_MAP = {
+    # Color circles
+    'green_circle': '🟢',
+    'yellow_circle': '🟡',
+    'orange_circle': '🟠',
+    'red_circle': '🔴',
+    'blue_circle': '🔵',
+    'purple_circle': '🟣',
+    'brown_circle': '🟤',
+    'white_circle': '⚪',
+    'black_circle': '⚫',
+
+    # Shapes
+    'star': '⭐',
+    'fire': '🔥',
+    'zap': '⚡',
+    'boom': '💥',
+    'skull': '💀',
+    'warning': '⚠️',
+    'check': '✅',
+    'x': '❌',
+
+    # Music related
+    'musical_note': '🎵',
+    'notes': '🎶',
+    'guitar': '🎸',
+    'drum': '🥁',
+    'microphone': '🎤',
+
+    # Difficulty indicators
+    'easy': '🟢',
+    'medium': '🟡',
+    'hard': '🟠',
+    'expert': '🔴',
+    'beginner': '⭐',
+    'advanced': '🔥',
+    'master': '💀',
+}
+
+
+def parse_emoji_input(user_input: str) -> str:
+    """
+    Parse emoji input from user, supporting multiple formats:
+    - Direct emoji: 🟢
+    - Discord format: :green_circle:
+    - Plain name: green_circle
+
+    Returns the actual emoji character or the original input if not found.
+    """
+    if not user_input:
+        return user_input
+
+    # Strip whitespace
+    user_input = user_input.strip()
+
+    # If already an emoji (length 1-2 for emoji with modifiers), return as-is
+    if len(user_input) <= 2 and ord(user_input[0]) > 127:
+        return user_input
+
+    # Remove Discord format colons if present (:emoji_name: -> emoji_name)
+    if user_input.startswith(':') and user_input.endswith(':'):
+        user_input = user_input[1:-1]
+
+    # Look up in emoji map (case-insensitive)
+    emoji_name = user_input.lower()
+    if emoji_name in EMOJI_MAP:
+        return EMOJI_MAP[emoji_name]
+
+    # Not found in map, return original (might be a custom Discord emoji or actual emoji)
+    return user_input
+
+
 class SettingsMenu:
     """Interactive settings menu system"""
 
@@ -363,6 +436,9 @@ class SettingsMenu:
             print("    7. Set Default Min NPS")
             print("    8. Set Default Max NPS")
             print()
+            print("  Emoji Help:")
+            print("    9. Show Available Emoji Names")
+            print()
             print("    0. Back to Main Menu")
             print()
 
@@ -421,6 +497,43 @@ class SettingsMenu:
                         print_warning("[Settings] Maximum NPS must be greater than 0")
                 except ValueError:
                     print_warning("[Settings] Invalid number format")
+            elif choice == "9":
+                # Show available emoji names
+                print()
+                print("=" * 80)
+                print(" " * 20 + "Available Emoji Names")
+                print("=" * 80)
+                print()
+                print("You can use any of these emoji names when editing difficulty tiers:")
+                print("(Enter them as-is, or with colons like :green_circle:)")
+                print()
+
+                # Group emojis by category
+                print("Color Circles:")
+                circles = [(k, v) for k, v in EMOJI_MAP.items() if 'circle' in k]
+                for name, emoji in sorted(circles):
+                    print(f"  {name:20s} = {emoji}")
+
+                print()
+                print("Shapes & Symbols:")
+                shapes = [(k, v) for k, v in EMOJI_MAP.items() if k in ['star', 'fire', 'zap', 'boom', 'skull', 'warning', 'check', 'x']]
+                for name, emoji in sorted(shapes):
+                    print(f"  {name:20s} = {emoji}")
+
+                print()
+                print("Music Related:")
+                music = [(k, v) for k, v in EMOJI_MAP.items() if k in ['musical_note', 'notes', 'guitar', 'drum', 'microphone']]
+                for name, emoji in sorted(music):
+                    print(f"  {name:20s} = {emoji}")
+
+                print()
+                print("Difficulty Presets:")
+                difficulty = [(k, v) for k, v in EMOJI_MAP.items() if k in ['easy', 'medium', 'hard', 'expert', 'beginner', 'advanced', 'master']]
+                for name, emoji in sorted(difficulty):
+                    print(f"  {name:20s} = {emoji}")
+
+                print()
+                input("Press Enter to continue...")
             else:
                 print_warning("[Settings] Invalid selection")
 
@@ -447,9 +560,15 @@ class SettingsMenu:
         if not new_name:
             new_name = current_name
 
-        new_emoji = self._get_input(f"Emoji [{current_emoji}]: ").strip()
-        if not new_emoji:
+        # Emoji input with helpful instructions
+        print(f"Emoji [{current_emoji}]:")
+        print("  Tip: Enter emoji name like 'green_circle', ':yellow_circle:', or 'fire'")
+        print("  Common: green_circle, yellow_circle, orange_circle, red_circle, fire, skull")
+        emoji_input = self._get_input("  > ").strip()
+        if not emoji_input:
             new_emoji = current_emoji
+        else:
+            new_emoji = parse_emoji_input(emoji_input)
 
         min_nps_str = self._get_input(f"Minimum NPS [{current_min}]: ").strip()
         try:
