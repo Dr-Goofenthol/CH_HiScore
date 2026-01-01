@@ -4,7 +4,7 @@ Clone Hero High Score Client
 Monitors your Clone Hero scores and submits them to the Discord scoreboard.
 """
 
-VERSION = "2.6.1"
+VERSION = "2.6.2"
 
 # GitHub repository for auto-updates
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
@@ -22,6 +22,7 @@ import configparser
 import getpass
 from pathlib import Path
 import requests
+from colorama import Fore, Style
 from client.file_watcher import CloneHeroWatcher
 from shared.parsers import SongCacheParser, get_artist_for_song, parse_song_ini
 from shared.chart_parser import parse_chart_file, Instrument, Difficulty
@@ -1218,10 +1219,10 @@ def find_chart_file_by_hash(chart_hash: str):
 
 def get_total_notes_from_chart(chart_hash: str, instrument_id: int, difficulty_id: int):
     """
-    Get total_notes for a specific chart/instrument/difficulty by parsing the chart file.
+    Get chart data (total_notes, NPS) for a specific chart/instrument/difficulty.
 
     This function finds the chart file by hash, parses it, and extracts the total note
-    count for the specified instrument and difficulty combination.
+    count and notes-per-second for the specified instrument and difficulty combination.
 
     Args:
         chart_hash: The MD5 hash of the chart file
@@ -1229,7 +1230,7 @@ def get_total_notes_from_chart(chart_hash: str, instrument_id: int, difficulty_i
         difficulty_id: Difficulty ID (0=Easy, 1=Medium, 2=Hard, 3=Expert)
 
     Returns:
-        Total notes count (int), or None if chart file not found or parsing failed
+        Dict with 'total_notes' and 'nps', or just int (backwards compat), or None if failed
     """
     # Find the chart file
     chart_path = find_chart_file_by_hash(chart_hash)
@@ -1261,7 +1262,13 @@ def get_total_notes_from_chart(chart_hash: str, instrument_id: int, difficulty_i
             return None
 
         inst_diff_data = chart_data.instruments[key]
-        return inst_diff_data.total_notes
+
+        # v2.6.2: Return dict with total_notes and NPS
+        nps = chart_data.calculate_note_density(instrument, difficulty)
+        return {
+            'total_notes': inst_diff_data.total_notes,
+            'nps': nps
+        }
 
     except Exception as e:
         logger.warning(f"Failed to parse chart file {chart_path}: {e}")
@@ -1361,6 +1368,130 @@ def check_clone_hero_settings():
         result['warnings'].append(f"Could not read settings.ini: {e}")
 
     return result
+
+
+def format_score_output(score, song_title, song_artist, song_charter, notes_hit, notes_total,
+                       total_notes_in_chart, nps, is_fc, api_response=None):
+    """
+    Format and print score information in clean ASCII format (v2.6.2)
+
+    Args:
+        score: ScoreEntry object
+        song_title: Song title string
+        song_artist: Artist name string
+        song_charter: Charter name string
+        notes_hit: Notes hit (from OCR/chart)
+        notes_total: Total notes (from chart)
+        total_notes_in_chart: Total notes from chart parse
+        nps: Notes per second
+        is_fc: Full combo boolean
+        api_response: Response dict from API (optional)
+    """
+    # Build stars display
+    stars_display = "*" * score.stars
+
+    # Build FC indicator
+    fc_indicator = " [FC]" if is_fc else ""
+
+    # Build accuracy display
+    if notes_hit is not None and notes_total is not None:
+        accuracy_display = f"{score.completion_percent:.1f}% ({notes_hit}/{notes_total} notes"
+        if nps:
+            accuracy_display += f", {nps:.1f} NPS"
+        accuracy_display += ")"
+    else:
+        accuracy_display = f"{score.completion_percent:.1f}%"
+        if nps:
+            accuracy_display += f" ({nps:.1f} NPS)"
+
+    # Print header
+    print()
+    print("=" * 80)
+    print(f"  {Fore.CYAN}NEW SCORE{Style.RESET_ALL}")
+    print("=" * 80)
+    print()
+
+    # Song info
+    print(f"  {Fore.CYAN}Song{Style.RESET_ALL}       {song_title}")
+    if song_artist:
+        print(f"  {Fore.CYAN}Artist{Style.RESET_ALL}     {song_artist}")
+    if song_charter:
+        print(f"  {Fore.CYAN}Charter{Style.RESET_ALL}    {song_charter}")
+    print(f"  {Fore.CYAN}Hash{Style.RESET_ALL}       {score.chart_hash[:8]}...")
+    print()
+
+    # Performance data
+    fc_colored = f" {Fore.GREEN}[FC]{Style.RESET_ALL}" if fc_indicator else ""
+    print(f"  {Fore.CYAN}Chart{Style.RESET_ALL}      {score.instrument_name} ({score.difficulty_name}) {stars_display}{fc_colored}")
+    print(f"  {Fore.CYAN}Score{Style.RESET_ALL}      {Fore.WHITE}{score.score:,}{Style.RESET_ALL} pts")
+    print(f"  {Fore.CYAN}Accuracy{Style.RESET_ALL}   {accuracy_display}")
+    print(f"  {Fore.CYAN}Plays{Style.RESET_ALL}      #{score.play_count}")
+    print()
+
+    # Result status (from API response)
+    if api_response:
+        is_new_pb = api_response.get('is_high_score', False)
+        is_record = api_response.get('is_record_broken', False)
+        server_record = api_response.get('server_record')
+        previous_pb = api_response.get('previous_pb')
+        improvement = api_response.get('improvement', 0)
+
+        # Determine result text
+        if is_record:
+            result_text = f"{Fore.GREEN}[+]{Style.RESET_ALL} New Personal Best!  |  {Fore.RED}[RECORD]{Style.RESET_ALL} NEW SERVER RECORD!"
+            if api_response.get('previous_score') and api_response.get('previous_holder'):
+                prev_score = api_response['previous_score']
+                prev_holder = api_response['previous_holder']
+                days_held = 0  # TODO: Calculate from dates
+                print(f"  {Fore.CYAN}Result{Style.RESET_ALL}     {result_text}")
+                print(f"             Previous record: {prev_score:,} pts ({prev_holder})")
+        elif is_new_pb:
+            if improvement > 0:
+                if previous_pb:
+                    # Show PB improvement with date
+                    from datetime import datetime
+                    try:
+                        pb_date = datetime.fromisoformat(previous_pb['submitted_at'])
+                        days_ago = (datetime.now() - pb_date).days
+                        if days_ago == 0:
+                            date_str = "today"
+                        elif days_ago == 1:
+                            date_str = "yesterday"
+                        else:
+                            date_str = f"{days_ago} days ago"
+                        result_text = f"{Fore.GREEN}[+]{Style.RESET_ALL} New Personal Best! ({Fore.GREEN}+{improvement:,}{Style.RESET_ALL} from PB set {date_str})"
+                    except:
+                        result_text = f"{Fore.GREEN}[+]{Style.RESET_ALL} New Personal Best! ({Fore.GREEN}+{improvement:,}{Style.RESET_ALL} from previous PB)"
+                else:
+                    result_text = f"{Fore.GREEN}[+]{Style.RESET_ALL} New Personal Best! ({Fore.GREEN}+{improvement:,}{Style.RESET_ALL} improvement)"
+            else:
+                result_text = f"{Fore.GREEN}[+]{Style.RESET_ALL} New Personal Best! (first time!)"
+
+            # Add server record info
+            if server_record:
+                result_text += f"  |  {Fore.YELLOW}[-]{Style.RESET_ALL} Not a server record"
+                print(f"  {Fore.CYAN}Result{Style.RESET_ALL}     {result_text}")
+                print(f"             Server record: {server_record['score']:,} pts ({server_record['holder']})")
+            else:
+                result_text += f"  |  {Fore.RED}[RECORD]{Style.RESET_ALL} NEW SERVER RECORD! (First on chart)"
+                print(f"  {Fore.CYAN}Result{Style.RESET_ALL}     {result_text}")
+        else:
+            # Matched or below PB
+            your_best = api_response.get('your_best_score', score.score)
+            if score.score == your_best:
+                result_text = f"{Fore.GREEN}[+]{Style.RESET_ALL} Personal Best Maintained"
+            else:
+                result_text = f"{Fore.YELLOW}[-]{Style.RESET_ALL} Below Personal Best"
+
+            if server_record:
+                result_text += f"  |  {Fore.YELLOW}[-]{Style.RESET_ALL} Not a server record"
+                print(f"  {Fore.CYAN}Result{Style.RESET_ALL}     {result_text}")
+                print(f"             Server record: {server_record['score']:,} pts ({server_record['holder']})")
+            else:
+                print(f"  {Fore.CYAN}Result{Style.RESET_ALL}     {result_text}")
+
+    print()
+    print("=" * 80)
 
 
 def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
@@ -1489,58 +1620,45 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
         # STEP 4: Parse chart file for accurate note count (v2.6.0)
         # =====================================================
         total_notes_in_chart = None
+        nps = None
 
         try:
             print_info("Parsing chart file for note data...")
-            total_notes_in_chart = get_total_notes_from_chart(
+            chart_result = get_total_notes_from_chart(
                 score.chart_hash,
                 score.instrument_id,
                 score.difficulty
             )
 
-            if total_notes_in_chart is not None:
-                print_success(f"Chart parsed! Total notes: {total_notes_in_chart:,}")
+            if chart_result is not None:
+                # Handle dict return value (v2.6.2+)
+                if isinstance(chart_result, dict):
+                    total_notes_in_chart = chart_result.get('total_notes')
+                    nps = chart_result.get('nps')
+                    print_success(f"Chart parsed! Total notes: {total_notes_in_chart:,}, NPS: {nps:.1f}")
+                else:
+                    # Backwards compatibility - old int return
+                    total_notes_in_chart = chart_result
+                    print_success(f"Chart parsed! Total notes: {total_notes_in_chart:,}")
+
                 # Update notes_total from chart data (more reliable than OCR)
                 notes_total = total_notes_in_chart
+
+                # Detect Full Combo
+                is_fc = (score.completion_percent >= 100.0)
             else:
                 print_warning("Chart file not found or could not be parsed")
                 print("    (Note counts will not be available for this score)")
+                is_fc = False
 
         except Exception as e:
             logger.warning(f"Chart parsing failed: {e}")
             print_warning(f"Chart parsing failed: {e}")
+            is_fc = False
 
-        # Determine data source for display
-        if currentsong_used:
-            data_source = "currentsong.txt"
-        elif ocr_result and ocr_result.success:
-            data_source = "OCR"
-        elif score_type == "rich":
-            data_source = "songcache.bin"
-        else:
-            data_source = "Chart hash only"
-
-        print_header("NEW SCORE DETECTED", width=50)
-
-        print(f"{Fore.CYAN}Song Information:{Style.RESET_ALL}")
-        print(f"  • Title: {song_title}" + (f" - {song_artist}" if song_artist else ""))
-        if song_charter:
-            print(f"  • Charter: {song_charter}")
-        print(f"  • Chart Hash: {score.chart_hash[:8]}...")
-        print()
-        print(f"{Fore.CYAN}Performance Data:{Style.RESET_ALL}")
-        print(f"  • Instrument: {score.instrument_name} ({score.difficulty_name})")
-        print(f"  • Score: {score.score:,} pts")
-        if notes_hit is not None and notes_total is not None:
-            print(f"  • Accuracy: {score.completion_percent:.1f}% ({notes_hit}/{notes_total} notes)")
-        else:
-            print(f"  • Accuracy: {score.completion_percent:.1f}%")
-        print(f"  • Stars: {score.stars}/5")
-        if best_streak is not None:
-            print(f"  • Best Streak: {best_streak}")
-        print(f"  • Play Count: {score.play_count}")
-        print()
-        print_info(f"Data Source: {data_source}")
+        # Calculate notes_hit from completion_percent if we have total notes
+        if notes_hit is None and notes_total is not None and score.completion_percent > 0:
+            notes_hit = int(notes_total * (score.completion_percent / 100.0))
 
         # Send score to bot API
         try:
@@ -1574,6 +1692,10 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
             if total_notes_in_chart is not None:
                 payload["total_notes_in_chart"] = total_notes_in_chart
 
+            # v2.6.2: Add NPS data
+            if nps is not None:
+                payload["nps"] = nps
+
             response = requests.post(
                 f"{get_bot_url()}/api/score",
                 json=payload,
@@ -1583,71 +1705,20 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
             if response.status_code == 200:
                 result = response.json()
 
-                print_header("SUBMISSION SUCCESSFUL", width=50)
-
-                if result.get('is_record_broken'):
-                    # Beat an existing record
-                    print_success("Record Status: NEW RECORD!")
-                    print()
-                    if result.get('previous_score') and result.get('previous_holder'):
-                        prev_score = result['previous_score']
-                        diff = score.score - prev_score
-                        diff_pct = (diff / prev_score * 100) if prev_score > 0 else 0
-                        print(f"{Fore.YELLOW}Previous Record:{Style.RESET_ALL}")
-                        print(f"  • Holder: {result['previous_holder']}")
-                        print(f"  • Score: {prev_score:,} pts")
-                        print(f"  • Improvement: {Fore.GREEN}+{diff:,} pts (+{diff_pct:.1f}%){Style.RESET_ALL}")
-                    print()
-                    print_success("Result: Discord announcement posted!")
-
-                elif result.get('is_high_score'):
-                    # First score on this chart (no previous record)
-                    print_success("Record Status: First score on this chart")
-                    print()
-                    print("You are the first to submit a score for:")
-                    print(f"  • {song_title}" + (f" - {song_artist}" if song_artist else ""))
-                    print(f"  • {score.difficulty_name} {score.instrument_name}")
-                    print()
-                    print_info("Result: Score saved! (No announcement - waiting for competition)")
-
-                else:
-                    # Not a new high score
-                    if result.get('your_best_score'):
-                        your_best = result['your_best_score']
-                        diff = score.score - your_best  # Positive = beat, Negative = below, 0 = tie
-                        diff_pct = (diff / your_best * 100) if your_best > 0 else 0
-
-                        if diff == 0:
-                            # Check if this is first time playing (play_count == 1)
-                            if score.play_count == 1:
-                                # First time playing this song
-                                print_info("Record Status: First time playing this song")
-                                print()
-                                print(f"{Fore.CYAN}Score:{Style.RESET_ALL} {score.score:,} pts")
-                                print()
-                                print_info("Result: Score saved (new personal best!)")
-                            else:
-                                # Tied with own best (played before)
-                                print_info("Record Status: Tied with your personal best")
-                                print()
-                                print(f"{Fore.CYAN}Score:{Style.RESET_ALL} {score.score:,} pts")
-                                print()
-                                print_info("Result: Score saved (matched your PB)")
-                        else:
-                            # Below own best
-                            print_info("Record Status: Below your personal best")
-                            print()
-                            print(f"{Fore.CYAN}Your Personal Best:{Style.RESET_ALL}")
-                            print(f"  • Best: {your_best:,} pts")
-                            print(f"  • This Score: {score.score:,} pts")
-                            print(f"  • Gap: {Fore.YELLOW}{diff:,} pts ({diff_pct:+.1f}%){Style.RESET_ALL}")
-                            print()
-                            print_info("Result: Score saved (did not beat your PB)")
-                    else:
-                        # No previous score from this user (shouldn't happen, but handle it)
-                        print_info("Record Status: Score saved")
-                        print()
-                        print_info("Result: Score saved")
+                # Display score with API response (v2.6.2 format)
+                print()  # Spacing before result display
+                format_score_output(
+                    score=score,
+                    song_title=song_title,
+                    song_artist=song_artist,
+                    song_charter=song_charter,
+                    notes_hit=notes_hit,
+                    notes_total=notes_total,
+                    total_notes_in_chart=total_notes_in_chart,
+                    nps=nps,
+                    is_fc=is_fc,
+                    api_response=result
+                )
             elif response.status_code == 401:
                 print_error("Authentication failed - you may need to re-pair")
             else:

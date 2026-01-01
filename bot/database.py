@@ -413,6 +413,7 @@ class Database:
         previous_holder = None
         previous_holder_discord_id = None
         previous_holder_id = None
+        previous_record_was_fc = False  # v2.6.2: Track if previous record was also an FC
 
         if current_high_score:
             # There's an existing server record - check if we beat it
@@ -422,6 +423,8 @@ class Database:
                 is_record_broken = True
                 previous_holder_id = current_high_score['user_id']
                 previous_holder = current_high_score['holder_name']
+                # v2.6.2: Check if previous record was also an FC
+                previous_record_was_fc = bool(current_high_score.get('is_full_combo', 0))
                 # Get previous holder's discord_id for mention
                 self.cursor.execute("""
                     SELECT discord_id FROM users WHERE id = ?
@@ -482,6 +485,14 @@ class Database:
             if user_score:
                 your_best_score = user_score['score']
 
+        # Get the just-submitted score's timestamp (v2.6.2: for accurate "held for" duration)
+        self.cursor.execute("""
+            SELECT submitted_at FROM scores
+            WHERE chart_hash = ? AND instrument_id = ? AND difficulty_id = ? AND user_id = ?
+        """, (chart_hash, instrument_id, difficulty_id, user_id))
+        new_score_row = self.cursor.fetchone()
+        new_score_timestamp = new_score_row['submitted_at'] if new_score_row else None
+
         result = {
             'success': True,
             'is_high_score': is_new_high_score,
@@ -490,11 +501,13 @@ class Database:
             'is_personal_best': is_personal_best,  # True when improving own score (not server record)
             'is_full_combo': is_full_combo,  # v2.6.0: True when hitting all notes perfectly
             'is_first_fc': is_first_fc_on_chart,  # v2.6.0: True when first FC on this chart
+            'previous_record_was_fc': previous_record_was_fc,  # v2.6.2: True if previous record was also FC
             'score': score,
             'previous_score': current_high_score['score'] if current_high_score else None,
             'previous_holder': previous_holder,
             'previous_holder_discord_id': previous_holder_discord_id,
             'previous_record_timestamp': current_high_score['submitted_at'] if current_high_score else None,
+            'new_score_timestamp': new_score_timestamp,  # v2.6.2: For accurate held duration
             'user_previous_score': user_previous_score,  # User's previous score for PB calculation
             'your_best_score': your_best_score,  # User's PB for feedback when not a high score
             'current_server_record': current_high_score['score'] if current_high_score else None,
@@ -594,6 +607,60 @@ class Database:
             ORDER BY s.instrument_id, s.difficulty_id
         """, (chart_hash,))
         return [dict(row) for row in self.cursor.fetchall()]
+
+    def get_current_server_record(self, chart_hash: str, instrument_id: int, difficulty_id: int) -> Optional[Dict]:
+        """
+        Get the current server record for a specific chart/instrument/difficulty
+
+        Args:
+            chart_hash: The chart hash
+            instrument_id: Instrument ID
+            difficulty_id: Difficulty ID
+
+        Returns:
+            Dict with record info (score, holder, date) or None if no record exists
+        """
+        self.cursor.execute("""
+            SELECT s.score, u.discord_username as holder, s.submitted_at,
+                   u.discord_id as holder_discord_id
+            FROM scores s
+            JOIN users u ON s.user_id = u.id
+            WHERE s.chart_hash = ?
+            AND s.instrument_id = ?
+            AND s.difficulty_id = ?
+            ORDER BY s.score DESC
+            LIMIT 1
+        """, (chart_hash, instrument_id, difficulty_id))
+
+        row = self.cursor.fetchone()
+        return dict(row) if row else None
+
+    def get_user_previous_pb(self, user_id: int, chart_hash: str, instrument_id: int, difficulty_id: int) -> Optional[Dict]:
+        """
+        Get user's previous personal best for a specific chart (before current submission)
+
+        Args:
+            user_id: User ID
+            chart_hash: Chart hash
+            instrument_id: Instrument ID
+            difficulty_id: Difficulty ID
+
+        Returns:
+            Dict with previous PB score and date, or None if no previous score
+        """
+        self.cursor.execute("""
+            SELECT score, submitted_at
+            FROM scores
+            WHERE user_id = ?
+            AND chart_hash = ?
+            AND instrument_id = ?
+            AND difficulty_id = ?
+            ORDER BY score DESC
+            LIMIT 1
+        """, (user_id, chart_hash, instrument_id, difficulty_id))
+
+        row = self.cursor.fetchone()
+        return dict(row) if row else None
 
     def get_leaderboard(self, limit: int = 10, instrument_id: int = None,
                        difficulty_id: int = None) -> List[Dict]:

@@ -113,6 +113,11 @@ class ScoreDataParser:
                     denominator = struct.unpack('<H', f.read(2))[0]
                     completion_percent = (numerator / denominator * 100) if denominator > 0 else 0
 
+                    # v2.6.2: Cap at 100% for FCs (Clone Hero sometimes stores >100% values)
+                    # This handles edge cases where numerator > denominator in scoredata.bin
+                    if completion_percent > 100.0:
+                        completion_percent = 100.0
+
                     # Stars (1 byte)
                     stars = struct.unpack('B', f.read(1))[0]
 
@@ -123,6 +128,9 @@ class ScoreDataParser:
                     score = struct.unpack('<I', f.read(4))[0]
 
                     # Create score entry
+                    # IMPORTANT: numerator/denominator are NOT notes_hit/notes_total!
+                    # They're Clone Hero's internal completion metric which doesn't match note count.
+                    # notes_hit/notes_total should ONLY be set from rich score data (OCR/currentsong.txt)
                     entry = ScoreEntry(
                         chart_hash=chart_hash,
                         instrument_id=instrument_id,
@@ -133,8 +141,8 @@ class ScoreDataParser:
                         stars=stars,
                         score=score,
                         play_count=play_count,
-                        notes_hit=numerator,
-                        notes_total=denominator
+                        notes_hit=0,  # Must be set from rich score data (OCR/currentsong.txt)
+                        notes_total=0  # Must be set from rich score data (OCR/currentsong.txt)
                     )
 
                     scores.append(entry)

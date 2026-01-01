@@ -4,7 +4,7 @@ Clone Hero High Score Bot Launcher
 Standalone executable for the Discord bot with first-time setup.
 """
 
-VERSION = "2.6.1"
+VERSION = "2.6.2"
 
 # GitHub repository for auto-updates
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
@@ -17,6 +17,7 @@ import tempfile
 import shutil
 import asyncio
 import signal
+import threading
 from pathlib import Path
 
 # Suppress Windows ProactorEventLoop connection errors (Discord.py known issue)
@@ -1240,6 +1241,40 @@ def show_configuration_summary(config):
     print()
 
 
+def start_shutdown_listener(shutdown_flag):
+    """
+    Background thread to listen for shutdown commands in terminal.
+    Allows typing 'quit', 'stop', or 'exit' to gracefully shut down the bot.
+    """
+    def listen():
+        import time
+        # Wait for bot to fully initialize before accepting shutdown commands
+        # This prevents crashes from shutting down during startup
+        time.sleep(5)
+
+        while True:
+            try:
+                cmd = input().strip().lower()
+                if cmd in ('quit', 'stop', 'exit'):
+                    if not shutdown_flag['flag']:
+                        print_info("\n[*] Shutdown command received - stopping bot...")
+                        shutdown_flag['flag'] = True
+                        # Flag is set - async shutdown monitor will handle graceful shutdown
+                    break
+            except (EOFError, KeyboardInterrupt):
+                # Input stream closed or interrupted
+                break
+            except Exception as e:
+                # On any other error, exit the listener
+                # Don't print errors to avoid cluttering output
+                break
+
+    # Start listener in daemon thread (dies with main thread)
+    thread = threading.Thread(target=listen, daemon=True)
+    thread.start()
+    return thread
+
+
 def check_bot_status():
     """Check bot health and configuration status"""
     print_header("BOT STATUS CHECK", width=60)
@@ -1286,6 +1321,339 @@ def check_bot_status():
         print_info(f"API Port: {port}")
 
     print()
+
+
+def fix_note_counts_utility():
+    """
+    Utility to fix incorrect note counts in the database.
+
+    Displays detailed explanation, then runs the migration script to correct
+    note_total values in scores table using data from chart_metadata table.
+    """
+    print_header("FIX NOTE COUNTS UTILITY", width=80)
+    print()
+    print("WHAT THIS UTILITY DOES:")
+    print("=" * 80)
+    print()
+    print("Prior to v2.6.2, the chart parser incorrectly counted individual note events")
+    print("instead of playable notes. For example, a chord with 3 frets was counted as")
+    print("3 notes instead of 1 note.")
+    print()
+    print("This resulted in:")
+    print("  - Inflated note counts (e.g., 902 notes instead of 450)")
+    print("  - Incorrect NPS calculations (e.g., 7.1 NPS instead of 3.6 NPS)")
+    print()
+    print("This utility scans the scores table and compares note counts with the correct")
+    print("values from the chart_metadata table. Any mismatches are identified and can be")
+    print("corrected with your confirmation.")
+    print()
+    print("REQUIREMENTS:")
+    print("  - chart_metadata table must be populated")
+    print("  - Run 'scancharts' from a v2.6.2+ client first if you haven't already")
+    print()
+    print("SAFETY:")
+    print("  - Shows preview of what will change before making any modifications")
+    print("  - Requires explicit 'yes' confirmation before updating database")
+    print("  - Only updates scores where correct chart_metadata exists")
+    print("  - All other score data remains unchanged")
+    print()
+    print("=" * 80)
+    print()
+
+    response = input("Press Enter to continue, or type 'cancel' to go back: ").strip().lower()
+    if response == 'cancel':
+        return
+
+    print()
+
+    # Run the migration logic directly
+    try:
+        import sqlite3
+        from datetime import datetime
+        from typing import Dict, List, Tuple
+
+        # Get database path
+        db_path = get_config_dir() / 'scores.db'
+
+        if not db_path.exists():
+            print_error(f"Database not found: {db_path}")
+            print()
+            print("Make sure the bot has been run at least once to create the database.")
+            return
+
+        print(f"[*] Database: {db_path}")
+        print()
+
+        # Step 1: Analyze mismatches
+        print("[*] Analyzing scores table...")
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Query scores with note counts and join with chart_metadata
+        query = """
+            SELECT
+                s.id as score_id,
+                s.chart_hash,
+                s.instrument_id,
+                s.difficulty_id,
+                s.user_id,
+                s.score,
+                s.notes_total as current_notes,
+                cm.total_notes as correct_notes,
+                cm.note_density as correct_nps,
+                u.discord_username
+            FROM scores s
+            LEFT JOIN chart_metadata cm
+                ON s.chart_hash = cm.chart_hash
+                AND s.instrument_id = cm.instrument_id
+                AND s.difficulty_id = cm.difficulty_id
+            LEFT JOIN users u ON s.user_id = u.id
+            WHERE s.notes_total IS NOT NULL
+            AND s.notes_total > 0
+        """
+
+        cursor.execute(query)
+        results = cursor.fetchall()
+
+        mismatches = []
+        stats = {
+            'total_scores_with_notes': 0,
+            'scores_with_metadata': 0,
+            'scores_without_metadata': 0,
+            'mismatches_found': 0,
+            'exact_matches': 0,
+        }
+
+        for row in results:
+            stats['total_scores_with_notes'] += 1
+
+            current = row['current_notes']
+            correct = row['correct_notes']
+
+            if correct is None:
+                stats['scores_without_metadata'] += 1
+                continue
+
+            stats['scores_with_metadata'] += 1
+
+            if current != correct:
+                stats['mismatches_found'] += 1
+
+                mismatches.append({
+                    'score_id': row['score_id'],
+                    'chart_hash': row['chart_hash'],
+                    'instrument_id': row['instrument_id'],
+                    'difficulty_id': row['difficulty_id'],
+                    'user_id': row['user_id'],
+                    'username': row['discord_username'],
+                    'score': row['score'],
+                    'current_notes': current,
+                    'correct_notes': correct,
+                    'difference': current - correct,
+                    'correct_nps': row['correct_nps']
+                })
+            else:
+                stats['exact_matches'] += 1
+
+        conn.close()
+
+        print()
+        print("ANALYSIS RESULTS:")
+        print("-" * 80)
+        print(f"  Total scores with note data:     {stats['total_scores_with_notes']:,}")
+        print(f"  Scores with chart metadata:      {stats['scores_with_metadata']:,}")
+        print(f"  Scores missing chart metadata:   {stats['scores_without_metadata']:,}")
+        print()
+        print(f"  Exact matches (no change needed): {stats['exact_matches']:,}")
+        print(f"  Mismatches found (need fixing):   {stats['mismatches_found']:,}")
+        print()
+
+        if stats['mismatches_found'] == 0:
+            print_success("No mismatches found! All note counts are correct.")
+            print()
+            return
+
+        if stats['scores_without_metadata'] > 0:
+            print_warning("Some scores are missing chart metadata and cannot be fixed.")
+            print_info("          Run 'scancharts' from the client to populate metadata.")
+            print()
+
+        # Step 2: Show sample mismatches
+        print()
+        print("=" * 80)
+        print("  SAMPLE MISMATCHES (showing up to 10)")
+        print("=" * 80)
+        print()
+
+        instruments = {0: "Lead", 1: "Bass", 2: "Rhythm", 3: "Keys", 4: "Drums"}
+        difficulties = {0: "Easy", 1: "Med", 2: "Hard", 3: "Exp"}
+
+        print(f"{'User':<20} {'Inst':<6} {'Diff':<5} {'Current':<8} {'Correct':<8} {'Diff':<8} {'Hash':<10}")
+        print("-" * 80)
+
+        for i, m in enumerate(mismatches[:10]):
+            inst = instruments.get(m['instrument_id'], f"Inst{m['instrument_id']}")
+            diff = difficulties.get(m['difficulty_id'], f"Diff{m['difficulty_id']}")
+
+            print(f"{m['username'][:20]:<20} {inst:<6} {diff:<5} "
+                  f"{m['current_notes']:<8} {m['correct_notes']:<8} "
+                  f"{m['difference']:+8} {m['chart_hash'][:8]:<10}")
+
+        if len(mismatches) > 10:
+            print(f"... and {len(mismatches) - 10} more")
+        print()
+
+        # Step 3: Confirm changes
+        print("=" * 80)
+        print()
+        response = input(f"Apply corrections to {stats['mismatches_found']} scores? (yes/no): ").strip().lower()
+
+        if response != 'yes':
+            print()
+            print_info("Cancelled. No changes made.")
+            print()
+            return
+
+        # Step 4: Apply corrections
+        print()
+        print("[*] Applying corrections...")
+
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+
+        updated = 0
+
+        for mismatch in mismatches:
+            try:
+                cursor.execute("""
+                    UPDATE scores
+                    SET notes_total = ?
+                    WHERE id = ?
+                """, (mismatch['correct_notes'], mismatch['score_id']))
+
+                updated += cursor.rowcount
+            except Exception as e:
+                print_error(f"Error updating score {mismatch['score_id']}: {e}")
+
+        conn.commit()
+        conn.close()
+
+        print()
+        print("=" * 80)
+        print("  MIGRATION COMPLETE")
+        print("=" * 80)
+        print()
+        print_success(f"Updated {updated} score records")
+        print()
+        print("SUMMARY:")
+        print(f"  + Scores corrected: {updated}")
+        print(f"  + Database: {db_path}")
+        print(f"  + Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print()
+
+    except Exception as e:
+        print_error(f"Error running migration: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+def admin_utilities_menu():
+    """Display and handle admin utilities submenu"""
+    while True:
+        print()
+        print_header("ADMIN UTILITIES", width=80)
+        print()
+        print("Administrative tools for database maintenance, diagnostics, and special")
+        print("operations. These utilities are used less frequently than the main menu")
+        print("options and require careful attention to instructions.")
+        print()
+        print("+------------------------------------------------------------------------------+")
+        print("|                                                                              |")
+        print("|  [1] Fix Note Counts (Database Migration)                                   |")
+        print("|      Corrects incorrect note counts in scores table using chart metadata.   |")
+        print("|      Use this if you have scores from before v2.6.2.                        |")
+        print("|                                                                              |")
+        print("|  [2] Scan Historical FCs                                                    |")
+        print("|      Scans existing 100% completion scores and marks them as FCs in the     |")
+        print("|      database. Use once after upgrading to v2.6.0+.                         |")
+        print("|                                                                              |")
+        print("|  [3] Backup Database                                                        |")
+        print("|      Manually create a timestamped backup of the scores database.           |")
+        print("|      Backups are saved to the 'backups' folder.                             |")
+        print("|                                                                              |")
+        print("|  [4] Export Logs                                                            |")
+        print("|      Creates a timestamped copy of the bot log file for sharing or          |")
+        print("|      archival purposes.                                                     |")
+        print("|                                                                              |")
+        print("|  [5] Send Update Notification                                               |")
+        print("|      Manually posts an update notification to the Discord announcement      |")
+        print("|      channel. Use when releasing new bot/client versions.                   |")
+        print("|                                                                              |")
+        print("|  [6] Verify Configuration                                                   |")
+        print("|      Runs diagnostic checks on bot configuration and reports any issues     |")
+        print("|      with Discord connection, database, or API settings.                    |")
+        print("|                                                                              |")
+        print("|  [B] Back to Main Menu                                                      |")
+        print("|                                                                              |")
+        print("+------------------------------------------------------------------------------+")
+
+        choice = input("\nChoice: ").strip().lower()
+
+        if choice == '1':
+            # Fix note counts
+            print()
+            fix_note_counts_utility()
+            input("\nPress Enter to continue...")
+
+        elif choice == '2':
+            # Scan historical FCs
+            print()
+            # Need to load config for this command
+            try:
+                config = load_config()
+                scan_historical_fcs_command(config)
+            except Exception as e:
+                print_error(f"Error loading config: {e}")
+            input("\nPress Enter to continue...")
+
+        elif choice == '3':
+            # Backup database
+            print()
+            backup_database_command()
+            input("\nPress Enter to continue...")
+
+        elif choice == '4':
+            # Export logs
+            print()
+            export_logs_command()
+            input("\nPress Enter to continue...")
+
+        elif choice == '5':
+            # Send update notification
+            print()
+            try:
+                config = load_config()
+                send_manual_update_notification(config)
+            except Exception as e:
+                print_error(f"Error: {e}")
+                print_info("Check log file for details")
+            input("\nPress Enter to continue...")
+
+        elif choice == '6':
+            # Verify config
+            print()
+            verify_config_command()
+            input("\nPress Enter to continue...")
+
+        elif choice == 'b':
+            # Back to main menu
+            return
+
+        else:
+            print_warning("Invalid choice. Please try again.")
+            input("\nPress Enter to continue...")
 
 
 def main():
@@ -1344,21 +1712,17 @@ def main():
     show_ascii_banner()
 
     # Show startup menu
-    print("┌─────────────────────────────────────────────────┐")
-    print("│                  MAIN MENU                      │")
-    print("├─────────────────────────────────────────────────┤")
-    print("│  [1] Start Bot                                  │")
-    print("│  [2] Settings Menu                              │")
-    print("│  [3] View Configuration                         │")
-    print("│  [4] Check Status                               │")
-    print("│  [5] Show Statistics                            │")
-    print("│  [6] Backup Database                            │")
-    print("│  [7] Export Logs                                │")
-    print("│  [8] Send Update Notification                   │")
-    print("│  [9] Scan Historical FCs (v2.6.0)               │")
-    print("│  [10] Verify Config                             │")
-    print("│  [Q] Quit                                       │")
-    print("└─────────────────────────────────────────────────┘")
+    print("+---------------------------------------------------+")
+    print("|                  MAIN MENU                        |")
+    print("+---------------------------------------------------+")
+    print("|  [1] Start Bot                                    |")
+    print("|  [2] Settings Menu                                |")
+    print("|  [3] View Configuration                           |")
+    print("|  [4] Check Status                                 |")
+    print("|  [5] Show Statistics                              |")
+    print("|  [6] Admin Utilities                              |")
+    print("|  [Q] Quit                                         |")
+    print("+---------------------------------------------------+")
     choice = input("\nChoice: ").strip().lower()
 
     if choice == '2':
@@ -1401,43 +1765,8 @@ def main():
         return main()
 
     elif choice == '6':
-        # Backup database
-        print()
-        backup_database_command()
-        input("\nPress Enter to continue...")
-        return main()
-
-    elif choice == '7':
-        # Export logs
-        print()
-        export_logs_command()
-        input("\nPress Enter to continue...")
-        return main()
-
-    elif choice == '8':
-        # Manually send update notification
-        try:
-            send_manual_update_notification(config)
-            input("\nPress Enter to continue...")
-            return main()  # Return to launcher
-        except Exception as e:
-            print_error(f"Error sending update notification: {e}")
-            print_info("Check log file for details")
-            input("\nPress Enter to continue...")
-            return main()
-
-    elif choice == '9':
-        # Scan historical FCs (v2.6.0)
-        print()
-        scan_historical_fcs_command(config)
-        input("\nPress Enter to continue...")
-        return main()
-
-    elif choice == '10':
-        # Verify config
-        print()
-        verify_config_command()
-        input("\nPress Enter to continue...")
+        # Admin utilities submenu
+        admin_utilities_menu()
         return main()
 
     elif choice == 'q':
@@ -1496,26 +1825,53 @@ def main():
     print()
     print_success("Connecting to Discord...")
     print_info("Press Ctrl+C to return to launcher")
+    print_info("(Terminal commands 'quit'/'stop'/'exit' available after startup)")
     print()
 
+    # Set up signal handler for immediate Ctrl+C feedback
+    shutdown_requested = {'flag': False}  # Use dict for mutability in nested function
+
     async def run_bot_async():
-        """Run bot with proper async handling for Ctrl+C"""
+        """Run bot with proper async handling for Ctrl+C and shutdown commands"""
         # Reload bot module to get fresh instance with all commands registered
         import importlib
         import bot.bot
         importlib.reload(bot.bot)
         bot_instance = bot.bot.bot  # Get the global singleton from reloaded module
 
-        try:
-            async with bot_instance:
-                await bot_instance.start(config['DISCORD_TOKEN'])
-        except KeyboardInterrupt:
-            print("\n[*] Shutting down bot...")
-            await bot_instance.close()
-            raise  # Re-raise to be caught by outer handler
+        async def run_bot_with_monitoring():
+            """Run bot and monitor for shutdown requests"""
+            try:
+                async with bot_instance:
+                    # Create task to start the bot
+                    bot_task = asyncio.create_task(bot_instance.start(config['DISCORD_TOKEN']))
 
-    # Set up signal handler for immediate Ctrl+C feedback
-    shutdown_requested = {'flag': False}  # Use dict for mutability in nested function
+                    # Monitor for shutdown flag
+                    while not shutdown_requested['flag']:
+                        await asyncio.sleep(0.5)  # Check twice per second
+                        if bot_task.done():
+                            # Bot stopped on its own
+                            return
+
+                    # Shutdown requested - cancel the bot task and close gracefully
+                    print_info("\n[*] Initiating graceful shutdown...")
+                    bot_task.cancel()
+                    try:
+                        await bot_task
+                    except asyncio.CancelledError:
+                        pass  # Expected when we cancel
+
+                    # Close the bot
+                    await bot_instance.close()
+            except KeyboardInterrupt:
+                print("\n[*] Shutting down bot...")
+                await bot_instance.close()
+                raise  # Re-raise to be caught by outer handler
+
+        try:
+            await run_bot_with_monitoring()
+        except KeyboardInterrupt:
+            raise  # Re-raise to outer handler
 
     def signal_handler(signum, frame):
         """Provide immediate feedback on Ctrl+C - bypasses I/O blocking"""
@@ -1534,10 +1890,33 @@ def main():
     # Register the handler (save original to restore later)
     original_handler = signal.signal(signal.SIGINT, signal_handler)
 
+    # Start background thread to listen for shutdown commands
+    input_listener = start_shutdown_listener(shutdown_requested)
+
     try:
         import time
         bot_start_time = time.time()
         asyncio.run(run_bot_async())
+
+        # v2.6.2: If we get here, bot stopped - check if it was via shutdown command
+        # (If Ctrl+C was used, we would have hit the KeyboardInterrupt handler instead)
+        if shutdown_requested['flag']:
+            # Graceful shutdown via 'quit'/'stop'/'exit' command
+            # Calculate uptime
+            uptime_seconds = int(time.time() - bot_start_time)
+            hours = uptime_seconds // 3600
+            minutes = (uptime_seconds % 3600) // 60
+            seconds = uptime_seconds % 60
+
+            print()
+            print_header("BOT SHUTDOWN", width=60)
+            print_success("Bot stopped gracefully")
+            print_info(f"  Session duration: {hours}h {minutes}m {seconds}s")
+            print()
+            print_info("Returning to launcher...")
+            input("Press Enter to continue...")
+            return main()  # Return to launcher menu
+
     except KeyboardInterrupt:
         # Calculate uptime
         uptime_seconds = int(time.time() - bot_start_time)

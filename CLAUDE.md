@@ -480,6 +480,32 @@ Scans local song folders to populate missing charter information in the database
 
 ## Version History & Migration Notes
 
+**v2.5.5** - UI/UX Polish Update (Dec 29, 2025)
+- **IMPROVED:** Beautified `/recent` command with cleaner formatting
+  - New format: "**Username** broke the record on: Song - Artist (Difficulty Instrument)"
+  - Previous score shown inline: "Score: X (was Y by Holder)"
+  - Changed "Med" to "Medium" for consistency
+  - Removed numbering for cleaner appearance
+  - Date displayed in italics for visual distinction
+- **FIXED:** Bot launcher Ctrl+C handler to properly return to menu
+  - Replaced `bot.run()` with `asyncio.run(bot.start())` for proper async handling
+  - No more accidentally closing the entire terminal window
+  - Graceful shutdown with `await bot.close()`
+- **IMPROVED:** Client terminal feedback wording (friendlier, less technical)
+  - "Loaded X known scores from state file" → "Tracking X known personal bests"
+  - "Tracking X known scores" → "Tracking X personal bests across all instruments/difficulties"
+  - "No new scores detected" → "Monitoring active - waiting for new scores..."
+  - "Score updated but did not improve" → "Score recorded, but below your personal best:"
+  - "No score changes detected" → "Clone Hero saved, but no score changes detected"
+  - "No new offline scores" → "All scores up to date (no offline plays detected)"
+- **REVERTED:** Discord Bridge link buttons (shelved feature)
+  - Removed all BridgeLinkView code from bot.py and api.py
+  - Discord announcements and commands now show Enchor.us links only
+  - Bridge integration remains functional as client-side feature only
+  - Future implementation documented in FUTURE_WORK_LOCAL.md (Caddy reverse proxy solution)
+- **FILES MODIFIED:** `bot/bot.py`, `bot/api.py`, `bot_launcher.py`, `client/file_watcher.py`, `clone_hero_client.py`
+- CONFIG_VERSION: 5 (unchanged)
+
 **v2.5.4** - Client Terminal Feedback Enhancement (Dec 29, 2025)
 - **NEW:** Detailed feedback for scores that don't improve personal best
   - Shows which chart was played (chart hash, instrument, difficulty)

@@ -10,6 +10,7 @@ import json
 import urllib.parse
 from datetime import datetime
 import discord
+from colorama import Fore, Style
 from .config import Config
 from shared.console import print_success, print_info, print_warning, print_error
 from shared.logger import get_bot_logger, log_exception
@@ -133,6 +134,7 @@ class ScoreAPI:
         self.app.router.add_post('/api/debug/authorize', self.authorize_debug)
         self.app.router.add_get('/api/unresolved_hashes', self.get_unresolved_hashes)
         self.app.router.add_post('/api/resolve_hashes', self.resolve_hashes)
+        self.app.router.add_post('/api/chart_metadata', self.upload_chart_metadata)  # v2.6.0: Bulk chart upload
 
     async def index(self, request):
         """Root endpoint - API info"""
@@ -194,7 +196,10 @@ class ScoreAPI:
                 stars=data.get('stars', 0),
                 song_title=data.get('song_title', ''),
                 song_artist=data.get('song_artist', ''),
-                song_charter=data.get('song_charter', '')
+                song_charter=data.get('song_charter', ''),
+                notes_hit=data.get('notes_hit'),
+                notes_total=data.get('notes_total'),
+                total_notes_in_chart=data.get('total_notes_in_chart')  # v2.6.0: Chart file note count
             )
 
             if not result['success']:
@@ -227,18 +232,89 @@ class ScoreAPI:
             if song_artist:
                 song_display = f"{song_title} - {song_artist}"
 
-            print(f"\n[API] Score received from {result['username']} [{score_type.upper()}]:")
-            print(f"  Song: {song_display}")
-            print(f"  Chart Hash: {data['chart_hash']}")
-            print(f"  Score: {data['score']:,} | {diff_name} {inst_name}")
+            # v2.6.2: New ASCII format for server output
+            print()
+            print("=" * 80)
+            print(f"  {Fore.CYAN}SCORE SUBMISSION{Style.RESET_ALL}")
+            print("=" * 80)
+            print()
+            print(f"  {Fore.CYAN}Player{Style.RESET_ALL}     {result['username']}")
+            print(f"  {Fore.CYAN}Song{Style.RESET_ALL}       {song_title}")
+            if song_artist:
+                print(f"  {Fore.CYAN}Artist{Style.RESET_ALL}     {song_artist}")
+            if data.get('song_charter'):
+                print(f"  {Fore.CYAN}Charter{Style.RESET_ALL}    {data['song_charter']}")
+            print(f"  {Fore.CYAN}Hash{Style.RESET_ALL}       {data['chart_hash'][:8]}...")
+            print()
+
+            # Build stars and FC display
+            stars_display = "*" * data.get('stars', 0)
+            is_fc = result.get('is_full_combo', False)
+            fc_colored = f" {Fore.GREEN}[FC]{Style.RESET_ALL}" if is_fc else ""
+
+            print(f"  {Fore.CYAN}Chart{Style.RESET_ALL}      {inst_name} ({diff_name}) {stars_display}{fc_colored}")
+            print(f"  {Fore.CYAN}Score{Style.RESET_ALL}      {Fore.WHITE}{data['score']:,}{Style.RESET_ALL} pts")
+
+            # Accuracy display (v2.6.2: includes NPS)
+            nps = data.get('nps')
             if notes_hit is not None and notes_total is not None:
-                print(f"  Notes: {notes_hit}/{notes_total} ({data.get('completion_percent', 0):.1f}%)")
+                accuracy_display = f"{data.get('completion_percent', 0):.1f}% ({notes_hit}/{notes_total} notes"
+                if nps:
+                    accuracy_display += f", {nps:.1f} NPS"
+                accuracy_display += ")"
+                print(f"  {Fore.CYAN}Accuracy{Style.RESET_ALL}   {accuracy_display}")
             else:
-                print(f"  Accuracy: {data.get('completion_percent', 0):.1f}%")
-            if best_streak is not None:
-                print(f"  Best Streak: {best_streak}")
-            print(f"  Stars: {data.get('stars', 0)}")
-            print(f"  Result: {'RECORD BROKEN!' if result['is_record_broken'] else 'High Score' if result['is_high_score'] else 'Not a record'}")
+                accuracy_display = f"{data.get('completion_percent', 0):.1f}%"
+                if nps:
+                    accuracy_display += f" ({nps:.1f} NPS)"
+                print(f"  {Fore.CYAN}Accuracy{Style.RESET_ALL}   {accuracy_display}")
+
+            # Play count if available
+            if data.get('play_count'):
+                print(f"  {Fore.CYAN}Play #{Style.RESET_ALL}     {data['play_count']}")
+            print()
+
+            # Status line
+            if result['is_record_broken']:
+                status_text = f"{Fore.GREEN}[+]{Style.RESET_ALL} New Personal Best  |  {Fore.RED}[RECORD]{Style.RESET_ALL} BROKE SERVER RECORD!"
+                print(f"  {Fore.CYAN}Status{Style.RESET_ALL}     {status_text}")
+                if result.get('previous_score') and result.get('previous_holder'):
+                    print(f"             Previous record: {result['previous_score']:,} pts ({result['previous_holder']})")
+            elif result['is_high_score']:
+                # Check if first on chart
+                if result.get('is_first_time_score'):
+                    status_text = f"{Fore.GREEN}[+]{Style.RESET_ALL} New Personal Best  |  {Fore.RED}[RECORD]{Style.RESET_ALL} NEW SERVER RECORD!"
+                    print(f"  {Fore.CYAN}Status{Style.RESET_ALL}     {status_text}")
+                    print(f"             First score on this chart!")
+                else:
+                    status_text = f"{Fore.GREEN}[+]{Style.RESET_ALL} New Personal Best  |  {Fore.YELLOW}[-]{Style.RESET_ALL} Not a server record"
+                    print(f"  {Fore.CYAN}Status{Style.RESET_ALL}     {status_text}")
+                    # Show current server record
+                    try:
+                        server_record = self.bot.db.get_current_server_record(
+                            data['chart_hash'],
+                            data['instrument_id'],
+                            data['difficulty_id']
+                        )
+                        if server_record:
+                            print(f"             Server record: {server_record['score']:,} pts ({server_record['holder']})")
+                    except:
+                        pass
+            else:
+                # Not a new PB
+                your_best = result.get('your_best_score', data['score'])
+                if data['score'] == your_best:
+                    status_text = f"{Fore.GREEN}[+]{Style.RESET_ALL} PB Maintained  |  {Fore.YELLOW}[-]{Style.RESET_ALL} Not a server record"
+                else:
+                    status_text = f"{Fore.YELLOW}[-]{Style.RESET_ALL} Below Personal Best"
+                print(f"  {Fore.CYAN}Status{Style.RESET_ALL}     {status_text}")
+
+            print()
+
+            # Final status line (will be updated after Discord announcement)
+            status_line = f"{Fore.GREEN}[+]{Style.RESET_ALL} Saved to database"
+
+            print("=" * 80)
 
             # Post announcements based on achievement type
             # Check if each announcement type is enabled in config
@@ -246,10 +322,31 @@ class ScoreAPI:
             first_time_enabled = self.config.config.get('announcements', {}).get('first_time_scores', {}).get('enabled', True) if self.config else True
             personal_bests_enabled = self.config.config.get('announcements', {}).get('personal_bests', {}).get('enabled', False) if self.config else False
 
+            # v2.6.0: Full Combo announcement settings
+            fc_config = self.config.config.get('announcements', {}).get('full_combos', {}) if self.config else {}
+            fc_enabled = fc_config.get('enabled', True)
+            announce_regular_fc = fc_config.get('announce_regular_fc', True)
+            announce_first_fc = fc_config.get('announce_first_fc', True)
+            announce_fc_record_break = fc_config.get('announce_fc_record_break', True)
+
             # Check if record broken, first-time score, or personal best (and if announcements are enabled)
             should_announce_record = record_breaks_enabled and result.get('is_record_broken', False)
             should_announce_first_time = first_time_enabled and result.get('is_first_time_score', False)
             should_announce_pb = False
+
+            # v2.6.0: Full Combo announcements
+            is_full_combo = result.get('is_full_combo', False)
+            is_first_fc = result.get('is_first_fc', False)
+            is_fc_record_break = is_full_combo and result.get('is_record_broken', False)
+
+            should_announce_fc = False
+            if fc_enabled and is_full_combo:
+                if is_fc_record_break and announce_fc_record_break:
+                    should_announce_fc = True
+                elif is_first_fc and announce_first_fc:
+                    should_announce_fc = True
+                elif announce_regular_fc:
+                    should_announce_fc = True
 
             # Check personal best with improvement thresholds (only if personal bests are enabled)
             if personal_bests_enabled and result.get('is_personal_best', False):
@@ -273,20 +370,74 @@ class ScoreAPI:
                     if percent_improvement >= min_percent and points_improvement >= min_points:
                         should_announce_pb = True
 
-            should_announce = should_announce_record or should_announce_first_time or should_announce_pb
+            # v2.6.0: FC announcements take priority over regular record announcements
+            # If both FC and record break, announce as FC (red) instead of record (gold)
+            if should_announce_fc and is_fc_record_break:
+                should_announce_record = False  # Override - announce as FC instead
+
+            should_announce = should_announce_record or should_announce_first_time or should_announce_pb or should_announce_fc
 
             if should_announce:
                 await self.announce_score(data, result)
+                status_line += "  |  [+] Discord announcement posted"
 
-            return web.json_response({
+            # Print final status
+            print(status_line)
+            print()
+
+            # v2.6.2: Enhanced response with server record info and PB tracking
+            response = {
                 'success': True,
                 'message': 'Score submitted successfully',
                 'is_high_score': result['is_high_score'],
                 'is_record_broken': result['is_record_broken'],
+                'is_full_combo': result.get('is_full_combo', False),
+                'is_first_fc': result.get('is_first_fc', False),
                 'previous_score': result.get('previous_score'),
                 'previous_holder': result.get('previous_holder'),
-                'your_best_score': result.get('your_best_score')  # User's PB for feedback
-            })
+                'your_best_score': result.get('your_best_score')
+            }
+
+            # Add server record info (when NOT breaking record)
+            try:
+                if not result['is_record_broken']:
+                    server_record = self.bot.db.get_current_server_record(
+                        data['chart_hash'],
+                        data['instrument_id'],
+                        data['difficulty_id']
+                    )
+                    if server_record:
+                        response['server_record'] = {
+                            'score': server_record['score'],
+                            'holder': server_record['holder'],
+                            'submitted_at': server_record['submitted_at']
+                        }
+            except Exception as e:
+                # Graceful degradation - don't fail request if record lookup fails
+                print_warning(f"[API] Could not get server record: {e}")
+
+            # Add previous PB info (for date/time tracking)
+            try:
+                if result.get('user_id'):
+                    prev_pb = self.bot.db.get_user_previous_pb(
+                        result['user_id'],
+                        data['chart_hash'],
+                        data['instrument_id'],
+                        data['difficulty_id']
+                    )
+                    if prev_pb:
+                        response['previous_pb'] = {
+                            'score': prev_pb['score'],
+                            'submitted_at': prev_pb['submitted_at']
+                        }
+                        # Calculate improvement
+                        if result['is_high_score'] and prev_pb['score'] < data['score']:
+                            response['improvement'] = data['score'] - prev_pb['score']
+            except Exception as e:
+                # Graceful degradation
+                print_warning(f"[API] Could not get previous PB: {e}")
+
+            return web.json_response(response)
 
         except json.JSONDecodeError:
             return web.json_response({
@@ -343,10 +494,64 @@ class ScoreAPI:
             is_record_broken = result.get('is_record_broken', False)
             is_first_time = result.get('is_first_time_score', False)
             is_personal_best = result.get('is_personal_best', False)
+            is_full_combo = result.get('is_full_combo', False)
+            is_first_fc = result.get('is_first_fc', False)
+            previous_record_was_fc = result.get('previous_record_was_fc', False)
+            # v2.6.2: Combo breaker ONLY when FC breaks previous FC (not when FC breaks non-FC)
+            is_fc_record_break = is_full_combo and is_record_broken and previous_record_was_fc
 
             # Set title, emoji, color, and description based on announcement type
             # Also set announcement_type string for config lookups
-            if is_record_broken:
+            # v2.6.0: FC announcements take priority (checked first)
+            if is_fc_record_break:
+                # FC + Record Break = C-C-C-COMBO BREAKER!!!
+                announcement_type = "full_combos"
+                title = "👑 C-C-C-COMBO BREAKER!!!"
+                # Read color from config (default: Red)
+                if self.config:
+                    color_hex = self.config.config.get('announcements', {}).get('full_combos', {}).get('embed_color', '#FF0000')
+                else:
+                    color_hex = '#FF0000'
+                try:
+                    color = discord.Color.from_str(color_hex)
+                except ValueError:
+                    print_warning(f"[API] Invalid color '{color_hex}' for full combos, using default red")
+                    color = discord.Color.from_str('#FF0000')
+
+                # Special wording for FC record breaks
+                prev_holder = result.get('previous_holder', 'the previous record holder')
+                action_text = f"broke {prev_holder}'s FC record with an even higher Full Combo score!"
+            elif is_first_fc:
+                # First FC on this chart
+                announcement_type = "full_combos"
+                title = "👑 FIRST FULL COMBO ON CHART!"
+                # Read color from config (default: Red)
+                if self.config:
+                    color_hex = self.config.config.get('announcements', {}).get('full_combos', {}).get('embed_color', '#FF0000')
+                else:
+                    color_hex = '#FF0000'
+                try:
+                    color = discord.Color.from_str(color_hex)
+                except ValueError:
+                    print_warning(f"[API] Invalid color '{color_hex}' for full combos, using default red")
+                    color = discord.Color.from_str('#FF0000')
+                action_text = "is the FIRST to FC this chart!"
+            elif is_full_combo:
+                # Regular FC
+                announcement_type = "full_combos"
+                title = "👑 FULL COMBO!"
+                # Read color from config (default: Red)
+                if self.config:
+                    color_hex = self.config.config.get('announcements', {}).get('full_combos', {}).get('embed_color', '#FF0000')
+                else:
+                    color_hex = '#FF0000'
+                try:
+                    color = discord.Color.from_str(color_hex)
+                except ValueError:
+                    print_warning(f"[API] Invalid color '{color_hex}' for full combos, using default red")
+                    color = discord.Color.from_str('#FF0000')
+                action_text = "hit every note perfectly!"
+            elif is_record_broken:
                 announcement_type = "record_breaks"
                 title = "🏆 NEW RECORD SET!"
                 # Read color from config (default: Gold)
@@ -426,6 +631,25 @@ class ScoreAPI:
             else:
                 chart_display = f"[{score_data['chart_hash'][:8]}]"
 
+            # v2.6.0: Query chart metadata for Chart Intensity (both modes)
+            chart_intensity_data = None
+            try:
+                self.bot.db.cursor.execute("""
+                    SELECT note_density, total_notes
+                    FROM chart_metadata
+                    WHERE chart_hash = ?
+                      AND instrument_id = ?
+                      AND difficulty_id = ?
+                """, (score_data['chart_hash'], score_data['instrument_id'], score_data['difficulty_id']))
+                chart_meta = self.bot.db.cursor.fetchone()
+                if chart_meta:
+                    chart_intensity_data = {
+                        'note_density': chart_meta['note_density'],
+                        'total_notes': chart_meta['total_notes']
+                    }
+            except Exception as e:
+                logger.debug(f"Failed to query chart_metadata: {e}")
+
             # MINIMALIST MODE: Simplified announcement with configurable fields
             if use_minimalist_mode and minimalist_config_path:
                 # Get minimalist fields configuration
@@ -481,7 +705,7 @@ class ScoreAPI:
                     notes_hit = score_data.get('notes_hit')
                     notes_total = score_data.get('notes_total')
                     if notes_hit is not None and notes_total is not None:
-                        accuracy_display = f"{notes_hit}/{notes_total} ({accuracy:.1f}%)"
+                        accuracy_display = f"{accuracy:.1f}% ({notes_hit}/{notes_total})"
                     else:
                         accuracy_display = f"{accuracy:.1f}%"
                     embed.add_field(name="Accuracy", value=accuracy_display, inline=True)
@@ -490,6 +714,42 @@ class ScoreAPI:
                     play_count = score_data.get('play_count')
                     if play_count is not None:
                         embed.add_field(name="Play Count", value=str(play_count), inline=True)
+
+                # v2.6.0: Chart Intensity field (minimalist mode)
+                if chart_intensity_data and fields_config.get('chart_intensity', False):
+                    nps = chart_intensity_data['note_density']
+
+                    # Get tier config
+                    tier_config = self.config.config.get('difficulty_tiers', {
+                        "tier1": {"name": "Chill", "emoji": "🟢", "min_nps": 1.0, "max_nps": 3.0},
+                        "tier2": {"name": "Shred", "emoji": "🟡", "min_nps": 3.0, "max_nps": 5.0},
+                        "tier3": {"name": "Brutal", "emoji": "🟠", "min_nps": 5.0, "max_nps": 6.0},
+                        "tier4": {"name": "Insane", "emoji": "🔴", "min_nps": 6.0, "max_nps": 999.0}
+                    }) if self.config else {}
+
+                    # Determine tier
+                    tier_emoji = ""
+                    tier_name = ""
+                    for tier_key in ['tier1', 'tier2', 'tier3', 'tier4']:
+                        tier = tier_config.get(tier_key, {})
+                        min_nps = tier.get('min_nps', 0)
+                        max_nps = tier.get('max_nps', 999)
+                        if min_nps <= nps < max_nps:
+                            tier_emoji = tier.get('emoji', '')
+                            tier_name = tier.get('name', '')
+                            break
+
+                    # Fallback to tier4 if no match
+                    if not tier_emoji:
+                        tier4 = tier_config.get('tier4', {})
+                        tier_emoji = tier4.get('emoji', '🔴')
+                        tier_name = tier4.get('name', 'Insane')
+
+                    embed.add_field(
+                        name="Chart Intensity",
+                        value=f"{tier_emoji} {tier_name} ({nps:.1f} NPS)",
+                        inline=True
+                    )
 
                 # Previous record/best info
                 if is_record_broken and fields_config.get('previous_record', False):
@@ -554,7 +814,58 @@ class ScoreAPI:
                 # Build footer for record breaks and personal bests (configurable)
                 footer_text = None
 
-                if is_record_broken and result.get('previous_holder'):
+                # v2.6.0: Special footers for FC announcements
+                if is_first_fc:
+                    footer_text = "🎉 Historic Achievement: First FC!"
+                elif is_fc_record_break and result.get('previous_holder'):
+                    # FC record break footer
+                    footer_parts = []
+
+                    if fields_config.get('footer_show_previous_holder', True):
+                        footer_parts.append(f"{result['previous_holder']} - {result.get('previous_score', 0):,} pts (FC)")
+
+                    # Held duration calculation (v2.6.2: uses new score timestamp for accuracy)
+                    if fields_config.get('footer_show_held_duration', True):
+                        import pytz
+                        from datetime import datetime
+
+                        # Get new score timestamp (when the record-breaking score was submitted)
+                        new_time = None
+                        if result.get('new_score_timestamp'):
+                            try:
+                                new_time = datetime.fromisoformat(result['new_score_timestamp'])
+                                if new_time.tzinfo is None:
+                                    new_time = new_time.replace(tzinfo=pytz.UTC)
+                            except (ValueError, TypeError):
+                                pass
+
+                        # Use new score time if available, otherwise use current time (fallback)
+                        if new_time is None:
+                            new_time = datetime.utcnow().replace(tzinfo=pytz.UTC)
+
+                        if result.get('previous_record_timestamp'):
+                            try:
+                                prev_time = datetime.fromisoformat(result['previous_record_timestamp'])
+                                if prev_time.tzinfo is None:
+                                    prev_time = prev_time.replace(tzinfo=pytz.UTC)
+
+                                duration = new_time - prev_time
+                                days = duration.days
+                                hours = duration.seconds // 3600
+                                minutes = (duration.seconds % 3600) // 60
+
+                                if days > 0:
+                                    footer_parts.append(f"Held for {days} day{'s' if days != 1 else ''}")
+                                elif hours > 0:
+                                    footer_parts.append(f"Held for {hours} hour{'s' if hours != 1 else ''}")
+                                else:
+                                    footer_parts.append(f"Held for {minutes} minute{'s' if minutes != 1 else ''}")
+                            except (ValueError, TypeError):
+                                pass
+
+                    if footer_parts:
+                        footer_text = " • ".join(footer_parts)
+                elif is_record_broken and result.get('previous_holder'):
                     # Record break footer with configurable components
                     footer_parts = []
 
@@ -576,8 +887,21 @@ class ScoreAPI:
                         except pytz.exceptions.UnknownTimeZoneError:
                             display_timezone = pytz.UTC
 
-                        now_utc = datetime.utcnow().replace(tzinfo=pytz.UTC)
-                        tz_abbr = now_utc.astimezone(display_timezone).strftime("%Z")
+                        # v2.6.2: Get new score timestamp for accurate duration
+                        new_time = None
+                        if result.get('new_score_timestamp'):
+                            try:
+                                new_time = datetime.fromisoformat(result['new_score_timestamp'])
+                                if new_time.tzinfo is None:
+                                    new_time = new_time.replace(tzinfo=pytz.UTC)
+                            except (ValueError, TypeError):
+                                pass
+
+                        # Fallback to current time if new_time not available
+                        if new_time is None:
+                            new_time = datetime.utcnow().replace(tzinfo=pytz.UTC)
+
+                        tz_abbr = new_time.astimezone(display_timezone).strftime("%Z")
 
                         if result.get('previous_record_timestamp'):
                             try:
@@ -587,7 +911,7 @@ class ScoreAPI:
 
                                 # Held duration
                                 if fields_config.get('footer_show_held_duration', True):
-                                    time_held = now_utc - prev_time
+                                    time_held = new_time - prev_time
                                     total_seconds = time_held.total_seconds()
                                     if total_seconds >= 86400:  # 1 day or more
                                         days = int(total_seconds // 86400)
@@ -648,6 +972,21 @@ class ScoreAPI:
 
             # FULL MODE: Continue with regular detailed announcement
 
+            # v2.6.2: Add emoji at end of title for full mode
+            # Extract emoji from start of title and append to end
+            emoji_map = {
+                '👑': '👑',  # Crown for FC announcements
+                '🏆': '🏆',  # Trophy for records
+                '📈': '📈',  # Chart for personal bests
+            }
+
+            full_mode_title = title
+            for emoji_char, emoji_append in emoji_map.items():
+                if title.startswith(emoji_char):
+                    # Found emoji at start - add it to end too
+                    full_mode_title = f"{title} {emoji_append}"
+                    break
+
             # Get full_fields config for this announcement type (with safe .get() chaining)
             # Defaults to empty dict if config not available (shows all fields)
             full_fields_config = self.config.config.get('announcements', {}).get(announcement_type, {}).get('full_fields', {}) if self.config else {}
@@ -658,7 +997,7 @@ class ScoreAPI:
             notes_total = score_data.get('notes_total')
 
             if notes_hit is not None and notes_total is not None:
-                accuracy_display = f"{notes_hit}/{notes_total} ({accuracy:.1f}%)"
+                accuracy_display = f"{accuracy:.1f}% ({notes_hit}/{notes_total})"
             else:
                 accuracy_display = f"{accuracy:.1f}%"
 
@@ -684,7 +1023,7 @@ class ScoreAPI:
                 description += "\n\n"  # Add extra newline for spacing after score
 
             embed = discord.Embed(
-                title=title,
+                title=full_mode_title,
                 description=description,
                 color=color
             )
@@ -759,6 +1098,42 @@ class ScoreAPI:
                         inline=True
                     )
 
+            # v2.6.0: Chart Intensity field (only if chart metadata available)
+            if chart_intensity_data and full_fields_config.get('chart_intensity', True):
+                nps = chart_intensity_data['note_density']
+
+                # Get tier config
+                tier_config = self.config.config.get('difficulty_tiers', {
+                    "tier1": {"name": "Chill", "emoji": "🟢", "min_nps": 1.0, "max_nps": 3.0},
+                    "tier2": {"name": "Shred", "emoji": "🟡", "min_nps": 3.0, "max_nps": 5.0},
+                    "tier3": {"name": "Brutal", "emoji": "🟠", "min_nps": 5.0, "max_nps": 6.0},
+                    "tier4": {"name": "Insane", "emoji": "🔴", "min_nps": 6.0, "max_nps": 999.0}
+                }) if self.config else {}
+
+                # Determine tier
+                tier_emoji = ""
+                tier_name = ""
+                for tier_key in ['tier1', 'tier2', 'tier3', 'tier4']:
+                    tier = tier_config.get(tier_key, {})
+                    min_nps = tier.get('min_nps', 0)
+                    max_nps = tier.get('max_nps', 999)
+                    if min_nps <= nps < max_nps:
+                        tier_emoji = tier.get('emoji', '')
+                        tier_name = tier.get('name', '')
+                        break
+
+                # Fallback to tier4 if no match
+                if not tier_emoji:
+                    tier4 = tier_config.get('tier4', {})
+                    tier_emoji = tier4.get('emoji', '🔴')
+                    tier_name = tier4.get('name', 'Insane')
+
+                embed.add_field(
+                    name="Chart Intensity",
+                    value=f"{tier_emoji} {tier_name} ({nps:.1f} NPS)",
+                    inline=True
+                )
+
             # Generate chart search link if we have metadata
             chart_hash = score_data['chart_hash']
             enchor_url = generate_enchor_url(
@@ -822,8 +1197,57 @@ class ScoreAPI:
                     inline=True
                 )
 
+            # v2.6.0: FC-specific footers for full mode
+            if is_first_fc:
+                embed.set_footer(text="🎉 Historic Achievement: First FC!")
+            elif is_fc_record_break and result.get('previous_holder'):
+                # FC record break footer (full mode)
+                footer_parts = []
+
+                if full_fields_config.get('footer_show_previous_holder', True):
+                    footer_parts.append(f"{result['previous_holder']} - {result.get('previous_score', 0):,} pts (FC)")
+
+                # Held duration calculation (v2.6.2: uses new score timestamp)
+                if full_fields_config.get('footer_show_held_duration', True):
+                    if result.get('previous_record_timestamp'):
+                        try:
+                            prev_time = datetime.fromisoformat(result['previous_record_timestamp'])
+                            if prev_time.tzinfo is None:
+                                prev_time = prev_time.replace(tzinfo=pytz.UTC)
+
+                            # Get new score timestamp for accurate duration
+                            new_time = None
+                            if result.get('new_score_timestamp'):
+                                try:
+                                    new_time = datetime.fromisoformat(result['new_score_timestamp'])
+                                    if new_time.tzinfo is None:
+                                        new_time = new_time.replace(tzinfo=pytz.UTC)
+                                except (ValueError, TypeError):
+                                    pass
+                            # Fallback to current time
+                            if new_time is None:
+                                new_time = now_utc
+
+                            time_held = new_time - prev_time
+                            total_seconds = time_held.total_seconds()
+
+                            if total_seconds >= 86400:  # 1 day or more
+                                days = int(total_seconds // 86400)
+                                footer_parts.append(f"Held for {days} day{'s' if days != 1 else ''}")
+                            elif total_seconds >= 3600:  # 1 hour or more
+                                hours = int(total_seconds // 3600)
+                                footer_parts.append(f"Held for {hours} hour{'s' if hours != 1 else ''}")
+                            else:  # Less than 1 hour
+                                minutes = int(total_seconds // 60)
+                                footer_parts.append(f"Held for {minutes} minute{'s' if minutes != 1 else ''}")
+                        except (ValueError, TypeError):
+                            pass
+
+                if footer_parts:
+                    embed.set_footer(text="Previous FC Record: " + " • ".join(footer_parts))
+
             # Previous record holder footer (configurable for full mode)
-            if result.get('previous_holder') and result.get('previous_holder_discord_id'):
+            elif result.get('previous_holder') and result.get('previous_holder_discord_id'):
                 prev_discord_id = result['previous_holder_discord_id']
                 prev_mention = f"<@{prev_discord_id}>"
 
@@ -836,7 +1260,7 @@ class ScoreAPI:
                 if full_fields_config.get('footer_show_previous_score', True):
                     footer_parts.append(f"({result.get('previous_score', 0):,} pts)")
 
-                # Held duration and timestamp calculation
+                # Held duration and timestamp calculation (v2.6.2: uses new score timestamp)
                 if full_fields_config.get('footer_show_held_duration', True) or full_fields_config.get('footer_show_set_timestamp', True):
                     if result.get('previous_record_timestamp'):
                         try:
@@ -845,7 +1269,20 @@ class ScoreAPI:
                             if prev_time.tzinfo is None:
                                 prev_time = prev_time.replace(tzinfo=pytz.UTC)
 
-                            time_held = now_utc - prev_time
+                            # Get new score timestamp for accurate duration
+                            new_time = None
+                            if result.get('new_score_timestamp'):
+                                try:
+                                    new_time = datetime.fromisoformat(result['new_score_timestamp'])
+                                    if new_time.tzinfo is None:
+                                        new_time = new_time.replace(tzinfo=pytz.UTC)
+                                except (ValueError, TypeError):
+                                    pass
+                            # Fallback to current time
+                            if new_time is None:
+                                new_time = now_utc
+
+                            time_held = new_time - prev_time
 
                             # Format held duration
                             if full_fields_config.get('footer_show_held_duration', True):
@@ -875,7 +1312,9 @@ class ScoreAPI:
 
             # Ping previous record holder if enabled
             ping_enabled = self.config.config.get('announcements', {}).get(announcement_type, {}).get('ping_previous_holder', True) if self.config else True
+            prev_discord_id = result.get('previous_holder_discord_id')
             if is_record_broken and prev_discord_id:
+                prev_mention = f"<@{prev_discord_id}>"
                 if ping_enabled and str(prev_discord_id) != str(result['discord_id']):
                     await channel.send(f"{prev_mention} - your record was beaten!", embed=embed)
                 else:
@@ -1115,6 +1554,94 @@ class ScoreAPI:
         except Exception as e:
             print_error(f"[API] Error resolving hashes: {e}")
             log_exception(logger, "Error resolving hashes", e)
+            return web.json_response({
+                'success': False,
+                'error': str(e)
+            }, status=500)
+
+    async def upload_chart_metadata(self, request):
+        """
+        Bulk upload chart metadata from client (v2.6.0)
+
+        Requires authentication via auth_token header
+
+        Expected payload:
+        {
+            "charts": [
+                {
+                    "chart_hash": "abc123...",
+                    "instrument_id": 0,
+                    "difficulty_id": 3,
+                    "total_notes": 3722,
+                    "chord_count": 150,
+                    "tap_count": 0,
+                    "open_note_count": 0,
+                    "star_power_phrases": 8,
+                    "song_length_ms": 447000,
+                    "note_density": 8.33,
+                    "song_name": "Through the Fire and Flames",
+                    "artist": "DragonForce",
+                    "charter": "Exilelord",
+                    "genre": "Metal",
+                    "chart_file_path": "D:/Songs/TTFAF/notes.chart"
+                },
+                ...
+            ]
+        }
+
+        Returns:
+        {
+            "success": true,
+            "inserted": 1189,
+            "updated": 58,
+            "failed": 0
+        }
+        """
+        try:
+            # Check authentication
+            auth_token = request.headers.get('Authorization', '').replace('Bearer ', '')
+            if not auth_token:
+                return web.json_response({
+                    'success': False,
+                    'error': 'Missing auth token'
+                }, status=401)
+
+            # Verify user exists
+            user = self.bot.db.get_user_by_auth_token(auth_token)
+            if not user:
+                return web.json_response({
+                    'success': False,
+                    'error': 'Invalid auth token'
+                }, status=401)
+
+            # Get chart data from request
+            data = await request.json()
+            charts = data.get('charts', [])
+
+            if not charts:
+                return web.json_response({
+                    'success': False,
+                    'error': 'No chart data provided'
+                }, status=400)
+
+            # Insert/update chart metadata in database
+            result = self.bot.db.batch_insert_chart_metadata(charts)
+
+            print_success(
+                f"[API] Chart metadata uploaded: {result['inserted']} inserted, "
+                f"{result['updated']} updated (by {user['discord_username']})"
+            )
+
+            return web.json_response({
+                'success': True,
+                'inserted': result['inserted'],
+                'updated': result['updated'],
+                'failed': result['failed']
+            })
+
+        except Exception as e:
+            print_error(f"[API] Error uploading chart metadata: {e}")
+            log_exception(logger, "Error uploading chart metadata", e)
             return web.json_response({
                 'success': False,
                 'error': str(e)
