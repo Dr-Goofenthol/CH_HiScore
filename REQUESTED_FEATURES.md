@@ -1,6 +1,6 @@
 # Requested Features & Known Issues
 **Source:** Direct user requests and discussions
-**Last Updated:** 2025-12-27
+**Last Updated:** 2026-01-01
 
 ---
 
@@ -15,9 +15,17 @@
 
 ## 🐛 Known Bugs & Issues to Fix
 
-### Currently Identified Issues
+### Recently Resolved (v2.6.2)
 
-**None critical.** All known issues from v2.4.15 development have been resolved:
+**All critical issues resolved in v2.6.2:**
+- ✅ Combo breaker triggering incorrectly (FC breaking non-FC showed "C-C-C-COMBO BREAKER!!!")
+- ✅ 356% accuracy bug (completion percent now capped at 100%)
+- ✅ Shutdown commands not returning to launcher (quit/stop/exit now work properly)
+- ✅ Unclosed connector warnings (suppressed harmless aiohttp warnings)
+
+### Previously Resolved (v2.4.15)
+
+**All known issues from v2.4.15 development resolved:**
 - ✅ resolvehashes command (was broken, now fixed)
 - ✅ Charter data pipeline (was incomplete, now operational)
 - ✅ Settings.ini parsing (was manual/broken, now uses configparser)

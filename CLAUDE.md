@@ -480,6 +480,49 @@ Scans local song folders to populate missing charter information in the database
 
 ## Version History & Migration Notes
 
+**v2.6.2** - Critical Bug Fixes & Announcement Enhancements (Jan 1, 2026)
+- **FIXED (CRITICAL):** Combo breaker logic now only triggers when FC breaks previous FC
+  - Previously triggered incorrectly when FC broke non-FC record
+  - Added `previous_record_was_fc` tracking in database.py (lines 416, 427, 504)
+  - Updated condition in api.py line 501: `is_fc_record_break = is_full_combo and is_record_broken and previous_record_was_fc`
+  - Example: First FC on a chart now shows "FIRST FULL COMBO ON CHART!" instead of "C-C-C-COMBO BREAKER!!!"
+  - Validated with 5 test scenarios (see test_combo_breaker_logic.py)
+- **FIXED (CRITICAL):** 356% accuracy bug - completion percentage now capped at 100%
+  - Clone Hero sometimes stores completion >100% in scoredata.bin
+  - Parser already had cap at shared/parsers.py lines 116-119, but client exe wasn't rebuilt
+  - Notes hit calculation was using uncapped value: `int(17 * (356.0 / 100.0)) = 60` (wrong!)
+  - Rebuilt client with latest parser code to fix
+- **FIXED (CRITICAL):** Shutdown commands (quit/stop/exit) now return to launcher menu
+  - Previously closed bot immediately without showing shutdown message
+  - Added graceful shutdown detection at bot_launcher.py lines 1901-1918
+  - Checks `shutdown_requested['flag']` after `asyncio.run()` completes
+  - Shows uptime stats and returns to main menu instead of exiting
+- **ENHANCED:** Full-mode announcements now show emoji at both start AND end of title
+  - Examples: "👑 FULL COMBO! 👑", "🏆 NEW RECORD SET! 🏆", "📈 PERSONAL BEST! 📈"
+  - Minimalist mode unchanged (emoji at start only)
+  - Implementation: bot/api.py lines 975-988 with emoji detection and appending
+- **FIXED:** Suppressed harmless "Unclosed connector" warnings from discord.py internals
+  - Added warning filters at bot_launcher.py lines 27-30
+  - Warnings were from aiohttp connections used by discord.py - not actual bugs
+  - Cleaner console output without hiding real errors
+- **NEW:** Admin Utilities submenu consolidates low-frequency operations
+  - Main menu reorganized: 11 items → 7 items (cleaner navigation)
+  - New submenu includes: Fix Note Counts, Scan Historical FCs, Backup Database, Export Logs, Send Update Notification, Verify Configuration
+- **NEW:** Database migration utility to fix note counts from pre-v2.6.2 scores
+  - Accessible via Admin Utilities → Fix Note Counts
+  - Safe preview mode before applying changes
+  - Requires explicit "yes" confirmation
+  - Optional (new scores automatically have correct values)
+- **LESSONS LEARNED:**
+  - Always rebuild BOTH executables when shared modules change (parsers.py affects both bot and client)
+  - PyInstaller doesn't auto-detect shared module changes - use `--clean` flag
+  - Flag-based shutdown detection needed for graceful async cleanup (exception handlers don't catch all shutdown paths)
+  - Warning suppression should be targeted (specific messages) not broad (doesn't hide real errors)
+  - Database migrations should be optional utilities with preview/confirm UX (safer than automatic fixes)
+- **FILES MODIFIED:** `bot/api.py`, `bot/database.py`, `bot_launcher.py`, `shared/parsers.py`, `migrate_fix_note_counts.py` (new)
+- **TESTING:** All 5 combo breaker scenarios passing, shutdown commands verified (quit/stop/exit), note count migration tested on production database
+- CONFIG_VERSION: 5 (unchanged)
+
 **v2.5.5** - UI/UX Polish Update (Dec 29, 2025)
 - **IMPROVED:** Beautified `/recent` command with cleaner formatting
   - New format: "**Username** broke the record on: Song - Artist (Difficulty Instrument)"

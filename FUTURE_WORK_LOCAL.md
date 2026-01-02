@@ -1,7 +1,7 @@
 # Future Features & Improvements - Working List
 **Status:** Local planning document (not for GitHub)
-**Last Updated:** 2025-12-28
-**Current Version:** v2.5.3 (testing)
+**Last Updated:** 2026-01-01
+**Current Version:** v2.6.2 (released)
 
 ---
 
@@ -621,6 +621,12 @@ New features should enhance these core pillars, not distract from them.
 
 ## ✅ Recently Completed (for reference)
 
+- [x] Combo breaker logic fix (v2.6.2) - Only triggers when FC breaks previous FC
+- [x] 356% accuracy bug fix (v2.6.2) - Completion percent capped at 100%
+- [x] Shutdown commands fix (v2.6.2) - quit/stop/exit return to launcher
+- [x] Emoji-at-end enhancement (v2.6.2) - Full mode shows emoji at both start and end
+- [x] Admin Utilities menu (v2.6.2) - Consolidated low-frequency operations
+- [x] Database migration utility (v2.6.2) - Fix note counts from pre-v2.6.2 scores
 - [x] Charter data pipeline (v2.4.12-v2.4.15)
 - [x] resolvehashes command (v2.4.15)
 - [x] Play count tracking (v2.4.12)
