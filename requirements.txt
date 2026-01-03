@@ -1,0 +1,20 @@
+# Clone Hero Score Tracker - Python Dependencies
+# Install with: py -m pip install -r requirements.txt
+
+# Core Dependencies
+colorama>=0.4.6          # Cross-platform colored terminal output
+requests>=2.31.0         # HTTP client for API communication
+watchdog>=3.0.0          # File system monitoring for scoredata.bin
+pystray>=0.19.5          # System tray icon support
+Pillow>=10.0.0           # Image processing (required by pystray)
+python-dotenv>=1.0.0     # Environment variable management
+
+# Discord Bot Dependencies
+discord.py>=2.3.0        # Discord bot framework
+aiohttp>=3.9.0           # Async HTTP server for bot API
+
+# Windows-Specific Dependencies (Optional)
+# Uncomment if running on Windows and want OCR support:
+# winocr>=0.1.0          # Windows OCR for results screen capture
+
+# Note: sqlite3 is included in Python standard library (no install needed)

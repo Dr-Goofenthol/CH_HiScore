@@ -105,6 +105,91 @@ That's it! Play a Clone Hero song and watch the magic happen. When you set a new
 
 ---
 
+## 🌐 Hosting Guide
+
+### Local Network Setup (Easiest)
+
+If all players are on the same local network:
+- **Bot Host:** Run the bot on any PC (default port: 5000)
+- **Client Setup:** Use bot's local IP address (e.g., `http://192.168.1.100:5000`)
+- **No port forwarding required**
+
+### Internet-Accessible Setup (Recommended for Remote Players)
+
+To allow players outside your network to connect:
+
+#### Option 1: Port Forwarding (Free)
+
+1. **Configure Router:**
+   - Forward external port (e.g., 5000) to your bot PC's local IP
+   - Check your router's admin panel for "Port Forwarding" settings
+   - Protocol: TCP
+
+2. **Find Your Public IP:**
+   - Visit `https://whatismyipaddress.com`
+   - Share this IP with your players: `http://YOUR_PUBLIC_IP:5000`
+
+3. **Handle Dynamic IP (Optional):**
+   - Most home ISPs use dynamic IPs that change periodically
+   - Use a **free Dynamic DNS service** (No-IP, DuckDNS, etc.)
+   - Install DDNS client on bot PC to auto-update your hostname
+   - Players use hostname instead: `http://yourserver.ddns.net:5000`
+
+**Pros:** Free, full control
+**Cons:** Requires router access, exposes your home IP, manual setup
+
+#### Option 2: Cloud Hosting (Most Reliable)
+
+Host the bot on a cloud server for 24/7 uptime:
+
+**VPS Providers:**
+- **DigitalOcean** - $6/month (1GB RAM droplet is sufficient)
+- **Linode** - $5/month (Nanode 1GB plan)
+- **Vultr** - $5/month (Cloud Compute instances)
+- **AWS/Azure** - Free tier available (limited duration)
+
+**Setup Steps:**
+1. Create Ubuntu 22.04 VPS instance
+2. Install Python 3.10+ and dependencies: `apt install python3 python3-pip`
+3. Upload bot files via SCP/SFTP
+4. Install Python packages: `pip3 install -r requirements.txt`
+5. Run bot with screen/tmux for persistence: `screen -S chbot python3 bot_launcher.py`
+6. Use VPS's public IP for client connections
+
+**Pros:** 24/7 uptime, static IP, professional setup
+**Cons:** Monthly cost ($5-6), requires basic Linux knowledge
+
+#### Option 3: Tunneling Services (Quick Testing)
+
+For temporary testing without port forwarding:
+
+- **ngrok** - `ngrok http 5000` (free tier has session limits)
+- **localtunnel** - `lt --port 5000`
+- **Cloudflare Tunnel** - More permanent free option
+
+**Pros:** No port forwarding, instant setup
+**Cons:** Free tiers have limitations, URLs change on restart, not ideal for production
+
+### Security Recommendations
+
+- ✅ Use strong Discord bot token (never share publicly)
+- ✅ Set debug password in bot config
+- ✅ Keep bot software updated
+- ✅ Use firewall rules to limit access to bot port
+- ⚠️ Avoid running bot as admin/root user
+- ⚠️ Don't expose bot on public internet without authentication
+
+### Recommended Setup by Use Case
+
+| Use Case | Recommended Hosting |
+|----------|---------------------|
+| 2-5 friends on same LAN | Local network (no port forwarding) |
+| Small community (5-20 players) | Port forwarding + Dynamic DNS |
+| Large community (20+ players) | Cloud VPS hosting |
+| Testing/development | Tunneling service (ngrok) |
+
+---
+
 ## 📖 Documentation
 
 - **[Setup Guide](docs/SETUP_GUIDE.md)** - Detailed installation instructions *(coming soon)*
@@ -117,16 +202,43 @@ That's it! Play a Clone Hero song and watch the magic happen. When you set a new
 
 ## 🎮 Discord Commands
 
+### Core Commands
+
 | Command | Description |
 |---------|-------------|
-| `/pair <code>` | Link your Clone Hero client to Discord |
-| `/leaderboard [difficulty] [instrument]` | View high scores |
-| `/mystats [user]` | See your (or another user's) statistics |
-| `/recent [count]` | Show recent record breaks |
-| `/lookupsong <title>` | Search for a song by title |
-| `/hardest [difficulty] [instrument]` | View most difficult songs by NPS |
+| `/pair <code>` | Link your Clone Hero client to your Discord account |
+| `/leaderboard [difficulty] [instrument]` | View high scores for all songs or filtered by difficulty/instrument |
+| `/mystats [user]` | View your personal statistics or check another user's stats |
+| `/recent [count]` | Show recent record breaks (default: 10, max: 50) |
+| `/lookupsong <title>` | Search for a song by title and view its metadata |
+| `/hardest [difficulty] [instrument]` | View the most difficult songs ranked by NPS (Note Density) |
 
-*More commands available - see full documentation*
+### Server Management Commands
+
+| Command | Description |
+|---------|-------------|
+| `/server_status` | Display comprehensive server statistics dashboard (v2.6.3+) |
+| `/ping` | Check bot response time and connection status |
+
+### Metadata Management Commands
+
+| Command | Description |
+|---------|-------------|
+| `/setartist <hash> <artist>` | Update artist metadata for a specific chart |
+| `/updatesong <hash>` | Trigger manual metadata update for a chart |
+| `/missingartists` | List all charts that are missing artist information |
+
+### Client Commands (Terminal)
+
+These commands are available in the CloneHeroScoreTracker client terminal:
+
+| Command | Description |
+|---------|-------------|
+| `resolvehashes` | Scan local song folders and resolve missing chart metadata on server |
+| `resync` | Force re-sync of all local scores with the server |
+| `settings` | Open interactive settings menu |
+| `debug` | Enter debug mode (password required) |
+| `exit` / `quit` | Exit the tracker client |
 
 ---
 
