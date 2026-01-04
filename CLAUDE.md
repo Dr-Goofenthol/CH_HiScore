@@ -480,7 +480,16 @@ Scans local song folders to populate missing charter information in the database
 
 ## Version History & Migration Notes
 
-**v2.6.3** - Username Handling Fix (Jan 2, 2026) - IN PROGRESS
+**v2.6.3** - Username Handling & Critical Bug Fixes (Jan 4, 2026) - COMPLETED ✅
+- **FIXED (CRITICAL):** Update notification prompt crash - Moved from async bot to launcher
+  - **Problem:** Prompt appeared inside bot's async event loop, using blocking `input()` caused crashes
+  - **Solution:** Moved version check to launcher (before bot starts) at bot_launcher.py lines 1786-1852
+  - **Implementation:**
+    - Launcher prompts admin (yes/no) before starting bot (safe blocking input)
+    - Stores decision in database: `update_notification_approved` flag (if yes) or `update_notification_prompted` flag (if no)
+    - Bot checks approval flag on startup and auto-sends if approved (bot/bot.py lines 350-402)
+    - No async `input()` calls = no crashes
+  - **User Impact:** Declining notification no longer crashes bot, stable startup experience
 - **FIXED:** Discord username handling - usernames now stay current when users change display names
   - **Phase 1: Update on Pairing** - Username automatically updates when user re-pairs
     - Modified `complete_pairing()` in bot/database.py (lines 279-288)
@@ -507,9 +516,26 @@ Scans local song folders to populate missing charter information in the database
   - Store `discord_username` for logging/fallback but display via mentions for accuracy
   - Update stored username opportunistically (during pairing) to keep database reasonably current
   - Leverage Discord's mention system (`<@USER_ID>`) instead of fetching from API (zero additional calls)
-- **FILES MODIFIED:** `bot/database.py` (pairing + query), `bot/bot.py` (3 commands)
-- **TESTING REQUIRED:** Username change detection, command display with mentions, pairing update logic
-- **STATUS:** Code complete, pending additional tweaks before v2.6.3 release
+  - **NEVER use blocking `input()` inside async event loops** - causes crashes and instability
+  - **Separate concerns:** Interactive prompts belong in launcher, bot should run autonomously
+  - **Flag-based approval system** works well for deferred actions (launcher → bot communication)
+- **FILES MODIFIED:**
+  - `bot/bot.py` (mentions in commands, removed async input, approval check)
+  - `bot/database.py` (username update on pairing, added discord_id to queries)
+  - `bot_launcher.py` (pre-start version check with approval flag system)
+  - `bot/api.py`, `bot/config.py`, `bot/config_manager.py`, `bot/migrations.py`, `bot/preview_generator.py` (supporting changes)
+  - `clone_hero_client.py`, `shared/chart_parser.py` (version bump, minor updates)
+  - `CloneHeroScoreBot_v2.6.3.spec`, `CloneHeroScoreTracker_v2.6.3.spec` (new build specs)
+  - `client/bridge_integration.py` (new file)
+- **TESTING COMPLETED:**
+  - ✅ Decline notification at launcher → Bot starts normally (no crash)
+  - ✅ Accept notification at launcher → Bot auto-sends to Discord
+  - ✅ Username change detection and pairing update
+  - ✅ Commands display Discord mentions with current names
+- **RELEASE:** v2.6.3 released on GitHub (Jan 4, 2026)
+  - Git tag pushed: `v2.6.3`
+  - Executables built and attached to release
+  - Full release notes in `RELEASE_NOTES_v2.6.3.md`
 - CONFIG_VERSION: 5 (unchanged)
 
 **v2.6.2** - Critical Bug Fixes & Announcement Enhancements (Jan 1, 2026)
