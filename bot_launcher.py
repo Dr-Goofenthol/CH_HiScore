@@ -4,7 +4,7 @@ Clone Hero High Score Bot Launcher
 Standalone executable for the Discord bot with first-time setup.
 """
 
-VERSION = "2.6.2"
+VERSION = "2.6.3"
 
 # GitHub repository for auto-updates
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
@@ -23,6 +23,11 @@ from pathlib import Path
 # Suppress Windows ProactorEventLoop connection errors (Discord.py known issue)
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+# v2.6.2: Suppress aiohttp "Unclosed connector" warnings (discord.py internal connections)
+import warnings
+warnings.filterwarnings('ignore', message='Unclosed connector')
+warnings.filterwarnings('ignore', message='Unclosed client session')
 
 try:
     import requests
@@ -641,7 +646,10 @@ def setup_environment(config):
 
 
 def send_manual_update_notification(config):
-    """Manually send update notification to Discord"""
+    """
+    Manually send update notification to Discord.
+    v2.6.3: Simplified and clears prompted flag.
+    """
     print("\n" + "=" * 60)
     print("  Manual Update Notification")
     print("=" * 60)
@@ -651,19 +659,6 @@ def send_manual_update_notification(config):
     print("This will send an update notification to your Discord channel.")
     print()
 
-    # Ask for confirmation
-    choice = input("Send update notification? (yes/no): ").strip().lower()
-    if choice != 'yes':
-        print_info("Cancelled.")
-        return
-
-    # Ask if they want to force re-announcement
-    force = input("\nForce announcement (bypass version check)? (yes/no): ").strip().lower()
-    force_announce = (force == 'yes')
-
-    print()
-    print("[*] Connecting to Discord...")
-
     # Import Discord bot module
     import discord
     from bot.config import Config
@@ -671,6 +666,28 @@ def send_manual_update_notification(config):
 
     # Set up environment
     setup_environment(config)
+
+    # Check if already announced
+    db = Database()
+    db.connect()
+    last_announced = db.get_metadata('last_announced_version')
+    db.close()
+
+    if last_announced == VERSION:
+        print_warning(f"Version {VERSION} was already announced.")
+        choice = input("Send again? (yes/no): ").strip().lower()
+        if choice != 'yes':
+            print_info("Cancelled.")
+            return
+    else:
+        # First time sending this version
+        choice = input("Send update notification? (yes/no): ").strip().lower()
+        if choice != 'yes':
+            print_info("Cancelled.")
+            return
+
+    print()
+    print("[*] Connecting to Discord...")
 
     async def send_notification():
         """Async function to send notification"""
@@ -697,20 +714,6 @@ def send_manual_update_notification(config):
                         await client.close()
                         return
 
-                    # Check if already announced (unless forcing)
-                    if not force_announce:
-                        db = Database()
-                        db.connect()
-                        last_announced = db.get_metadata('last_announced_version')
-                        if last_announced == VERSION:
-                            print_warning(f"Version {VERSION} already announced.")
-                            choice = input("Send anyway? (yes/no): ").strip().lower()
-                            if choice != 'yes':
-                                print_info("Cancelled.")
-                                await client.close()
-                                return
-                        db.close()
-
                     # Fetch release info from GitHub
                     from bot.bot import fetch_github_release, extract_update_highlights
                     release_info = fetch_github_release(VERSION)
@@ -729,7 +732,7 @@ def send_manual_update_notification(config):
                         color=discord.Color.green()
                     )
 
-                    # Extract highlights
+                    # Extract highlights (v2.6.3: improved to use section headers)
                     highlights = ""
                     if release_info.get("release_notes"):
                         highlights = extract_update_highlights(release_info["release_notes"])
@@ -758,11 +761,14 @@ def send_manual_update_notification(config):
                     await channel.send(embed=embed)
                     print_success(f"Update notification sent to #{channel.name}")
 
-                    # Mark as announced
+                    # Mark as announced and clear prompted flag
                     db = Database()
                     db.connect()
                     db.set_metadata('last_announced_version', VERSION)
+                    db.set_metadata('update_notification_prompted', '')  # Clear flag
                     db.close()
+
+                    print()
 
                 except Exception as e:
                     print_error(f"Error sending notification: {e}")
@@ -1776,6 +1782,73 @@ def main():
     # If choice == '1' or anything else, continue to start bot
 
     print_header("STARTING BOT", width=60)
+
+    # Check for version updates and prompt for notification BEFORE starting bot
+    # v2.6.3: Moved from inside bot to launcher to avoid async input() issues
+    try:
+        from bot.database import Database
+        from bot.bot import fetch_github_release, extract_update_highlights
+
+        db = Database()
+        db.connect()
+        last_announced = db.get_metadata('last_announced_version')
+        update_prompted = db.get_metadata('update_notification_prompted')
+        db.close()
+
+        # If this version was NOT announced and user was NOT prompted yet
+        if last_announced != VERSION and update_prompted != VERSION:
+            print()
+            print_header("NEW VERSION DETECTED", width=60)
+            print_success(f"Bot updated to v{VERSION}")
+            print_info(f"Previous version: {last_announced or 'none'}")
+            print()
+
+            # Fetch release info for preview
+            release_info = fetch_github_release(VERSION)
+            if release_info and release_info.get("release_notes"):
+                highlights = extract_update_highlights(release_info["release_notes"])
+                if highlights:
+                    print_info("What's New:")
+                    for line in highlights.split('\n'):
+                        print(f"  {line}")
+                    print()
+
+            # Prompt admin to send notification NOW or defer
+            print_warning("Send update notification to Discord now?")
+            print_info("  yes - Send announcement immediately (before bot starts)")
+            print_info("  no  - Skip for now (use Admin Utilities menu later)")
+            print()
+
+            choice = input("Choice (yes/no): ").strip().lower()
+            print()
+
+            if choice in ('yes', 'y'):
+                # Mark as approved - bot will auto-send on startup
+                db = Database()
+                db.connect()
+                db.set_metadata('update_notification_approved', VERSION)
+                db.set_metadata('update_notification_prompted', VERSION)
+                db.close()
+                print_success("Update notification will be sent when bot starts")
+                print()
+            else:
+                # Mark as prompted but not approved
+                db = Database()
+                db.connect()
+                db.set_metadata('update_notification_prompted', VERSION)
+                db.close()
+                print_info(f"Update notification deferred. Use Admin Utilities > Send Update Notification to announce later.")
+                print()
+
+        elif last_announced != VERSION and update_prompted == VERSION:
+            # Already prompted, just remind
+            print()
+            print_info(f"Version {VERSION} update notification pending - use Admin Utilities menu to send")
+            print()
+
+    except Exception as e:
+        print_warning(f"Could not check for version updates: {e}")
+        # Continue anyway - this is not critical
 
     # Run database migrations before starting the bot
     print_info("Running database migrations...")

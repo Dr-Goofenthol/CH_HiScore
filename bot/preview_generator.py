@@ -4,7 +4,40 @@ Terminal Preview Generator for Discord Announcements
 Generates ASCII art previews of how Discord announcements will appear.
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+
+
+def _format_accuracy_notes(format_type: str, show_notes_label: bool, accuracy: float, notes_hit: int, notes_total: int) -> str:
+    """
+    Format accuracy and notes display according to selected format
+
+    Args:
+        format_type: One of: percentage_only, notes_only, combined_percentage_first, combined_notes_first, separate_fields
+        show_notes_label: Whether to show "Notes:" label
+        accuracy: Accuracy percentage (e.g., 98.5)
+        notes_hit: Number of notes hit
+        notes_total: Total number of notes
+
+    Returns:
+        Formatted string for display
+    """
+    accuracy_str = f"{accuracy}%"
+    notes_label = "Notes: " if show_notes_label else ""
+    notes_str = f"{notes_hit:,}/{notes_total:,}"
+
+    if format_type == 'percentage_only':
+        return accuracy_str
+    elif format_type == 'notes_only':
+        return f"{notes_label}{notes_str}"
+    elif format_type == 'combined_percentage_first':
+        return f"{accuracy_str} ({notes_label}{notes_str})"
+    elif format_type == 'combined_notes_first':
+        return f"{notes_label}{notes_str} ({accuracy_str})"
+    elif format_type == 'separate_fields':
+        return f"Accuracy: {accuracy_str} | {notes_label}{notes_str}"
+    else:
+        # Default to combined_percentage_first
+        return f"{accuracy_str} ({notes_label}{notes_str})"
 
 
 def generate_announcement_preview(announcement_type: str = "record_break", include_fields: Dict[str, bool] = None, config_manager = None, use_minimalist: bool = False) -> str:
@@ -25,7 +58,8 @@ def generate_announcement_preview(announcement_type: str = "record_break", inclu
         type_map = {
             "record_break": "record_breaks",
             "first_time": "first_time_scores",
-            "personal_best": "personal_bests"
+            "personal_best": "personal_bests",
+            "full_combo": "full_combos"
         }
         config_type = type_map.get(announcement_type, "first_time_scores")
 
@@ -40,6 +74,10 @@ def generate_announcement_preview(announcement_type: str = "record_break", inclu
         else:
             # Full mode - read from full_fields config
             include_fields = config_manager.get(f"announcements.{config_type}.full_fields", {})
+
+        # Read accuracy display settings
+        accuracy_format = config_manager.get(f"announcements.accuracy_display.{config_type}.format", "combined_percentage_first")
+        show_notes_label = config_manager.get(f"announcements.accuracy_display.{config_type}.show_notes_label", True)
     elif include_fields is None:
         # Fallback defaults
         include_fields = {
@@ -55,6 +93,12 @@ def generate_announcement_preview(announcement_type: str = "record_break", inclu
             "chart_hash": True,
             "timestamp": True
         }
+        accuracy_format = "combined_percentage_first"
+        show_notes_label = True
+    else:
+        # When include_fields is explicitly provided, use defaults
+        accuracy_format = "combined_percentage_first"
+        show_notes_label = True
 
     # Determine title based on type (no emojis for Windows console compatibility)
     if announcement_type == "record_break":
@@ -66,12 +110,16 @@ def generate_announcement_preview(announcement_type: str = "record_break", inclu
     elif announcement_type == "personal_best":
         title = "*** PERSONAL BEST! ***"
         description = "@Player improved their personal best!"
+    elif announcement_type == "full_combo":
+        title = "*** C-C-C-COMBO BREAKER!!! ***"
+        description = "@Player broke @OldPlayer's FC record!"
     else:
         title = "NEW HIGH SCORE!"
         description = "@Player set a new score!"
 
     # Build the preview
-    width = 50
+    # v2.6.3: Increased width for 3-column layout
+    width = 70
     lines = []
 
     # Top border (using ASCII-safe characters for Windows compatibility)
@@ -97,21 +145,61 @@ def generate_announcement_preview(announcement_type: str = "record_break", inclu
     lines.append("| Score: 1,234,567 points (+15,000)".ljust(width - 1) + "|")
     lines.append("|" + " " * (width - 2) + "|")
 
-    # Three-column fields (using stars without emoji for compatibility)
-    if include_fields.get("difficulty_instrument", True) and include_fields.get("stars", True):
-        lines.append("| Instrument: Lead Guitar  |  Stars: 5/5".ljust(width - 1) + "|")
+    # v2.6.3: Updated to 3-column layout matching Discord inline fields
+    # Row 1: Instrument | Difficulty | Stars (20 + 20 + 18 = 58 chars + 6 for separators = 64)
+    if include_fields.get("difficulty_instrument", True):
+        row1_parts = []
+        if include_fields.get("difficulty_instrument", True):
+            row1_parts.append("Instrument: Lead Guitar")
+            row1_parts.append("Difficulty: Expert")
+        if include_fields.get("stars", True):
+            row1_parts.append("Stars: 5/5")
 
-    if include_fields.get("difficulty_instrument", True) and include_fields.get("accuracy", True):
-        lines.append("| Difficulty: Expert       |  Accuracy: 98.5%".ljust(width - 1) + "|")
+        if len(row1_parts) == 3:
+            lines.append(f"| {row1_parts[0]:22s} | {row1_parts[1]:19s} | {row1_parts[2]:16s} |")
+        elif len(row1_parts) == 2:
+            lines.append(f"| {row1_parts[0]:22s} | {row1_parts[1]:40s} |")
+        elif len(row1_parts) == 1:
+            lines.append(f"| {row1_parts[0]:64s} |")
 
-    if include_fields.get("charter", True) and include_fields.get("play_count", True):
-        lines.append("| Charter: GHLive           |  Plays: 42".ljust(width - 1) + "|")
+    # Row 2: Charter | Accuracy | Play Count (18 + 28 + 14 = 60)
+    row2_parts = []
+    if include_fields.get("charter", True):
+        row2_parts.append("Charter: GHLive")
+    if include_fields.get("accuracy", True):
+        accuracy_display = _format_accuracy_notes(accuracy_format, show_notes_label, 98.5, 3665, 3722)
+        row2_parts.append(f"Accuracy: {accuracy_display}")
+    if include_fields.get("play_count", True):
+        row2_parts.append("Play Count: 42")
+
+    if len(row2_parts) == 3:
+        lines.append(f"| {row2_parts[0]:18s} | {row2_parts[1]:30s} | {row2_parts[2]:12s} |")
+    elif len(row2_parts) == 2:
+        lines.append(f"| {row2_parts[0]:18s} | {row2_parts[1]:43s} |")
+    elif len(row2_parts) == 1:
+        lines.append(f"| {row2_parts[0]:64s} |")
+
+    # Row 3: Chart Intensity | Peak Intensity | Best Streak (28 + 25 + 11 = 64)
+    row3_parts = []
+    if include_fields.get("chart_intensity", True):
+        row3_parts.append("Chart Intensity: Brutal (5.8 NPS)")
+    if include_fields.get("peak_intensity", True):
+        row3_parts.append("Peak Intensity: Spicy (12.0 NPS)")
+    if include_fields.get("best_streak", False):
+        row3_parts.append("Streak: 1250")
+
+    if len(row3_parts) == 3:
+        lines.append(f"| {row3_parts[0]:32s} | {row3_parts[1]:32s} | {row3_parts[2]:9s} |")
+    elif len(row3_parts) == 2:
+        lines.append(f"| {row3_parts[0]:32s} | {row3_parts[1]:28s} |")
+    elif len(row3_parts) == 1:
+        lines.append(f"| {row3_parts[0]:64s} |")
 
     lines.append("|" + " " * (width - 2) + "|")
 
     # Optional fields
     if include_fields.get("enchor_link", True):
-        lines.append("| Find This Chart: [Search on enchor.us]".ljust(width - 1) + "|")
+        lines.append("| Find This Chart: [enchor] [bridge]".ljust(width - 1) + "|")
 
     if include_fields.get("chart_hash", True):
         lines.append("| Chart Hash: abc12345".ljust(width - 1) + "|")
@@ -156,6 +244,12 @@ def generate_announcement_preview(announcement_type: str = "record_break", inclu
             footer = " - ".join(footer_parts)
             lines.append("| " + footer[:width-3].ljust(width - 3) + "|")
 
+    elif announcement_type == "full_combo":
+        # Full Combo footer (v2.6.0)
+        if include_fields.get("footer_show_fc_type", True):
+            lines.append("|" + " " * (width - 2) + "|")
+            lines.append("| FC Record Break!".ljust(width - 1) + "|")
+
     # Bottom border
     lines.append("+" + "-" * (width - 2) + "+")
 
@@ -182,13 +276,15 @@ def show_preview_menu(config_manager):
         rb_style = config_manager.get("announcements.record_breaks.style", "full")
         ft_style = config_manager.get("announcements.first_time_scores.style", "full")
         pb_style = config_manager.get("announcements.personal_bests.style", "full")
+        fc_style = config_manager.get("announcements.full_combos.style", "full")
 
         print(f"  [1] Record Break - Current Mode: {rb_style.capitalize()}")
         print(f"  [2] First-Time Score - Current Mode: {ft_style.capitalize()}")
         print(f"  [3] Personal Best - Current Mode: {pb_style.capitalize()}")
+        print(f"  [4] Full Combo (v2.6.0) - Current Mode: {fc_style.capitalize()}")
         print()
-        print("  [4] Force Full Mode Preview (any type)")
-        print("  [5] Force Minimalist Mode Preview (any type)")
+        print("  [5] Force Full Mode Preview (any type)")
+        print("  [6] Force Minimalist Mode Preview (any type)")
         print()
         print("  [B] Back")
         print()
@@ -219,11 +315,18 @@ def show_preview_menu(config_manager):
             print(generate_announcement_preview("personal_best", config_manager=config_manager))
             input("\nPress Enter to continue...")
         elif choice == '4':
+            # Full Combo with current config (v2.6.0)
+            print()
+            print_success(f"Full Combo - {fc_style.capitalize()} Mode")
+            print()
+            print(generate_announcement_preview("full_combo", config_manager=config_manager))
+            input("\nPress Enter to continue...")
+        elif choice == '5':
             # Force full mode
             print()
-            print("Select type: [1] Record Break  [2] First-Time  [3] Personal Best")
+            print("Select type: [1] Record Break  [2] First-Time  [3] Personal Best  [4] Full Combo")
             type_choice = input("Choice: ").strip()
-            type_map = {"1": "record_break", "2": "first_time", "3": "personal_best"}
+            type_map = {"1": "record_break", "2": "first_time", "3": "personal_best", "4": "full_combo"}
             if type_choice in type_map:
                 print()
                 print_success(f"{type_map[type_choice].replace('_', ' ').title()} - Full Mode (Forced)")
@@ -232,12 +335,12 @@ def show_preview_menu(config_manager):
                 input("\nPress Enter to continue...")
             else:
                 print_info("Invalid choice")
-        elif choice == '5':
+        elif choice == '6':
             # Force minimalist mode
             print()
-            print("Select type: [1] Record Break  [2] First-Time  [3] Personal Best")
+            print("Select type: [1] Record Break  [2] First-Time  [3] Personal Best  [4] Full Combo")
             type_choice = input("Choice: ").strip()
-            type_map = {"1": "record_break", "2": "first_time", "3": "personal_best"}
+            type_map = {"1": "record_break", "2": "first_time", "3": "personal_best", "4": "full_combo"}
             if type_choice in type_map:
                 print()
                 print_success(f"{type_map[type_choice].replace('_', ' ').title()} - Minimalist Mode (Forced)")

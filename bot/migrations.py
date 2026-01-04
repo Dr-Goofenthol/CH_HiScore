@@ -136,6 +136,135 @@ def migration_002_complete_chart_hash_rename(cursor):
         raise
 
 
+def migration_003_chart_metadata_and_fc_tracking(cursor):
+    """
+    Migration 003: Add chart_metadata table and FC tracking for v2.6.0
+
+    Features:
+    - Store parsed chart data (total notes, density, etc.)
+    - Track Full Combos (is_full_combo flag)
+    - Display accurate note counts (notes_total)
+    """
+    logger.info("Running migration 003: Chart metadata and FC tracking (v2.6.0)")
+
+    try:
+        # Create chart_metadata table
+        logger.info("  [*] Creating chart_metadata table...")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS chart_metadata (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chart_hash TEXT NOT NULL,
+                instrument_id INTEGER NOT NULL,
+                difficulty_id INTEGER NOT NULL,
+
+                -- Core chart data
+                total_notes INTEGER NOT NULL,
+                chord_count INTEGER DEFAULT 0,
+                tap_count INTEGER DEFAULT 0,
+                open_note_count INTEGER DEFAULT 0,
+                star_power_phrases INTEGER DEFAULT 0,
+
+                -- Timing data
+                song_length_ms INTEGER DEFAULT 0,
+                note_density REAL DEFAULT 0.0,
+
+                -- Metadata
+                song_name TEXT,
+                artist TEXT,
+                charter TEXT,
+                genre TEXT,
+
+                -- Tracking
+                parsed_at TEXT NOT NULL,
+                chart_file_path TEXT,
+
+                UNIQUE(chart_hash, instrument_id, difficulty_id)
+            )
+        """)
+        logger.info("  [OK] chart_metadata table created")
+
+        # Create indexes for performance
+        logger.info("  [*] Creating indexes...")
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_chart_metadata_hash
+            ON chart_metadata(chart_hash)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_chart_metadata_density
+            ON chart_metadata(note_density DESC)
+        """)
+        logger.info("  [OK] Indexes created")
+
+        # Add FC tracking columns to scores table
+        logger.info("  [*] Adding FC tracking to scores table...")
+
+        # Check if columns already exist
+        cursor.execute("PRAGMA table_info(scores)")
+        columns = {row[1] for row in cursor.fetchall()}
+
+        if 'is_full_combo' not in columns:
+            cursor.execute("ALTER TABLE scores ADD COLUMN is_full_combo INTEGER DEFAULT 0")
+            logger.info("  [OK] Added scores.is_full_combo column")
+        else:
+            logger.info("  [OK] scores.is_full_combo already exists")
+
+        if 'notes_total' not in columns:
+            cursor.execute("ALTER TABLE scores ADD COLUMN notes_total INTEGER DEFAULT 0")
+            logger.info("  [OK] Added scores.notes_total column")
+        else:
+            logger.info("  [OK] scores.notes_total already exists")
+
+        logger.info("Migration 003 complete")
+
+    except sqlite3.OperationalError as e:
+        logger.error(f"Migration 003 failed: {e}")
+        raise
+
+
+def migration_004_peak_nps_tracking(cursor):
+    """
+    Migration 004: Add peak NPS tracking for v2.6.3
+
+    Features:
+    - Add peak_note_density to chart_metadata table
+    - Allows tracking and displaying "Peak Intensity" in announcements
+    - Matches Bridge's peak NPS calculation (1-second window)
+    """
+    logger.info("Running migration 004: Peak NPS tracking (v2.6.3)")
+
+    try:
+        # Check if chart_metadata table exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='chart_metadata'")
+        if not cursor.fetchone():
+            logger.info("  [SKIP] chart_metadata table doesn't exist yet (will be created by migration 003)")
+            return
+
+        # Check if peak_note_density column already exists
+        cursor.execute("PRAGMA table_info(chart_metadata)")
+        columns = {row[1] for row in cursor.fetchall()}
+
+        if 'peak_note_density' not in columns:
+            logger.info("  [*] Adding peak_note_density to chart_metadata table...")
+            cursor.execute("ALTER TABLE chart_metadata ADD COLUMN peak_note_density REAL DEFAULT 0.0")
+            logger.info("  [OK] Added chart_metadata.peak_note_density column")
+        else:
+            logger.info("  [OK] chart_metadata.peak_note_density already exists")
+
+        # Create index for peak NPS queries (for /hardest peak command)
+        logger.info("  [*] Creating index for peak NPS queries...")
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_chart_metadata_peak_density
+            ON chart_metadata(peak_note_density DESC)
+        """)
+        logger.info("  [OK] Peak NPS index created")
+
+        logger.info("Migration 004 complete")
+
+    except sqlite3.OperationalError as e:
+        logger.error(f"Migration 004 failed: {e}")
+        raise
+
+
 def run_migrations(db_path):
     """
     Run all pending migrations on the database
@@ -154,8 +283,8 @@ def run_migrations(db_path):
         migrations = [
             (1, migration_001_chart_hash_rename),
             (2, migration_002_complete_chart_hash_rename),
-            # Future migrations go here:
-            # (3, migration_003_description),
+            (3, migration_003_chart_metadata_and_fc_tracking),  # v2.6.0
+            (4, migration_004_peak_nps_tracking),               # v2.6.3
         ]
 
         # Run pending migrations

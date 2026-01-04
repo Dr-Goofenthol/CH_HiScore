@@ -276,7 +276,16 @@ class Database:
         user = self.get_user_by_discord_id(discord_id)
         if user:
             auth_token = user['auth_token']
-            print_info(f"[DB] User already exists: {discord_username}")
+            # v2.6.3: Update username if it has changed
+            if user['discord_username'] != discord_username:
+                self.cursor.execute("""
+                    UPDATE users
+                    SET discord_username = ?, last_seen = CURRENT_TIMESTAMP
+                    WHERE discord_id = ?
+                """, (discord_username, discord_id))
+                print_info(f"[DB] User already exists: updated username from '{user['discord_username']}' to '{discord_username}'")
+            else:
+                print_info(f"[DB] User already exists: {discord_username}")
         else:
             _, auth_token = self.create_user(discord_id, discord_username)
 
@@ -756,7 +765,7 @@ class Database:
 
     def batch_insert_chart_metadata(self, charts: List[Dict]) -> Dict:
         """
-        Bulk insert/update chart metadata (v2.6.0)
+        Bulk insert/update chart metadata (v2.6.0, updated v2.6.3)
 
         Args:
             charts: List of chart metadata dictionaries with keys:
@@ -770,6 +779,7 @@ class Database:
                 - star_power_phrases (optional)
                 - song_length_ms (optional)
                 - note_density (optional)
+                - peak_note_density (optional) - v2.6.3: Peak NPS (1-second window)
                 - song_name (optional)
                 - artist (optional)
                 - charter (optional)
@@ -803,6 +813,7 @@ class Database:
                 star_power_phrases = chart.get('star_power_phrases', 0)
                 song_length_ms = chart.get('song_length_ms', 0)
                 note_density = chart.get('note_density', 0.0)
+                peak_note_density = chart.get('peak_note_density', 0.0)  # v2.6.3: Peak NPS
                 song_name = chart.get('song_name', '')
                 artist = chart.get('artist', '')
                 charter = chart.get('charter', '')
@@ -821,14 +832,14 @@ class Database:
                     INSERT OR REPLACE INTO chart_metadata (
                         chart_hash, instrument_id, difficulty_id,
                         total_notes, chord_count, tap_count, open_note_count,
-                        star_power_phrases, song_length_ms, note_density,
+                        star_power_phrases, song_length_ms, note_density, peak_note_density,
                         song_name, artist, charter, genre,
                         parsed_at, chart_file_path
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
                 """, (
                     chart_hash, instrument_id, difficulty_id,
                     total_notes, chord_count, tap_count, open_note_count,
-                    star_power_phrases, song_length_ms, note_density,
+                    star_power_phrases, song_length_ms, note_density, peak_note_density,
                     song_name, artist, charter, genre,
                     chart_file_path
                 ))
@@ -1380,6 +1391,7 @@ class Database:
                    u.discord_username as breaker_name,
                    u.discord_id as breaker_discord_id,
                    prev.discord_username as previous_holder_name,
+                   prev.discord_id as previous_holder_discord_id,
                    COALESCE(songs.title, '[' || SUBSTR(rb.chart_hash, 1, 8) || ']') as song_title,
                    songs.artist as song_artist,
                    songs.charter as song_charter
@@ -1479,6 +1491,149 @@ class Database:
             'most_competitive_song': most_competitive_song,
             'db_size_mb': round(db_size_mb, 2)
         }
+
+    def get_recent_activity_24h(self) -> Dict:
+        """
+        Get activity stats for the last 24 hours.
+        v2.6.3: Added for enhanced /server_status command.
+        """
+        from datetime import datetime, timedelta
+
+        # Calculate 24 hours ago
+        now = datetime.utcnow()
+        twenty_four_hours_ago = (now - timedelta(hours=24)).isoformat()
+
+        # Scores submitted in last 24h
+        self.cursor.execute("""
+            SELECT COUNT(*) as count
+            FROM scores
+            WHERE submitted_at >= ?
+        """, (twenty_four_hours_ago,))
+        scores_24h = self.cursor.fetchone()['count']
+
+        # Records broken in last 24h
+        self.cursor.execute("""
+            SELECT COUNT(*) as count
+            FROM record_breaks
+            WHERE broken_at >= ?
+        """, (twenty_four_hours_ago,))
+        records_24h = self.cursor.fetchone()['count']
+
+        # Unique active players in last 24h
+        self.cursor.execute("""
+            SELECT COUNT(DISTINCT user_id) as count
+            FROM scores
+            WHERE submitted_at >= ?
+        """, (twenty_four_hours_ago,))
+        active_players = self.cursor.fetchone()['count']
+
+        # New users in last 24h
+        self.cursor.execute("""
+            SELECT COUNT(*) as count
+            FROM users
+            WHERE created_at >= ?
+        """, (twenty_four_hours_ago,))
+        new_users = self.cursor.fetchone()['count']
+
+        return {
+            'scores_submitted': scores_24h,
+            'records_broken': records_24h,
+            'active_players': active_players,
+            'new_users': new_users
+        }
+
+    def get_top_players_this_week(self, limit: int = 3) -> List[Dict]:
+        """
+        Get most active players in the last 7 days.
+        v2.6.3: Added for enhanced /server_status command.
+        """
+        from datetime import datetime, timedelta
+
+        # Calculate 7 days ago
+        now = datetime.utcnow()
+        seven_days_ago = (now - timedelta(days=7)).isoformat()
+
+        self.cursor.execute("""
+            SELECT u.discord_id, u.discord_username, COUNT(*) as score_count
+            FROM scores s
+            JOIN users u ON s.user_id = u.id
+            WHERE s.submitted_at >= ?
+            GROUP BY u.id
+            ORDER BY score_count DESC
+            LIMIT ?
+        """, (seven_days_ago, limit))
+
+        return [dict(row) for row in self.cursor.fetchall()]
+
+    def get_latest_record_break(self) -> Dict:
+        """
+        Get the single most recent record break with full details.
+        v2.6.3: Added for enhanced /server_status command.
+        """
+        self.cursor.execute("""
+            SELECT rb.*,
+                   u.discord_username as breaker_name,
+                   u.discord_id as breaker_discord_id,
+                   COALESCE(songs.title, '[' || SUBSTR(rb.chart_hash, 1, 8) || ']') as song_title,
+                   songs.artist as song_artist,
+                   songs.charter as song_charter
+            FROM record_breaks rb
+            JOIN users u ON rb.user_id = u.id
+            LEFT JOIN songs ON rb.chart_hash = songs.chart_hash
+            ORDER BY rb.broken_at DESC
+            LIMIT 1
+        """)
+
+        row = self.cursor.fetchone()
+        return dict(row) if row else None
+
+    def get_most_competitive_song_detailed(self) -> Dict:
+        """
+        Get most competitive song with current record holder info.
+        v2.6.3: Added for enhanced /server_status command.
+        """
+        # Find the most competitive song
+        self.cursor.execute("""
+            SELECT rb.chart_hash, COUNT(*) as break_count,
+                   COALESCE(songs.title, '[' || SUBSTR(rb.chart_hash, 1, 8) || ']') as song_title,
+                   songs.artist as song_artist,
+                   songs.charter as song_charter
+            FROM record_breaks rb
+            LEFT JOIN songs ON rb.chart_hash = songs.chart_hash
+            GROUP BY rb.chart_hash
+            ORDER BY break_count DESC
+            LIMIT 1
+        """)
+
+        song_row = self.cursor.fetchone()
+        if not song_row:
+            return None
+
+        song_data = dict(song_row)
+
+        # Get current record holder for this song (highest score across all difficulties)
+        self.cursor.execute("""
+            SELECT s.score, s.difficulty_id, s.instrument_id,
+                   u.discord_id, u.discord_username
+            FROM scores s
+            JOIN users u ON s.user_id = u.id
+            WHERE s.chart_hash = ?
+            ORDER BY s.score DESC
+            LIMIT 1
+        """, (song_data['chart_hash'],))
+
+        holder_row = self.cursor.fetchone()
+        if holder_row:
+            holder_data = dict(holder_row)
+            song_data['current_holder_id'] = holder_data['discord_id']
+            song_data['current_holder_name'] = holder_data['discord_username']
+            song_data['current_high_score'] = holder_data['score']
+        else:
+            song_data['current_holder_id'] = None
+            song_data['current_holder_name'] = None
+            song_data['current_high_score'] = None
+
+        return song_data
 
     def get_daily_activity(self, start_time: str, end_time: str) -> Dict:
         """

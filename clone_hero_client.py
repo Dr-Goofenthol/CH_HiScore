@@ -4,7 +4,7 @@ Clone Hero High Score Client
 Monitors your Clone Hero scores and submits them to the Discord scoreboard.
 """
 
-VERSION = "2.6.2"
+VERSION = "2.6.3"
 
 # GitHub repository for auto-updates
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
@@ -3301,6 +3301,9 @@ def scancharts_command():
                     song_length_ms = chart_data.song_length_ms or 1000  # Avoid division by zero
                     note_density = (inst_data.total_notes / song_length_ms) * 1000.0
 
+                    # v2.6.3: Calculate peak NPS (1-second window)
+                    peak_note_density = chart_data.calculate_peak_note_density(instrument, difficulty, window_seconds=1.0)
+
                     chart_metadata.append({
                         'chart_hash': chart_hash,
                         'instrument_id': instrument.value,
@@ -3312,6 +3315,7 @@ def scancharts_command():
                         'star_power_phrases': len(inst_data.star_power_phrases),
                         'song_length_ms': chart_data.song_length_ms,
                         'note_density': round(note_density, 2),
+                        'peak_note_density': round(peak_note_density, 2),  # v2.6.3: Peak Intensity
                         'song_name': song_name,
                         'artist': artist,
                         'charter': charter,

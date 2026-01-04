@@ -480,6 +480,38 @@ Scans local song folders to populate missing charter information in the database
 
 ## Version History & Migration Notes
 
+**v2.6.3** - Username Handling Fix (Jan 2, 2026) - IN PROGRESS
+- **FIXED:** Discord username handling - usernames now stay current when users change display names
+  - **Phase 1: Update on Pairing** - Username automatically updates when user re-pairs
+    - Modified `complete_pairing()` in bot/database.py (lines 279-288)
+    - Checks if stored username differs from current Discord username
+    - Updates database with `UPDATE users SET discord_username = ?, last_seen = CURRENT_TIMESTAMP`
+    - Logs username changes: "updated username from 'OldName' to 'NewName'"
+  - **Phase 2: Discord Mentions in Commands** - Commands now show always-current usernames
+    - `/leaderboard` (bot/bot.py lines 665-667): Uses `<@discord_id>` mention instead of stored username
+    - `/lookupsong` (bot/bot.py lines 1064-1068): Uses `<@discord_id>` mention for record holders
+    - `/recent` (bot/bot.py lines 1375-1387): Uses mentions for both breaker and previous holder
+    - Updated `get_recent_record_breaks()` query (database.py line 1392): Added `prev.discord_id as previous_holder_discord_id`
+  - **How It Works:**
+    - Discord mentions (`<@USER_ID>`) automatically resolve to user's current display name
+    - No additional API calls required - Discord handles resolution client-side
+    - Even historical records show current usernames (mention format, not stored name)
+  - **Example:** User pairs as "Jake" → changes Discord name to "JakeTheGreat" → leaderboard shows "@JakeTheGreat" (not "Jake")
+- **INVESTIGATION:** Comprehensive username handling investigation documented in INVESTIGATION_USERNAME_HANDLING.md
+  - Analyzed all 10+ locations where usernames are displayed
+  - Discord announcements already correct (were using mentions)
+  - Commands were using stored usernames (now fixed)
+  - Terminal logs still use stored names (acceptable for server-side logs)
+- **LESSONS LEARNED:**
+  - Use Discord's immutable `discord_id` as primary identifier (already doing this ✓)
+  - Store `discord_username` for logging/fallback but display via mentions for accuracy
+  - Update stored username opportunistically (during pairing) to keep database reasonably current
+  - Leverage Discord's mention system (`<@USER_ID>`) instead of fetching from API (zero additional calls)
+- **FILES MODIFIED:** `bot/database.py` (pairing + query), `bot/bot.py` (3 commands)
+- **TESTING REQUIRED:** Username change detection, command display with mentions, pairing update logic
+- **STATUS:** Code complete, pending additional tweaks before v2.6.3 release
+- CONFIG_VERSION: 5 (unchanged)
+
 **v2.6.2** - Critical Bug Fixes & Announcement Enhancements (Jan 1, 2026)
 - **FIXED (CRITICAL):** Combo breaker logic now only triggers when FC breaks previous FC
   - Previously triggered incorrectly when FC broke non-FC record

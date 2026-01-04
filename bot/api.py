@@ -632,10 +632,11 @@ class ScoreAPI:
                 chart_display = f"[{score_data['chart_hash'][:8]}]"
 
             # v2.6.0: Query chart metadata for Chart Intensity (both modes)
+            # v2.6.3: Added peak_note_density for Peak Intensity display
             chart_intensity_data = None
             try:
                 self.bot.db.cursor.execute("""
-                    SELECT note_density, total_notes
+                    SELECT note_density, peak_note_density, total_notes
                     FROM chart_metadata
                     WHERE chart_hash = ?
                       AND instrument_id = ?
@@ -645,6 +646,7 @@ class ScoreAPI:
                 if chart_meta:
                     chart_intensity_data = {
                         'note_density': chart_meta['note_density'],
+                        'peak_note_density': chart_meta['peak_note_density'],
                         'total_notes': chart_meta['total_notes']
                     }
             except Exception as e:
@@ -750,6 +752,44 @@ class ScoreAPI:
                         value=f"{tier_emoji} {tier_name} ({nps:.1f} NPS)",
                         inline=True
                     )
+
+                # v2.6.3: Peak Intensity field (1-second burst)
+                if chart_intensity_data and fields_config.get('peak_intensity', True):
+                    peak_nps = chart_intensity_data.get('peak_note_density', 0.0)
+
+                    # Only display if peak NPS data exists
+                    if peak_nps > 0:
+                        # Get peak intensity tier config (default: Calm/Spicy/Extreme/Ridiculous)
+                        peak_tier_config = self.config.config.get('peak_intensity_tiers', {
+                            "tier1": {"name": "Calm", "emoji": "🟦", "min_nps": 0.0, "max_nps": 5.0},
+                            "tier2": {"name": "Spicy", "emoji": "🟨", "min_nps": 5.0, "max_nps": 10.0},
+                            "tier3": {"name": "Extreme", "emoji": "🟧", "min_nps": 10.0, "max_nps": 15.0},
+                            "tier4": {"name": "Ridiculous", "emoji": "🟥", "min_nps": 15.0, "max_nps": 999.0}
+                        }) if self.config else {}
+
+                        # Determine peak tier
+                        peak_tier_emoji = ""
+                        peak_tier_name = ""
+                        for tier_key in ['tier1', 'tier2', 'tier3', 'tier4']:
+                            tier = peak_tier_config.get(tier_key, {})
+                            min_nps = tier.get('min_nps', 0)
+                            max_nps = tier.get('max_nps', 999)
+                            if min_nps <= peak_nps < max_nps:
+                                peak_tier_emoji = tier.get('emoji', '')
+                                peak_tier_name = tier.get('name', '')
+                                break
+
+                        # Fallback to tier4 if no match
+                        if not peak_tier_emoji:
+                            tier4 = peak_tier_config.get('tier4', {})
+                            peak_tier_emoji = tier4.get('emoji', '🟥')
+                            peak_tier_name = tier4.get('name', 'Ridiculous')
+
+                        embed.add_field(
+                            name="Peak Intensity",
+                            value=f"{peak_tier_emoji} {peak_tier_name} ({peak_nps:.1f} NPS)",
+                            inline=True
+                        )
 
                 # Previous record/best info
                 if is_record_broken and fields_config.get('previous_record', False):
@@ -1133,6 +1173,44 @@ class ScoreAPI:
                     value=f"{tier_emoji} {tier_name} ({nps:.1f} NPS)",
                     inline=True
                 )
+
+            # v2.6.3: Peak Intensity field (1-second burst, only if chart metadata available)
+            if chart_intensity_data and full_fields_config.get('peak_intensity', True):
+                peak_nps = chart_intensity_data.get('peak_note_density', 0.0)
+
+                # Only display if peak NPS data exists
+                if peak_nps > 0:
+                    # Get peak intensity tier config (default: Calm/Spicy/Extreme/Ridiculous)
+                    peak_tier_config = self.config.config.get('peak_intensity_tiers', {
+                        "tier1": {"name": "Calm", "emoji": "🟦", "min_nps": 0.0, "max_nps": 5.0},
+                        "tier2": {"name": "Spicy", "emoji": "🟨", "min_nps": 5.0, "max_nps": 10.0},
+                        "tier3": {"name": "Extreme", "emoji": "🟧", "min_nps": 10.0, "max_nps": 15.0},
+                        "tier4": {"name": "Ridiculous", "emoji": "🟥", "min_nps": 15.0, "max_nps": 999.0}
+                    }) if self.config else {}
+
+                    # Determine peak tier
+                    peak_tier_emoji = ""
+                    peak_tier_name = ""
+                    for tier_key in ['tier1', 'tier2', 'tier3', 'tier4']:
+                        tier = peak_tier_config.get(tier_key, {})
+                        min_nps = tier.get('min_nps', 0)
+                        max_nps = tier.get('max_nps', 999)
+                        if min_nps <= peak_nps < max_nps:
+                            peak_tier_emoji = tier.get('emoji', '')
+                            peak_tier_name = tier.get('name', '')
+                            break
+
+                    # Fallback to tier4 if no match
+                    if not peak_tier_emoji:
+                        tier4 = peak_tier_config.get('tier4', {})
+                        peak_tier_emoji = tier4.get('emoji', '🟥')
+                        peak_tier_name = tier4.get('name', 'Ridiculous')
+
+                    embed.add_field(
+                        name="Peak Intensity",
+                        value=f"{peak_tier_emoji} {peak_tier_name} ({peak_nps:.1f} NPS)",
+                        inline=True
+                    )
 
             # Generate chart search link if we have metadata
             chart_hash = score_data['chart_hash']

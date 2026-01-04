@@ -26,25 +26,50 @@ def get_default_db_path() -> str:
     return str(config_dir / 'scores.db')
 
 
-class Config:
-    """Bot configuration"""
+class ConfigMeta(type):
+    """Metaclass to make Config properties read from environment dynamically"""
 
-    # Discord settings
-    DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
-    DISCORD_APP_ID = os.getenv('DISCORD_APP_ID')
-    DISCORD_GUILD_ID = os.getenv('DISCORD_GUILD_ID')
-    DISCORD_CHANNEL_ID = os.getenv('DISCORD_CHANNEL_ID')
+    @property
+    def DISCORD_TOKEN(cls):
+        return os.getenv('DISCORD_TOKEN')
 
-    # API settings
-    API_HOST = os.getenv('API_HOST', 'localhost')
-    API_PORT = int(os.getenv('API_PORT', 8080))
-    API_SECRET_KEY = os.getenv('API_SECRET_KEY', 'change_this_in_production')
+    @property
+    def DISCORD_APP_ID(cls):
+        return os.getenv('DISCORD_APP_ID')
 
-    # Debug settings
-    DEBUG_PASSWORD = os.getenv('DEBUG_PASSWORD', 'admin123')
+    @property
+    def DISCORD_GUILD_ID(cls):
+        return os.getenv('DISCORD_GUILD_ID')
 
-    # Database - defaults to AppData/Roaming/CloneHeroScoreBot/scores.db
-    DATABASE_PATH = os.getenv('DATABASE_PATH', get_default_db_path())
+    @property
+    def DISCORD_CHANNEL_ID(cls):
+        return os.getenv('DISCORD_CHANNEL_ID')
+
+    @property
+    def API_HOST(cls):
+        return os.getenv('API_HOST', 'localhost')
+
+    @property
+    def API_PORT(cls):
+        port = os.getenv('API_PORT', '8080')
+        return int(port) if port else 8080
+
+    @property
+    def API_SECRET_KEY(cls):
+        return os.getenv('API_SECRET_KEY', 'change_this_in_production')
+
+    @property
+    def DEBUG_PASSWORD(cls):
+        return os.getenv('DEBUG_PASSWORD', 'admin123')
+
+    @property
+    def DATABASE_PATH(cls):
+        return os.getenv('DATABASE_PATH', get_default_db_path())
+
+
+class Config(metaclass=ConfigMeta):
+    """Bot configuration - reads from environment variables dynamically"""
+    pass
 
     @classmethod
     def validate(cls):

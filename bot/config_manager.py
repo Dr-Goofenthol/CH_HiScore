@@ -694,3 +694,88 @@ class ConfigManager:
             True if private (ephemeral), False if public
         """
         return self.get_command_privacy(command_name) == "private"
+
+    def verify_config(self) -> Dict[str, Any]:
+        """
+        Verify config has all required fields by comparing with defaults
+
+        Returns:
+            Dictionary with verification results:
+            {
+                'is_complete': bool,
+                'missing_fields': List[str],
+                'incomplete_sections': Dict[str, List[str]],
+                'total_missing': int
+            }
+        """
+        default = self._create_default_config()
+        missing_fields = []
+        incomplete_sections = {}
+
+        def check_nested(current_path: str, current_dict: dict, default_dict: dict):
+            """Recursively check for missing fields"""
+            for key, default_value in default_dict.items():
+                current_value = current_dict.get(key)
+                field_path = f"{current_path}.{key}" if current_path else key
+
+                if key not in current_dict:
+                    # Field is completely missing
+                    missing_fields.append(field_path)
+                    section = current_path if current_path else "root"
+                    if section not in incomplete_sections:
+                        incomplete_sections[section] = []
+                    incomplete_sections[section].append(key)
+                elif isinstance(default_value, dict) and isinstance(current_value, dict):
+                    # Recurse into nested dicts
+                    check_nested(field_path, current_value, default_value)
+
+        # Check all top-level and nested fields
+        check_nested("", self.config, default)
+
+        return {
+            'is_complete': len(missing_fields) == 0,
+            'missing_fields': missing_fields,
+            'incomplete_sections': incomplete_sections,
+            'total_missing': len(missing_fields)
+        }
+
+    def apply_missing_fields(self, dry_run: bool = False) -> Dict[str, Any]:
+        """
+        Apply missing fields from defaults to current config
+
+        Args:
+            dry_run: If True, don't actually modify config, just return what would be added
+
+        Returns:
+            Dictionary with results:
+            {
+                'fields_added': List[str],
+                'total_added': int,
+                'config_modified': bool
+            }
+        """
+        default = self._create_default_config()
+        fields_added = []
+
+        def apply_nested(current_path: str, current_dict: dict, default_dict: dict):
+            """Recursively apply missing fields"""
+            for key, default_value in default_dict.items():
+                field_path = f"{current_path}.{key}" if current_path else key
+
+                if key not in current_dict:
+                    # Add missing field
+                    if not dry_run:
+                        current_dict[key] = default_value
+                    fields_added.append(field_path)
+                elif isinstance(default_value, dict) and isinstance(current_dict.get(key), dict):
+                    # Recurse into nested dicts
+                    apply_nested(field_path, current_dict[key], default_value)
+
+        # Apply all missing fields
+        apply_nested("", self.config, default)
+
+        return {
+            'fields_added': fields_added,
+            'total_added': len(fields_added),
+            'config_modified': len(fields_added) > 0
+        }

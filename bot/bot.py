@@ -121,39 +121,47 @@ def build_bridge_url(title: str, artist: str = None, charter: str = None) -> str
 
 def extract_update_highlights(release_notes: str) -> str:
     """
-    Extract high-level bullet points from release notes.
-    Looks for lines starting with emojis or under "What's New" sections.
+    Extract high-level feature section headers from release notes.
+    v2.6.3: Improved to extract markdown section headers (## and ###).
+    Excludes installation, setup, and administrative sections.
     """
     if not release_notes:
         return ""
 
     highlights = []
     lines = release_notes.split('\n')
-    in_whats_new = False
+
+    # Sections to exclude (installation, admin stuff, technical details)
+    exclude_keywords = [
+        'installation', 'install', 'setup', 'upgrade', 'migration',
+        'breaking', 'technical', 'requirement', 'admin', 'configuration',
+        'how to', 'getting started', 'download', 'update', 'changelog'
+    ]
 
     for line in lines:
         line = line.strip()
 
-        # Check if we're entering a "What's New" section
-        if "what's new" in line.lower() or "new features" in line.lower():
-            in_whats_new = True
-            continue
+        # Look for markdown headers (## or ###)
+        if line.startswith('##'):
+            # Extract header text (remove ## or ###)
+            header = line.lstrip('#').strip()
 
-        # Stop at certain sections
-        if any(section in line.lower() for section in ['bug fixes', 'installation', 'upgrade', 'technical', 'notes']):
-            if in_whats_new:
-                break
+            # Check if this is an excluded section
+            if any(keyword in header.lower() for keyword in exclude_keywords):
+                continue
 
-        # Look for emoji-prefixed lines (main features)
-        if in_whats_new and line and (line[0] in '🎉🔍📊🎵🐛✨🚀📝💡' or line.startswith('###')):
-            # Clean up markdown headers
-            cleaned = line.replace('###', '').strip()
-            if cleaned and len(cleaned) > 5:  # Avoid empty or very short lines
-                highlights.append(cleaned)
+            # Skip very short headers or headers that are just emoji
+            header_clean = header.strip()
+            if len(header_clean) <= 5:
+                continue
 
-    # If we found highlights, return them
+            # Remove leading emoji if present (we display as bulletpoint anyway)
+            # Keep the text content
+            highlights.append(header_clean)
+
     if highlights:
-        return '\n'.join(f"• {h}" for h in highlights[:5])  # Max 5 highlights
+        # Return bulletpoint list (max 6 items)
+        return '\n'.join(f"• {h}" for h in highlights[:6])
 
     # Fallback: just return first 200 chars
     return release_notes[:200] + "..." if len(release_notes) > 200 else release_notes
@@ -245,6 +253,10 @@ class CloneHeroBot(commands.Bot):
         self.config_manager = ConfigManager()  # Configuration manager
         self.config_manager.load(silent=True)  # Load configuration (silent - already loaded by launcher)
         self.api = ScoreAPI(self, self.config_manager)  # HTTP API for score submission
+
+        # v2.6.3: Track bot start time for uptime display
+        from datetime import datetime
+        self.start_time = datetime.utcnow()
 
     async def setup_hook(self):
         """Called when bot is starting up"""
@@ -338,43 +350,73 @@ class CloneHeroBot(commands.Bot):
     async def check_and_notify_update(self):
         """
         Check if bot was just updated to a new version.
-        If yes, announce to Discord channel ONCE per version.
+        If admin approved sending at launcher, auto-send on startup.
+        v2.6.3: Moved prompt to launcher, bot only checks for approval.
         """
         try:
             # Check what version was last announced
             last_announced = self.db.get_metadata('last_announced_version')
 
-            # If this version was already announced, skip
+            # If this version was already announced, skip silently
             if last_announced == BOT_VERSION:
-                print_info(f"Version {BOT_VERSION} already announced - skipping update notification")
                 return
 
-            print_info(f"New bot version detected: {BOT_VERSION} (last announced: {last_announced or 'none'})")
+            # Check if admin approved sending this version
+            update_approved = self.db.get_metadata('update_notification_approved')
+            if update_approved == BOT_VERSION:
+                # Admin said yes at launcher - send now
+                print()
+                print_info("Sending approved update notification...")
 
-            # Fetch release info for current bot version from GitHub
-            release_info = fetch_github_release(BOT_VERSION)
-            if not release_info:
-                print_warning(f"Could not fetch release info for v{BOT_VERSION} from GitHub - announcing without release notes")
-                release_info = {
-                    'version': BOT_VERSION,
-                    'release_url': f'https://github.com/{GITHUB_REPO}/releases/tag/v{BOT_VERSION}',
-                    'release_notes': ''
-                }
+                # Fetch release info
+                release_info = fetch_github_release(BOT_VERSION)
+                if not release_info:
+                    release_info = {
+                        'version': BOT_VERSION,
+                        'release_url': f'https://github.com/{GITHUB_REPO}/releases/tag/v{BOT_VERSION}',
+                        'release_notes': ''
+                    }
 
+                # Send notification
+                await self._send_update_notification_to_discord(release_info)
+
+                # Clear approval flag
+                self.db.set_metadata('update_notification_approved', '')
+                return
+
+            # Check if admin was already prompted for this version
+            update_prompted = self.db.get_metadata('update_notification_prompted')
+            if update_prompted == BOT_VERSION:
+                # Already prompted, they said no - just log reminder
+                print()
+                print_info(f"Version {BOT_VERSION} update notification pending - use Admin Utilities menu to send")
+                print()
+                return
+
+            # If we get here, version is new but launcher hasn't prompted yet
+            # This shouldn't happen in normal flow, but just in case, do nothing
+            # (Launcher will handle prompting before next bot start)
+
+        except Exception as e:
+            print_error(f"Error in update check: {e}")
+            log_exception(e)
+
+    async def _send_update_notification_to_discord(self, release_info: dict):
+        """
+        Internal helper to send update notification embed to Discord.
+        Used by both auto-prompt and manual send.
+        """
+        try:
             # Get announcement channel
             channel_id = Config.DISCORD_CHANNEL_ID
             if not channel_id:
-                print_warning("No announcement channel configured - skipping update notification")
-                # Still mark as announced so we don't keep trying
-                self.db.set_metadata('last_announced_version', BOT_VERSION)
-                return
+                print_warning("No announcement channel configured - cannot send notification")
+                return False
 
             channel = self.get_channel(int(channel_id))
             if not channel:
-                print_warning("Could not find announcement channel - skipping update notification")
-                # Still mark as announced
-                self.db.set_metadata('last_announced_version', BOT_VERSION)
-                return
+                print_warning("Could not find announcement channel - cannot send notification")
+                return False
 
             # Create update announcement embed
             embed = discord.Embed(
@@ -401,7 +443,7 @@ class CloneHeroBot(commands.Bot):
                 value=(
                     "**Option 1:** Type `update` in your tracker's terminal\n"
                     "**Option 2:** Right-click the system tray icon → Check for Updates\n"
-                    "**Option 3:** [Download manually]({})".format(release_info['release_url'])
+                    "**Option 3:** [Download manually]({})".format(release_info.get('release_url', f'https://github.com/{GITHUB_REPO}/releases/latest'))
                 ),
                 inline=False
             )
@@ -410,13 +452,17 @@ class CloneHeroBot(commands.Bot):
 
             await channel.send(embed=embed)
 
-            # Mark this version as announced
+            # Mark this version as announced and clear prompted flag
             self.db.set_metadata('last_announced_version', BOT_VERSION)
+            self.db.set_metadata('update_notification_prompted', '')  # Clear flag
             print_success(f"Update notification sent to #{channel.name} for version {BOT_VERSION}")
+            print()
+            return True
 
         except Exception as e:
             print_error(f"Error sending update notification: {e}")
             log_exception(e)
+            return False
 
     @tasks.loop(minutes=30)
     async def daily_activity_log_task(self):
@@ -662,7 +708,9 @@ async def leaderboard(
                 if artist:
                     song_display += f" - {artist}"
 
-            entry = f"**{i}.** {score['discord_username']}\n"
+            # v2.6.3: Use Discord mention for always-current username
+            user_mention = f"<@{score['discord_id']}>"
+            entry = f"**{i}.** {user_mention}\n"
             entry += f"   {score['score']:,} pts | {diff} {inst}\n"
             entry += f"   {song_display}\n"
             entry += f"   Hash: `[{chart_hash[:8]}]`\n"
@@ -838,6 +886,12 @@ async def hardest(
             entry += f"   • {total_notes:,} notes • {nps:.1f} NPS • {tier_name}\n"
             if charter:
                 entry += f"   • Charter: {charter}\n"
+
+            # v2.6.3: Add Enchor.us link if we have metadata
+            if song_name and song_name != 'Unknown':
+                enchor_url = build_enchor_url(song_name, artist, charter)
+                entry += f"   • 🔗 [Search on Enchor.us]({enchor_url})\n"
+
             entry += "\n"
 
             entries.append(entry)
@@ -900,8 +954,11 @@ async def mystats(interaction: discord.Interaction, user: discord.Member = None)
     stats = bot.db.get_user_stats(discord_id)
     records = bot.db.get_user_records(discord_id, limit=5)
 
+    # v2.6.3: Use mention in description for always-current username
+    user_mention = f"<@{discord_id}>"
     embed = discord.Embed(
-        title=f"Stats for {display_name}",
+        title=f"Clone Hero Statistics",
+        description=f"**Player:** {user_mention}",
         color=discord.Color.green()
     )
 
@@ -1059,10 +1116,11 @@ async def lookupsong(interaction: discord.Interaction, query: str):
             for rec in records:
                 inst = instruments.get(rec['instrument_id'], '?')
                 diff = difficulties.get(rec['difficulty_id'], '?')
-                username = rec['discord_username']
+                # v2.6.3: Use Discord mention for always-current username
+                user_mention = f"<@{rec['discord_id']}>"
                 score = rec['score']
                 date = rec.get('record_date', 'Unknown')
-                results_text += f"   • {diff} {inst}: {username} ({score:,} pts) - {date}\n"
+                results_text += f"   • {diff} {inst}: {user_mention} ({score:,} pts) - {date}\n"
         else:
             results_text += f"   *No scores yet*\n"
 
@@ -1157,19 +1215,43 @@ async def setartist(interaction: discord.Interaction, hash_prefix: str, artist: 
     song = matching_songs[0]
     chart_hash = song['chart_hash']
     old_artist = song.get('artist') or '*None*'
+    song_title = song.get('title', '[Unknown]')
 
     success = bot.db.update_song_artist(chart_hash, artist)
 
     if success:
-        await interaction.followup.send(
-            f"**Artist updated!**\n\n"
-            f"**Song:** {song.get('title', '[Unknown]')}\n"
-            f"**Old Artist:** {old_artist}\n"
-            f"**New Artist:** {artist}\n\n"
-            f"*Future leaderboard displays will show the new artist.*",
-            ephemeral=True
+        # v2.6.3: Enhanced embed confirmation with Enchor link
+        embed = discord.Embed(
+            title="✓ Artist Updated",
+            color=discord.Color.green()
         )
-        print_info(f"Artist updated: {song.get('title')} -> {artist} (by {interaction.user.display_name})")
+
+        embed.add_field(
+            name="Song Information",
+            value=f"• **Title:** {song_title}\n• **Chart Hash:** `{chart_hash[:8]}`",
+            inline=False
+        )
+
+        embed.add_field(
+            name="Changes Made",
+            value=f"• **Old Artist:** {old_artist}\n• **New Artist:** {artist}",
+            inline=False
+        )
+
+        # Add Enchor.us link with new artist
+        if song_title and not song_title.startswith('['):
+            charter = song.get('charter')
+            enchor_url = build_enchor_url(song_title, artist, charter)
+            embed.add_field(
+                name="Find This Chart",
+                value=f"🔗 [Search on Enchor.us]({enchor_url})",
+                inline=False
+            )
+
+        embed.set_footer(text="Future displays will show the new artist")
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        print_info(f"Artist updated: {song_title} -> {artist} (by {interaction.user.display_name})")
     else:
         await interaction.followup.send(
             f"Failed to update artist. The song may have been removed.",
@@ -1249,21 +1331,55 @@ async def updatesong(interaction: discord.Interaction, hash_prefix: str, title: 
     success = bot.db.update_song_metadata(chart_hash, title=title, artist=artist)
 
     if success:
-        response = "**Song metadata updated!**\n\n"
+        # v2.6.3: Enhanced embed confirmation with Enchor link
+        embed = discord.Embed(
+            title="✓ Song Metadata Updated",
+            color=discord.Color.green()
+        )
+
+        # Build before → after display
+        changes_text = ""
         if title:
-            response += f"**Title:** {old_title} → {title}\n"
+            changes_text += f"**Title**\n{old_title} → {title}\n\n"
         else:
-            response += f"**Title:** {old_title} (unchanged)\n"
+            changes_text += f"**Title**\n{old_title} *(unchanged)*\n\n"
 
         if artist:
-            response += f"**Artist:** {old_artist} → {artist}\n"
+            changes_text += f"**Artist**\n{old_artist} → {artist}"
         else:
-            response += f"**Artist:** {old_artist} (unchanged)\n"
+            changes_text += f"**Artist**\n{old_artist} *(unchanged)*"
 
-        response += f"\n**Chart Hash:** `{chart_hash[:8]}...`\n"
-        response += "\n*Future displays will show the updated info.*"
+        embed.add_field(
+            name="Before → After",
+            value=changes_text,
+            inline=False
+        )
 
-        await interaction.followup.send(response, ephemeral=True)
+        # Chart info with attribution
+        user_mention = f"<@{interaction.user.id}>"
+        embed.add_field(
+            name="Chart Information",
+            value=f"• **Hash:** `{chart_hash[:8]}`\n• **Updated by:** {user_mention}",
+            inline=False
+        )
+
+        # Add Enchor.us link with NEW metadata
+        new_title = title or old_title
+        new_artist = artist or old_artist
+        if new_title and not new_title.startswith('[') and new_title != '*None*':
+            charter = song.get('charter')
+            # Use new artist if provided, otherwise old artist (if not *None*)
+            artist_for_link = new_artist if new_artist != '*None*' else None
+            enchor_url = build_enchor_url(new_title, artist_for_link, charter)
+            embed.add_field(
+                name="Find This Chart",
+                value=f"🔗 [Search on Enchor.us]({enchor_url})",
+                inline=False
+            )
+
+        embed.set_footer(text="Changes will appear in all future displays")
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
         print_info(f"Song updated: {chart_hash[:8]} - title={title}, artist={artist} (by {interaction.user.display_name})")
     else:
         await interaction.followup.send(
@@ -1279,7 +1395,7 @@ async def missingartists(interaction: discord.Interaction):
     is_private = interaction.client.config_manager.config.get('discord', {}).get('command_privacy', {}).get('missingartists', 'private') == 'private'
     await interaction.response.defer(ephemeral=is_private)
 
-    songs = bot.db.get_songs_without_artist(limit=15)
+    songs = bot.db.get_songs_without_artist(limit=50)  # Get more for grouping
 
     if not songs:
         await interaction.followup.send(
@@ -1288,26 +1404,68 @@ async def missingartists(interaction: discord.Interaction):
         )
         return
 
+    # v2.6.3: Group songs by priority based on score count
+    high_priority = [s for s in songs if s.get('score_count', 0) >= 10]
+    medium_priority = [s for s in songs if 5 <= s.get('score_count', 0) < 10]
+    low_priority = [s for s in songs if s.get('score_count', 0) < 5]
+
     embed = discord.Embed(
-        title="Songs Missing Artist Info",
-        description="These songs need artist information.",
+        title="📝 Songs Missing Artist Information",
+        description="Help improve the database by adding artist info!",
         color=discord.Color.orange()
     )
 
-    results_text = ""
-    for song in songs:
-        title = song.get('title', '[Unknown]')
-        hash_short = song['chart_hash'][:8]
-        score_count = song.get('score_count', 0)
-        results_text += f"• **{title}** ({score_count} scores)\n  Chart Hash: `{hash_short}`\n"
+    # High priority songs
+    if high_priority:
+        high_text = ""
+        for i, song in enumerate(high_priority[:10], 1):
+            title = song.get('title', '[Unknown]')
+            hash_short = song['chart_hash'][:8]
+            score_count = song.get('score_count', 0)
+            high_text += f"**{i}.** {title} - {score_count} scores\n"
+            high_text += f"   Hash: `{hash_short}` • `/setartist {hash_short} <artist>`\n\n"
 
-    embed.add_field(
-        name=f"{len(songs)} song(s) without artist",
-        value=results_text or "None found",
-        inline=False
-    )
+        embed.add_field(
+            name="🔴 High Priority (10+ scores)",
+            value=high_text.strip() or "*None*",
+            inline=False
+        )
 
-    embed.set_footer(text="Use /setartist <hash> <artist> to add artist info")
+    # Medium priority songs
+    if medium_priority:
+        med_text = ""
+        for i, song in enumerate(medium_priority[:8], 1):
+            title = song.get('title', '[Unknown]')
+            hash_short = song['chart_hash'][:8]
+            score_count = song.get('score_count', 0)
+            med_text += f"• {title} ({score_count} scores) - `{hash_short}`\n"
+
+        embed.add_field(
+            name="🟡 Medium Priority (5-9 scores)",
+            value=med_text.strip() or "*None*",
+            inline=False
+        )
+
+    # Low priority songs
+    if low_priority:
+        low_count = len(low_priority)
+        low_text = f"*{low_count} song(s) with 1-4 scores*\n\n"
+        # Show first few as examples
+        for song in low_priority[:5]:
+            title = song.get('title', '[Unknown]')
+            hash_short = song['chart_hash'][:8]
+            low_text += f"• {title} - `{hash_short}`\n"
+        if low_count > 5:
+            low_text += f"\n*...and {low_count - 5} more*"
+
+        embed.add_field(
+            name="⚪ Low Priority (1-4 scores)",
+            value=low_text.strip(),
+            inline=False
+        )
+
+    total_count = len(songs)
+    embed.set_footer(text=f"Total: {total_count} songs • Tip: Run 'resolvehashes' in client to auto-fill from charts")
 
     await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -1369,15 +1527,19 @@ async def recent(interaction: discord.Interaction, count: int = 5):
                 date_display = '?'
 
             # Build entry with cleaner formatting
-            entry = f"**{rec['breaker_name']}** broke the record on:\n"
+            # v2.6.3: Use Discord mentions for always-current usernames
+            breaker_mention = f"<@{rec['breaker_discord_id']}>"
+            entry = f"**{breaker_mention}** broke the record on:\n"
             entry += f"{song_display}\n"
             entry += f"**Score:** {rec['new_score']:,}"
 
             # Show previous record info inline
             if rec.get('previous_score'):
                 entry += f" (was {rec['previous_score']:,}"
-                if rec.get('previous_holder_name'):
-                    entry += f" by {rec['previous_holder_name']}"
+                if rec.get('previous_holder_id'):
+                    # Get the previous holder's discord_id from record_breaks table
+                    prev_holder_mention = f"<@{rec['previous_holder_discord_id']}>" if rec.get('previous_holder_discord_id') else rec.get('previous_holder_name', 'Unknown')
+                    entry += f" by {prev_holder_mention}"
                 entry += ")"
 
             entry += f"\n*{date_display}*"
@@ -1425,66 +1587,170 @@ async def recent(interaction: discord.Interaction, count: int = 5):
 
 @bot.tree.command(name="server_status", description="Show server statistics and information")
 async def server_status(interaction: discord.Interaction):
-    """Show comprehensive server statistics"""
+    """
+    Show comprehensive server dashboard
+    v2.6.3: Complete overhaul with 24h activity, weekly leaderboard, uptime tracking
+    """
     await interaction.response.defer()
 
+    # Get all stats
     stats = bot.db.get_server_stats()
+    activity_24h = bot.db.get_recent_activity_24h()
+    top_players = bot.db.get_top_players_this_week(limit=3)
+    latest_record = bot.db.get_latest_record_break()
+    competitive_song = bot.db.get_most_competitive_song_detailed()
 
+    # Calculate uptime
+    from datetime import datetime
+    now = datetime.utcnow()
+    uptime_delta = now - bot.start_time
+    days = uptime_delta.days
+    hours, remainder = divmod(uptime_delta.seconds, 3600)
+    minutes, _ = divmod(remainder, 60)
+
+    if days > 0:
+        uptime_str = f"{days}d {hours}h"
+    elif hours > 0:
+        uptime_str = f"{hours}h {minutes}m"
+    else:
+        uptime_str = f"{minutes}m"
+
+    # Build embed
     embed = discord.Embed(
-        title="🎸 Clone Hero Server Status",
+        title="📊 Clone Hero Server Status",
+        description="Live statistics and server information",
         color=discord.Color.blue()
     )
 
-    # Users & Activity
+    # Database Statistics (3 columns)
     embed.add_field(
-        name="👥 Community",
-        value=f"**Total Users:** {stats['total_users']}\n"
-              f"**Record Holders:** {stats['total_record_holders']}",
+        name="📈 Database",
+        value=f"**Users:** {stats['total_users']}\n"
+              f"**Scores:** {stats['total_scores']:,}\n"
+              f"**Songs:** {stats['total_charts_played']}",
         inline=True
     )
 
-    # Scores & Records
+    # Records Statistics (3 columns)
+    records_24h_display = activity_24h['records_broken']
     embed.add_field(
-        name="🏆 Scores",
-        value=f"**Total Scores:** {stats['total_scores']:,}\n"
-              f"**Charts Played:** {stats['total_charts_played']}\n"
-              f"**Records Broken:** {stats['total_record_breaks']}",
+        name="🏆 Records",
+        value=f"**Total Broken:** {stats['total_record_breaks']}\n"
+              f"**Record Holders:** {stats['total_record_holders']}\n"
+              f"**Last 24h:** {records_24h_display}",
         inline=True
     )
 
-    # System Info
+    # System Info (3 columns)
+    # Check if API is running (simple check - if bot is running, API should be too)
+    api_status = "🟢 Online" if bot.api else "🔴 Offline"
     embed.add_field(
         name="⚙️ System",
-        value=f"**Bot Version:** v{BOT_VERSION}\n"
-              f"**Database Size:** {stats['db_size_mb']} MB",
+        value=f"**Version:** v{BOT_VERSION}\n"
+              f"**Uptime:** {uptime_str}\n"
+              f"**API:** {api_status}",
         inline=True
     )
 
-    # Most Active User
-    if stats.get('most_active_user'):
-        user = stats['most_active_user']
+    # Recent Activity (24 hours)
+    embed.add_field(
+        name="📊 Recent Activity (24 hours)",
+        value=f"• Scores Submitted: {activity_24h['scores_submitted']}\n"
+              f"• Records Broken: {activity_24h['records_broken']}\n"
+              f"• New Users: {activity_24h['new_users']}\n"
+              f"• Active Players: {activity_24h['active_players']}",
+        inline=False
+    )
+
+    # Top Players This Week
+    if top_players:
+        top_text = ""
+        for i, player in enumerate(top_players, 1):
+            user_mention = f"<@{player['discord_id']}>"
+            top_text += f"{i}. {user_mention} - {player['score_count']} scores\n"
         embed.add_field(
-            name="🔥 Most Active Player",
-            value=f"**{user['discord_username']}**\n"
-                  f"{user['score_count']:,} scores submitted",
+            name="🔥 Top Players This Week",
+            value=top_text.strip(),
+            inline=False
+        )
+
+    # Latest Record Break
+    if latest_record:
+        instruments = {0: "Lead", 1: "Bass", 2: "Rhythm", 3: "Keys", 4: "Drums"}
+        difficulties = {0: "Easy", 1: "Med", 2: "Hard", 3: "Expert"}
+
+        breaker_mention = f"<@{latest_record['breaker_discord_id']}>"
+        song_title = latest_record.get('song_title', '[Unknown]')
+        song_artist = latest_record.get('song_artist')
+        song_charter = latest_record.get('song_charter')
+        inst = instruments.get(latest_record['instrument_id'], '?')
+        diff = difficulties.get(latest_record['difficulty_id'], '?')
+
+        # Build song display
+        is_mystery = not song_title or song_title.startswith('[')
+        if is_mystery:
+            song_display = f"🔍 `{latest_record['chart_hash'][:8]}`"
+        else:
+            song_display = f"**{song_title}"
+            if song_artist:
+                song_display += f" - {song_artist}"
+            song_display += f"**"
+
+        record_text = f"{breaker_mention} broke the record on:\n"
+        record_text += f"{song_display} ({diff} {inst})\n"
+        record_text += f"Score: {latest_record['new_score']:,} pts"
+
+        # Add Enchor link if we have metadata
+        if not is_mystery:
+            enchor_url = build_enchor_url(song_title, song_artist, song_charter)
+            record_text += f"\n🔗 [Search on Enchor.us]({enchor_url})"
+
+        embed.add_field(
+            name="📝 Latest Record Break",
+            value=record_text,
             inline=False
         )
 
     # Most Competitive Song
-    if stats.get('most_competitive_song'):
-        song = stats['most_competitive_song']
-        song_title = song.get('title') or f"[{song['chart_hash'][:8]}]"
+    if competitive_song:
+        song_title = competitive_song.get('song_title', '[Unknown]')
+        is_mystery = not song_title or song_title.startswith('[')
+
+        comp_text = f"**{song_title}**\n"
+        comp_text += f"• Record broken: {competitive_song['break_count']} times\n"
+
+        if competitive_song.get('current_holder_id'):
+            holder_mention = f"<@{competitive_song['current_holder_id']}>"
+            comp_text += f"• Current holder: {holder_mention} - {competitive_song['current_high_score']:,} pts"
+
+        # Add Enchor link if we have metadata
+        if not is_mystery:
+            artist = competitive_song.get('song_artist')
+            charter = competitive_song.get('song_charter')
+            enchor_url = build_enchor_url(song_title, artist, charter)
+            comp_text += f"\n🔗 [Search on Enchor.us]({enchor_url})"
+
         embed.add_field(
             name="⚔️ Most Competitive Song",
-            value=f"**{song_title}**\n"
-                  f"Record broken {song['break_count']} times",
+            value=comp_text,
             inline=False
         )
 
-    # Server Install Date
+    # Resources
+    github_url = "https://github.com/Dr-Goofenthol/CH_HiScore"
+    issues_url = f"{github_url}/issues"
+    embed.add_field(
+        name="🌐 Resources",
+        value=f"• [View on GitHub]({github_url})\n"
+              f"• [Report Issue]({issues_url})\n"
+              f"• Use `/pair` to link your client",
+        inline=False
+    )
+
+    # Footer
     if stats.get('first_activity'):
         install_date = datetime.fromisoformat(stats['first_activity']).strftime("%B %d, %Y")
-        embed.set_footer(text=f"Server tracking since {install_date}")
+        embed.set_footer(text=f"Server tracking since {install_date} • Database: {stats['db_size_mb']} MB")
 
     await interaction.followup.send(embed=embed)
 

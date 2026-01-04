@@ -83,7 +83,10 @@ class InstrumentDifficultyData:
 
     def calculate_stats(self):
         """Calculate derived statistics"""
-        self.total_notes = len(self.notes)
+        # Count unique timestamps (playable notes) instead of individual note events
+        # Each timestamp = one note/chord to hit
+        unique_timestamps = set(n.timestamp for n in self.notes)
+        self.total_notes = len(unique_timestamps)
         self.chord_count = sum(1 for n in self.notes if n.is_chord)
         self.hopo_count = sum(1 for n in self.notes if n.note_type == NoteType.HOPO)
         self.tap_count = sum(1 for n in self.notes if n.note_type == NoteType.TAP)
@@ -132,6 +135,23 @@ class ChartData:
             return 0.0
 
         return (data.total_notes / self.song_length_ms) * 1000
+
+    def calculate_peak_note_density(self, instrument: Instrument, difficulty: Difficulty, window_seconds: float = 1.0) -> float:
+        """
+        Calculate peak NPS for a specific instrument/difficulty combination.
+        v2.6.3: Added to support per-chart peak intensity display.
+
+        Args:
+            instrument: Instrument to analyze
+            difficulty: Difficulty to analyze
+            window_seconds: Window size in seconds (default 1.0, matching Bridge)
+
+        Returns:
+            Peak notes per second in any window
+        """
+        # Will call _calculate_peak_nps helper function defined later in this module
+        # Note: This is a forward reference - the function is defined after the class
+        pass  # Actual implementation added via monkey-patching below
 
 
 class ChartParser:
@@ -605,8 +625,10 @@ class MidiParser:
 
                 i = j if j > i else i + 1
 
-            # Calculate totals
-            inst_data.total_notes = len(inst_data.notes)
+            # Calculate totals - count unique timestamps (playable notes)
+            # Each timestamp = one note/chord to hit
+            unique_timestamps = set(note.timestamp for note in inst_data.notes)
+            inst_data.total_notes = len(unique_timestamps)
 
 
 def parse_chart_file(chart_path: Path) -> Optional[ChartData]:
@@ -637,6 +659,121 @@ def parse_chart_file(chart_path: Path) -> Optional[ChartData]:
         # import traceback
         # traceback.print_exc()
         return None
+
+
+def _ticks_to_milliseconds(tick: int, tempo_map: List[Tuple[int, int]], resolution: int) -> float:
+    """
+    Convert tick position to milliseconds using tempo map.
+
+    Args:
+        tick: Tick position to convert
+        tempo_map: List of (tick, bpm_times_1000) tuples
+        resolution: Ticks per beat
+
+    Returns:
+        Time in milliseconds
+    """
+    if not tempo_map or resolution <= 0:
+        return 0.0
+
+    sorted_tempo = sorted(tempo_map, key=lambda x: x[0])
+
+    total_ms = 0.0
+    current_tick = 0
+
+    for i, (tempo_tick, bpm_times_1000) in enumerate(sorted_tempo):
+        # Find next tempo change
+        if i + 1 < len(sorted_tempo):
+            next_tick = sorted_tempo[i + 1][0]
+        else:
+            next_tick = tick
+
+        # Calculate time from current position to this tempo change or target tick
+        if current_tick < next_tick:
+            ticks_to_process = min(next_tick, tick) - max(current_tick, tempo_tick)
+            if ticks_to_process > 0:
+                bpm = bpm_times_1000 / 1000.0
+                if bpm > 0:
+                    beats = ticks_to_process / resolution
+                    minutes = beats / bpm
+                    total_ms += minutes * 60 * 1000
+
+            current_tick = max(current_tick, next_tick)
+            if current_tick >= tick:
+                break
+
+    return total_ms
+
+
+def _calculate_peak_nps(chart_data: ChartData, instrument: Instrument, difficulty: Difficulty,
+                        window_seconds: float = 1.0) -> float:
+    """
+    Calculate peak NPS over a sliding window (default 1 second, matching Bridge).
+
+    Algorithm:
+    1. Convert all note ticks to milliseconds
+    2. Deduplicate to unique timestamps (chords count as 1 playable note)
+    3. Use sliding window approach (100ms steps)
+    4. Count notes in each window position
+    5. Return maximum notes per second
+
+    Args:
+        chart_data: Parsed chart data
+        instrument: Instrument to analyze
+        difficulty: Difficulty to analyze
+        window_seconds: Window size in seconds (default 1.0)
+
+    Returns:
+        Peak notes per second in any window
+    """
+    inst_data = chart_data.get_instrument_data(instrument, difficulty)
+
+    if not inst_data or not inst_data.notes:
+        return 0.0
+
+    if not chart_data.tempo_map or chart_data.resolution <= 0:
+        return 0.0
+
+    # Convert all note ticks to milliseconds
+    note_times_ms = []
+    for note in inst_data.notes:
+        ms = _ticks_to_milliseconds(note.timestamp, chart_data.tempo_map, chart_data.resolution)
+        note_times_ms.append(ms)
+
+    if not note_times_ms:
+        return 0.0
+
+    # Get unique timestamps (treating chords as single playable notes)
+    unique_note_times = sorted(set(note_times_ms))
+
+    if not unique_note_times:
+        return 0.0
+
+    # Window size in milliseconds
+    window_ms = window_seconds * 1000
+
+    # Sliding window approach
+    max_notes_in_window = 0
+    song_end_ms = max(unique_note_times)
+
+    # Step through the song in small increments (100ms steps)
+    step_ms = 100
+    current_start_ms = 0
+
+    while current_start_ms <= song_end_ms:
+        window_end_ms = current_start_ms + window_ms
+
+        # Count notes in this window
+        notes_in_window = sum(1 for t in unique_note_times if current_start_ms <= t < window_end_ms)
+
+        max_notes_in_window = max(max_notes_in_window, notes_in_window)
+
+        current_start_ms += step_ms
+
+    # Convert to notes per second
+    peak_nps = max_notes_in_window / window_seconds
+
+    return peak_nps
 
 
 # Helper function to calculate metrics after parsing
@@ -693,9 +830,23 @@ def _calculate_metrics_for_chart(chart_data: ChartData):
         avg_notes_per_chart = total_notes / num_charts
         chart_data.average_note_density = (avg_notes_per_chart / chart_data.song_length_ms) * 1000
 
+    # v2.6.3: Calculate peak note density (1-second window, matching Bridge)
+    # Find the maximum peak NPS across all instrument/difficulty combinations
+    max_peak_nps = 0.0
+    for (instrument, difficulty), inst_data in chart_data.instruments.items():
+        if inst_data.notes:
+            peak_nps = _calculate_peak_nps(chart_data, instrument, difficulty, window_seconds=1.0)
+            max_peak_nps = max(max_peak_nps, peak_nps)
+
+    chart_data.peak_note_density = max_peak_nps
+
 
 # Monkey-patch the _calculate_metrics method
 ChartParser._calculate_metrics = lambda self: _calculate_metrics_for_chart(self.data)
+
+# Monkey-patch the calculate_peak_note_density method
+ChartData.calculate_peak_note_density = lambda self, instrument, difficulty, window_seconds=1.0: \
+    _calculate_peak_nps(self, instrument, difficulty, window_seconds)
 
 
 if __name__ == '__main__':
