@@ -597,7 +597,7 @@ Scans local song folders to populate missing charter information in the database
   - Discord message editing requires storing message IDs in announcements table
   - Retroactive updates should batch to avoid API rate limits
 
-**v2.6.4** - Chart Index System & Offline Score Metadata (Jan 18, 2026) - IN DEVELOPMENT 🚧
+**v2.6.4** - Chart Index System & Offline Score Metadata (Jan 19, 2026) - COMPLETED ✅
 - **FIXED (CRITICAL):** Peak Intensity not showing in announcements
   - **Problem:** `calculate_peak_note_density()` method in shared/chart_parser.py was stub (only `pass`)
   - **Solution:** Implemented method body to call `_calculate_peak_nps()` helper function
