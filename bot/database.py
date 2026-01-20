@@ -2,6 +2,37 @@
 Database module for Clone Hero High Score System
 
 Handles all database operations using SQLite.
+
+COMPREHENSIVE SCHEMA REFERENCE (v2.6.4):
+==========================================
+
+** scores ** (Main score submissions)
+  - id, user_id, chart_hash, instrument_id, difficulty_id
+  - score, completion_percent, stars, submitted_at
+  - is_full_combo (added v2.6.0), notes_total (added v2.6.0)
+  - NO play_count, NO notes_hit (calculated from completion_percent * notes_total)
+
+** users ** (Discord account linkage)
+  - id, discord_id, discord_username, auth_token, created_at, last_seen
+
+** songs ** (Song metadata cache)
+  - id, chart_hash, title, artist, album, charter, length_ms, first_seen
+  - NO genre (genre is in chart_metadata table!)
+
+** chart_metadata ** (Parsed chart data, v2.6.0+)
+  - id, chart_hash, instrument_id, difficulty_id
+  - total_notes, chord_count, tap_count, open_note_count, star_power_phrases
+  - song_length_ms, note_density, peak_note_density (added v2.6.3)
+  - song_name, artist, charter, genre
+  - parsed_at, chart_file_path
+
+** record_breaks ** (Record history)
+  - id, user_id, chart_hash, instrument_id, difficulty_id
+  - new_score, previous_score, previous_holder_id, broken_at
+
+** pairing_codes ** (Temporary pairing tokens)
+  - id, code, client_id, discord_id, auth_token
+  - created_at, expires_at, completed
 """
 
 import sqlite3
@@ -1117,6 +1148,362 @@ class Database:
         row = self.cursor.fetchone()
         return dict(row) if row else None
 
+    def get_user_records_detailed(self, discord_id: str) -> List[Dict]:
+        """
+        Get ALL records held by a user with comprehensive metadata.
+        Used for records report generation.
+
+        Returns:
+            List of records with full song, chart, score, and previous record details
+        """
+        user = self.get_user_by_discord_id(discord_id)
+        if not user:
+            return []
+
+        user_id = user['id']
+
+        # Get all records where user holds #1 spot
+        # Get all records where user holds #1 spot
+        # Column mapping verified against actual schema (v2.6.4):
+        #   scores: chart_hash, instrument_id, difficulty_id, score, completion_percent,
+        #           notes_total, is_full_combo, stars, submitted_at
+        #   songs: title, artist, charter, album, length_ms (NO genre column!)
+        #   chart_metadata: note_density, peak_note_density, total_notes, genre
+        self.cursor.execute("""
+            SELECT
+                s.chart_hash,
+                s.instrument_id,
+                s.difficulty_id,
+                s.score,
+                s.completion_percent,
+                s.notes_total,
+                s.is_full_combo,
+                s.stars,
+                s.submitted_at,
+                COALESCE(songs.title, cm.song_name, '[' || SUBSTR(s.chart_hash, 1, 8) || ']') as song_title,
+                COALESCE(songs.artist, cm.artist) as song_artist,
+                COALESCE(songs.charter, cm.charter) as song_charter,
+                songs.album as song_album,
+                cm.genre as song_genre,
+                COALESCE(songs.length_ms, cm.song_length_ms) as song_length_ms,
+                cm.note_density as chart_nps,
+                cm.peak_note_density as chart_peak_nps,
+                cm.total_notes as chart_total_notes
+            FROM scores s
+            LEFT JOIN songs ON s.chart_hash = songs.chart_hash
+            LEFT JOIN chart_metadata cm ON s.chart_hash = cm.chart_hash
+                AND s.instrument_id = cm.instrument_id
+                AND s.difficulty_id = cm.difficulty_id
+            WHERE s.user_id = ?
+            AND s.score = (
+                SELECT MAX(s2.score)
+                FROM scores s2
+                WHERE s2.chart_hash = s.chart_hash
+                AND s2.instrument_id = s.instrument_id
+                AND s2.difficulty_id = s.difficulty_id
+            )
+            ORDER BY s.score DESC
+        """, (user_id,))
+
+        records = []
+        for row in self.cursor.fetchall():
+            record = dict(row)
+
+            # Calculate notes_hit from completion_percent and notes_total (v2.6.4 fix)
+            # notes_hit was never stored in DB, must be calculated
+            if record.get('completion_percent') is not None and record.get('notes_total'):
+                record['notes_hit'] = round((record['completion_percent'] / 100.0) * record['notes_total'])
+            else:
+                record['notes_hit'] = None
+
+            # Get previous record info
+            self.cursor.execute("""
+                SELECT s.score, s.submitted_at, u.discord_username
+                FROM scores s
+                JOIN users u ON s.user_id = u.id
+                WHERE s.chart_hash = ?
+                AND s.instrument_id = ?
+                AND s.difficulty_id = ?
+                AND s.user_id != ?
+                ORDER BY s.score DESC
+                LIMIT 1
+            """, (record['chart_hash'], record['instrument_id'],
+                  record['difficulty_id'], user_id))
+
+            prev_row = self.cursor.fetchone()
+            if prev_row:
+                prev = dict(prev_row)
+                record['previous_score'] = prev['score']
+                record['previous_holder'] = prev['discord_username']
+                record['previous_set_at'] = prev['submitted_at']
+            else:
+                record['previous_score'] = None
+                record['previous_holder'] = None
+                record['previous_set_at'] = None
+
+            records.append(record)
+
+        return records
+
+    def get_user_stats_detailed(self, discord_id: str, timeframe: str = 'all', instrument_id: int = None) -> dict:
+        """
+        Get detailed statistics for a user with optional filters (v2.6.4)
+
+        Args:
+            discord_id: Discord user ID
+            timeframe: '7d', '30d', '90d', or 'all' (default)
+            instrument_id: Optional instrument filter (0-10)
+
+        Returns:
+            Dictionary with:
+                - overall: total_scores, records_held, full_combos, avg_accuracy
+                - by_instrument: list of {instrument_id, total_scores, records, fcs, avg_acc}
+                - by_difficulty: list of {difficulty_id, total_scores, records, fcs, avg_acc}
+                - top_achievements: {hardest_fc, highest_score, most_played}
+                - recent_activity: {scores, records, fcs, avg_acc} (last 7 days)
+        """
+        from datetime import datetime, timedelta
+
+        user = self.get_user_by_discord_id(discord_id)
+        if not user:
+            return None
+
+        user_id = user['id']
+
+        # Calculate date filter
+        date_filter = None
+        if timeframe == '7d':
+            date_filter = (datetime.now() - timedelta(days=7)).isoformat()
+        elif timeframe == '30d':
+            date_filter = (datetime.now() - timedelta(days=30)).isoformat()
+        elif timeframe == '90d':
+            date_filter = (datetime.now() - timedelta(days=90)).isoformat()
+
+        # Build WHERE clause for filters
+        where_clauses = ["s.user_id = ?"]
+        params = [user_id]
+
+        if date_filter:
+            where_clauses.append("s.submitted_at >= ?")
+            params.append(date_filter)
+
+        if instrument_id is not None:
+            where_clauses.append("s.instrument_id = ?")
+            params.append(instrument_id)
+
+        where_clause = " AND ".join(where_clauses)
+
+        # === OVERALL STATS ===
+        self.cursor.execute(f"""
+            SELECT
+                COUNT(*) as total_scores,
+                AVG(s.completion_percent) as avg_accuracy,
+                SUM(CASE WHEN s.is_full_combo = 1 THEN 1 ELSE 0 END) as full_combos
+            FROM scores s
+            WHERE {where_clause}
+        """, params)
+
+        overall = dict(self.cursor.fetchone())
+
+        # Count records held (scores where user has max score)
+        self.cursor.execute(f"""
+            SELECT COUNT(*) as records_held
+            FROM scores s
+            WHERE {where_clause}
+            AND s.score = (
+                SELECT MAX(s2.score)
+                FROM scores s2
+                WHERE s2.chart_hash = s.chart_hash
+                AND s2.instrument_id = s.instrument_id
+                AND s2.difficulty_id = s.difficulty_id
+            )
+        """, params)
+
+        overall['records_held'] = self.cursor.fetchone()[0]
+
+        # === BREAKDOWN BY INSTRUMENT ===
+        self.cursor.execute(f"""
+            SELECT
+                s.instrument_id,
+                COUNT(*) as total_scores,
+                AVG(s.completion_percent) as avg_accuracy,
+                SUM(CASE WHEN s.is_full_combo = 1 THEN 1 ELSE 0 END) as full_combos
+            FROM scores s
+            WHERE {where_clause}
+            GROUP BY s.instrument_id
+            ORDER BY total_scores DESC
+        """, params)
+
+        by_instrument = []
+        for row in self.cursor.fetchall():
+            inst_data = dict(row)
+            inst_id = inst_data['instrument_id']
+
+            # Count records for this instrument
+            inst_params = params + [inst_id]
+            inst_where = where_clause + " AND s.instrument_id = ?"
+
+            self.cursor.execute(f"""
+                SELECT COUNT(*) as records
+                FROM scores s
+                WHERE {inst_where}
+                AND s.score = (
+                    SELECT MAX(s2.score)
+                    FROM scores s2
+                    WHERE s2.chart_hash = s.chart_hash
+                    AND s2.instrument_id = s.instrument_id
+                    AND s2.difficulty_id = s.difficulty_id
+                )
+            """, inst_params)
+
+            inst_data['records'] = self.cursor.fetchone()[0]
+            by_instrument.append(inst_data)
+
+        # === BREAKDOWN BY DIFFICULTY ===
+        self.cursor.execute(f"""
+            SELECT
+                s.difficulty_id,
+                COUNT(*) as total_scores,
+                AVG(s.completion_percent) as avg_accuracy,
+                SUM(CASE WHEN s.is_full_combo = 1 THEN 1 ELSE 0 END) as full_combos
+            FROM scores s
+            WHERE {where_clause}
+            GROUP BY s.difficulty_id
+            ORDER BY s.difficulty_id DESC
+        """, params)
+
+        by_difficulty = []
+        for row in self.cursor.fetchall():
+            diff_data = dict(row)
+            diff_id = diff_data['difficulty_id']
+
+            # Count records for this difficulty
+            diff_params = params + [diff_id]
+            diff_where = where_clause + " AND s.difficulty_id = ?"
+
+            self.cursor.execute(f"""
+                SELECT COUNT(*) as records
+                FROM scores s
+                WHERE {diff_where}
+                AND s.score = (
+                    SELECT MAX(s2.score)
+                    FROM scores s2
+                    WHERE s2.chart_hash = s.chart_hash
+                    AND s2.instrument_id = s.instrument_id
+                    AND s2.difficulty_id = s.difficulty_id
+                )
+            """, diff_params)
+
+            diff_data['records'] = self.cursor.fetchone()[0]
+            by_difficulty.append(diff_data)
+
+        # === TOP ACHIEVEMENTS ===
+        top_achievements = {}
+
+        # Hardest FC (highest NPS with FC)
+        self.cursor.execute(f"""
+            SELECT
+                s.chart_hash,
+                s.instrument_id,
+                s.difficulty_id,
+                s.score,
+                COALESCE(songs.title, cm.song_name, '[' || SUBSTR(s.chart_hash, 1, 8) || ']') as song_title,
+                cm.note_density as nps
+            FROM scores s
+            LEFT JOIN songs ON s.chart_hash = songs.chart_hash
+            LEFT JOIN chart_metadata cm ON s.chart_hash = cm.chart_hash
+                AND s.instrument_id = cm.instrument_id
+                AND s.difficulty_id = cm.difficulty_id
+            WHERE {where_clause}
+            AND s.is_full_combo = 1
+            AND cm.note_density IS NOT NULL
+            ORDER BY cm.note_density DESC
+            LIMIT 1
+        """, params)
+
+        row = self.cursor.fetchone()
+        if row:
+            top_achievements['hardest_fc'] = dict(row)
+
+        # Highest score
+        self.cursor.execute(f"""
+            SELECT
+                s.chart_hash,
+                s.instrument_id,
+                s.difficulty_id,
+                s.score,
+                COALESCE(songs.title, cm.song_name, '[' || SUBSTR(s.chart_hash, 1, 8) || ']') as song_title
+            FROM scores s
+            LEFT JOIN songs ON s.chart_hash = songs.chart_hash
+            LEFT JOIN chart_metadata cm ON s.chart_hash = cm.chart_hash
+                AND s.instrument_id = cm.instrument_id
+                AND s.difficulty_id = cm.difficulty_id
+            WHERE {where_clause}
+            ORDER BY s.score DESC
+            LIMIT 1
+        """, params)
+
+        row = self.cursor.fetchone()
+        if row:
+            top_achievements['highest_score'] = dict(row)
+
+        # Most played chart (most submissions on same chart/inst/diff)
+        self.cursor.execute(f"""
+            SELECT
+                s.chart_hash,
+                s.instrument_id,
+                s.difficulty_id,
+                COUNT(*) as play_count,
+                COALESCE(songs.title, cm.song_name, '[' || SUBSTR(s.chart_hash, 1, 8) || ']') as song_title
+            FROM scores s
+            LEFT JOIN songs ON s.chart_hash = songs.chart_hash
+            LEFT JOIN chart_metadata cm ON s.chart_hash = cm.chart_hash
+                AND s.instrument_id = cm.instrument_id
+                AND s.difficulty_id = cm.difficulty_id
+            WHERE {where_clause}
+            GROUP BY s.chart_hash, s.instrument_id, s.difficulty_id
+            ORDER BY play_count DESC
+            LIMIT 1
+        """, params)
+
+        row = self.cursor.fetchone()
+        if row:
+            top_achievements['most_played'] = dict(row)
+
+        # === RECENT ACTIVITY (Last 7 Days) ===
+        recent_date = (datetime.now() - timedelta(days=7)).isoformat()
+        recent_where = where_clause + " AND s.submitted_at >= ?"
+        recent_params = params + [recent_date]
+
+        self.cursor.execute(f"""
+            SELECT
+                COUNT(*) as scores_submitted,
+                AVG(s.completion_percent) as avg_accuracy,
+                SUM(CASE WHEN s.is_full_combo = 1 THEN 1 ELSE 0 END) as new_fcs
+            FROM scores s
+            WHERE {recent_where}
+        """, recent_params)
+
+        recent_activity = dict(self.cursor.fetchone())
+
+        # Count records broken in last 7 days
+        self.cursor.execute(f"""
+            SELECT COUNT(*) as records_broken
+            FROM record_breaks rb
+            WHERE rb.user_id = ?
+            AND rb.broken_at >= ?
+        """, (user_id, recent_date))
+
+        recent_activity['records_broken'] = self.cursor.fetchone()[0]
+
+        return {
+            'overall': overall,
+            'by_instrument': by_instrument,
+            'by_difficulty': by_difficulty,
+            'top_achievements': top_achievements,
+            'recent_activity': recent_activity
+        }
+
     def search_songs(self, query: str, limit: int = 10) -> List[Dict]:
         """
         Search songs by title, artist, or chart hash with smart filtering
@@ -1229,6 +1616,299 @@ class Database:
                     seen_hashes.add(song['chart_hash'])
 
         return results[:limit]
+
+    def search_user_scores(self, discord_id: str, query: str = None, instrument_id: int = None,
+                           difficulty_id: int = None, fc_only: bool = False,
+                           nps_min: float = None, nps_max: float = None,
+                           offset: int = 0, limit: int = 10) -> dict:
+        """
+        Search a user's scores with various filters (v2.6.4)
+
+        Args:
+            discord_id: User's Discord ID
+            query: Text search (matches song title, artist, or chart hash)
+            instrument_id: Filter by instrument (0-10)
+            difficulty_id: Filter by difficulty (0-3)
+            fc_only: Only show full combos
+            nps_min: Minimum NPS (notes per second)
+            nps_max: Maximum NPS (notes per second)
+            offset: Pagination offset (default: 0)
+            limit: Results per page (default: 10)
+
+        Returns:
+            Dictionary with:
+                - results: List of matching scores with song metadata
+                - total_count: Total matching scores (for pagination)
+                - offset: Current offset
+                - limit: Current limit
+        """
+        # Get user_id from discord_id
+        user = self.get_user_by_discord_id(discord_id)
+        if not user:
+            return {'results': [], 'total_count': 0, 'offset': offset, 'limit': limit}
+
+        user_id = user['id']
+
+        # Build WHERE clause dynamically
+        where_clauses = ["s.user_id = ?"]
+        params = [user_id]
+
+        # Text search filter
+        if query and query.strip():
+            where_clauses.append("(sg.title LIKE ? OR sg.artist LIKE ? OR s.chart_hash LIKE ?)")
+            search_pattern = f'%{query.strip()}%'
+            params.extend([search_pattern, search_pattern, f'{query.strip()}%'])
+
+        # Instrument filter
+        if instrument_id is not None:
+            where_clauses.append("s.instrument_id = ?")
+            params.append(instrument_id)
+
+        # Difficulty filter
+        if difficulty_id is not None:
+            where_clauses.append("s.difficulty_id = ?")
+            params.append(difficulty_id)
+
+        # Full combo filter
+        if fc_only:
+            where_clauses.append("s.completion_percent >= 99.99")
+
+        # NPS range filters (calculated from notes_total / song length if available)
+        # Note: NPS not reliably stored in DB, skip for now unless notes_per_second column exists
+        # TODO: Add NPS calculation if song length is available
+
+        where_clause = " AND ".join(where_clauses)
+
+        # Get total count for pagination
+        count_query = f"""
+            SELECT COUNT(*) as count
+            FROM scores s
+            LEFT JOIN songs sg ON s.chart_hash = sg.chart_hash
+            WHERE {where_clause}
+        """
+
+        self.cursor.execute(count_query, params)
+        total_count = self.cursor.fetchone()['count']
+
+        # Get paginated results with ranking info
+        results_query = f"""
+            SELECT
+                s.id,
+                s.chart_hash,
+                s.instrument_id,
+                s.difficulty_id,
+                s.score,
+                s.stars,
+                s.completion_percent,
+                s.notes_total,
+                s.submitted_at,
+                sg.title,
+                sg.artist,
+                sg.charter,
+                (
+                    SELECT COUNT(*) + 1
+                    FROM scores s2
+                    WHERE s2.chart_hash = s.chart_hash
+                      AND s2.instrument_id = s.instrument_id
+                      AND s2.difficulty_id = s.difficulty_id
+                      AND s2.score > s.score
+                ) as rank,
+                (
+                    SELECT MAX(score)
+                    FROM scores s3
+                    WHERE s3.chart_hash = s.chart_hash
+                      AND s3.instrument_id = s.instrument_id
+                      AND s3.difficulty_id = s.difficulty_id
+                ) as record_score
+            FROM scores s
+            LEFT JOIN songs sg ON s.chart_hash = sg.chart_hash
+            WHERE {where_clause}
+            ORDER BY s.submitted_at DESC
+            LIMIT ? OFFSET ?
+        """
+
+        params.extend([limit, offset])
+        self.cursor.execute(results_query, params)
+
+        results = []
+        for row in self.cursor.fetchall():
+            result = dict(row)
+            # Add is_record flag
+            result['is_record'] = (result['rank'] == 1)
+            # Add is_fc flag
+            result['is_fc'] = (result['completion_percent'] >= 99.99)
+            results.append(result)
+
+        return {
+            'results': results,
+            'total_count': total_count,
+            'offset': offset,
+            'limit': limit
+        }
+
+    def compare_users(self, discord_id1: str, discord_id2: str) -> dict:
+        """
+        Compare two users' scores head-to-head (v2.6.4)
+
+        Returns:
+            Dictionary with:
+                - user1: {discord_id, username}
+                - user2: {discord_id, username}
+                - overall: {user1_records, user2_records, tied}
+                - by_instrument: List of {instrument_id, user1_wins, user2_wins, tied}
+                - user1_biggest_wins: Top 5 scores where user1 beats user2 most
+                - user2_biggest_wins: Top 5 scores where user2 beats user1 most
+                - close_matches: Scores within 1% difference
+        """
+        # Get users
+        user1 = self.get_user_by_discord_id(discord_id1)
+        user2 = self.get_user_by_discord_id(discord_id2)
+
+        if not user1 or not user2:
+            return {
+                'error': 'One or both users not found',
+                'user1': user1,
+                'user2': user2
+            }
+
+        user1_id = user1['id']
+        user2_id = user2['id']
+
+        # Find common charts (songs both users have played on same instrument/difficulty)
+        common_charts_query = """
+            SELECT DISTINCT
+                s1.chart_hash,
+                s1.instrument_id,
+                s1.difficulty_id
+            FROM scores s1
+            INNER JOIN scores s2 ON
+                s1.chart_hash = s2.chart_hash
+                AND s1.instrument_id = s2.instrument_id
+                AND s1.difficulty_id = s2.difficulty_id
+            WHERE s1.user_id = ? AND s2.user_id = ?
+        """
+
+        self.cursor.execute(common_charts_query, (user1_id, user2_id))
+        common_charts = self.cursor.fetchall()
+
+        if not common_charts:
+            return {
+                'user1': {'discord_id': discord_id1, 'username': user1['discord_username']},
+                'user2': {'discord_id': discord_id2, 'username': user2['discord_username']},
+                'overall': {'user1_records': 0, 'user2_records': 0, 'tied': 0},
+                'by_instrument': [],
+                'user1_biggest_wins': [],
+                'user2_biggest_wins': [],
+                'close_matches': [],
+                'message': 'No common songs played on same instrument/difficulty'
+            }
+
+        # Compare scores on common charts
+        user1_wins = 0
+        user2_wins = 0
+        tied = 0
+        by_instrument = {}  # instrument_id -> {user1, user2, tied}
+        all_comparisons = []  # For finding biggest wins and close matches
+
+        for chart in common_charts:
+            chart_hash = chart['chart_hash']
+            instrument_id = chart['instrument_id']
+            difficulty_id = chart['difficulty_id']
+
+            # Get both scores
+            self.cursor.execute("""
+                SELECT user_id, score, completion_percent
+                FROM scores
+                WHERE chart_hash = ? AND instrument_id = ? AND difficulty_id = ?
+                  AND user_id IN (?, ?)
+            """, (chart_hash, instrument_id, difficulty_id, user1_id, user2_id))
+
+            scores = {row['user_id']: row for row in self.cursor.fetchall()}
+            score1 = scores.get(user1_id)
+            score2 = scores.get(user2_id)
+
+            if not score1 or not score2:
+                continue
+
+            # Get song info
+            self.cursor.execute("SELECT title, artist FROM songs WHERE chart_hash = ?", (chart_hash,))
+            song = self.cursor.fetchone()
+            song_title = song['title'] if song else None
+            song_artist = song['artist'] if song else None
+
+            comparison = {
+                'chart_hash': chart_hash,
+                'instrument_id': instrument_id,
+                'difficulty_id': difficulty_id,
+                'song_title': song_title,
+                'song_artist': song_artist,
+                'user1_score': score1['score'],
+                'user2_score': score2['score'],
+                'user1_completion': score1['completion_percent'],
+                'user2_completion': score2['completion_percent'],
+                'diff_points': score1['score'] - score2['score'],
+                'diff_percent': ((score1['score'] - score2['score']) / score2['score'] * 100) if score2['score'] > 0 else 0
+            }
+            all_comparisons.append(comparison)
+
+            # Track wins
+            if score1['score'] > score2['score']:
+                user1_wins += 1
+                winner = 'user1'
+            elif score2['score'] > score1['score']:
+                user2_wins += 1
+                winner = 'user2'
+            else:
+                tied += 1
+                winner = 'tied'
+
+            # Track by instrument
+            if instrument_id not in by_instrument:
+                by_instrument[instrument_id] = {'user1': 0, 'user2': 0, 'tied': 0}
+            by_instrument[instrument_id][winner] += 1
+
+        # Build overall stats
+        overall = {
+            'user1_records': user1_wins,
+            'user2_records': user2_wins,
+            'tied': tied,
+            'user1_win_rate': (user1_wins / (user1_wins + user2_wins + tied) * 100) if (user1_wins + user2_wins + tied) > 0 else 0
+        }
+
+        # Build instrument breakdown
+        by_instrument_list = []
+        for inst_id, stats in by_instrument.items():
+            by_instrument_list.append({
+                'instrument_id': inst_id,
+                'user1_wins': stats['user1'],
+                'user2_wins': stats['user2'],
+                'tied': stats['tied']
+            })
+
+        # Find user1's biggest wins (sorted by absolute point difference, user1 winning)
+        user1_biggest = [c for c in all_comparisons if c['diff_points'] > 0]
+        user1_biggest.sort(key=lambda x: abs(x['diff_points']), reverse=True)
+        user1_biggest_wins = user1_biggest[:5]
+
+        # Find user2's biggest wins
+        user2_biggest = [c for c in all_comparisons if c['diff_points'] < 0]
+        user2_biggest.sort(key=lambda x: abs(x['diff_points']), reverse=True)
+        user2_biggest_wins = user2_biggest[:5]
+
+        # Find close matches (within 1%)
+        close_matches = [c for c in all_comparisons if abs(c['diff_percent']) < 1.0]
+        close_matches.sort(key=lambda x: abs(x['diff_percent']))
+        close_matches = close_matches[:10]  # Top 10 closest
+
+        return {
+            'user1': {'discord_id': discord_id1, 'username': user1['discord_username']},
+            'user2': {'discord_id': discord_id2, 'username': user2['discord_username']},
+            'overall': overall,
+            'by_instrument': by_instrument_list,
+            'user1_biggest_wins': user1_biggest_wins,
+            'user2_biggest_wins': user2_biggest_wins,
+            'close_matches': close_matches
+        }
 
     def update_song_artist(self, chart_hash: str, artist: str) -> bool:
         """Update artist for a song by chart hash"""
@@ -1646,14 +2326,22 @@ class Database:
         Returns:
             Dictionary with all daily activity data for log generation
         """
-        # All submissions in the time period
+        # All submissions in the time period (v2.6.4: Fixed column references)
+        # s.* includes: id, user_id, chart_hash, instrument_id, difficulty_id,
+        #               score, completion_percent, stars, submitted_at, is_full_combo, notes_total
         self.cursor.execute("""
             SELECT s.*, u.discord_username,
                    COALESCE(songs.title, '[' || SUBSTR(s.chart_hash, 1, 8) || ']') as song_title,
-                   songs.artist as song_artist
+                   songs.artist as song_artist,
+                   songs.charter as song_charter,
+                   cm.note_density as chart_nps,
+                   cm.peak_note_density as chart_peak_nps
             FROM scores s
             JOIN users u ON s.user_id = u.id
             LEFT JOIN songs ON s.chart_hash = songs.chart_hash
+            LEFT JOIN chart_metadata cm ON s.chart_hash = cm.chart_hash
+                AND s.instrument_id = cm.instrument_id
+                AND s.difficulty_id = cm.difficulty_id
             WHERE s.submitted_at >= ? AND s.submitted_at < ?
             ORDER BY s.submitted_at ASC
         """, (start_time, end_time))
@@ -1676,17 +2364,32 @@ class Database:
         """, (start_time, end_time, start_time, end_time))
         user_activity = [dict(row) for row in self.cursor.fetchall()]
 
-        # Record breaks in the time period
+        # Record breaks in the time period (v2.6.4: Enhanced with improvement %)
         self.cursor.execute("""
             SELECT rb.*,
                    u.discord_username as breaker_name,
                    prev.discord_username as previous_holder_name,
                    COALESCE(songs.title, '[' || SUBSTR(rb.chart_hash, 1, 8) || ']') as song_title,
-                   songs.artist as song_artist
+                   songs.artist as song_artist,
+                   songs.charter as song_charter,
+                   rb.chart_hash,
+                   prev_rb.broken_at as previous_record_set_at
             FROM record_breaks rb
             JOIN users u ON rb.user_id = u.id
             LEFT JOIN users prev ON rb.previous_holder_id = prev.id
             LEFT JOIN songs ON rb.chart_hash = songs.chart_hash
+            LEFT JOIN record_breaks prev_rb ON rb.previous_holder_id = prev_rb.user_id
+                AND rb.chart_hash = prev_rb.chart_hash
+                AND rb.instrument_id = prev_rb.instrument_id
+                AND rb.difficulty_id = prev_rb.difficulty_id
+                AND prev_rb.broken_at < rb.broken_at
+                AND prev_rb.broken_at = (
+                    SELECT MAX(broken_at) FROM record_breaks
+                    WHERE chart_hash = rb.chart_hash
+                    AND instrument_id = rb.instrument_id
+                    AND difficulty_id = rb.difficulty_id
+                    AND broken_at < rb.broken_at
+                )
             WHERE rb.broken_at >= ? AND rb.broken_at < ?
             ORDER BY rb.broken_at ASC
         """, (start_time, end_time))

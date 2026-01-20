@@ -402,10 +402,21 @@ class SettingsMenu:
             print("Current Configuration:")
             print()
 
-            # Difficulty Tiers
-            print("  Difficulty Tiers (for Chart Intensity badges):")
+            # Difficulty Tiers (Average NPS / Chart Intensity)
+            print("  Difficulty Tiers (for Chart Intensity - average NPS):")
             for tier_key in ['tier1', 'tier2', 'tier3', 'tier4']:
                 tier = self.config.get(f'difficulty_tiers.{tier_key}', {})
+                name = tier.get('name', '')
+                emoji = tier.get('emoji', '')
+                min_nps = tier.get('min_nps', 0)
+                max_nps = tier.get('max_nps', 0)
+                print(f"    {tier_key.upper()}: {emoji} {name:10s}  ({min_nps:.1f} - {max_nps:.1f} NPS)")
+            print()
+
+            # Peak Intensity Tiers (1-second burst NPS)
+            print("  Peak Intensity Tiers (for Peak Intensity - 1-sec burst NPS):")
+            for tier_key in ['tier1', 'tier2', 'tier3', 'tier4']:
+                tier = self.config.get(f'peak_intensity_tiers.{tier_key}', {})
                 name = tier.get('name', '')
                 emoji = tier.get('emoji', '')
                 min_nps = tier.get('min_nps', 0)
@@ -424,22 +435,29 @@ class SettingsMenu:
 
             print("Options:")
             print()
-            print("  Difficulty Tiers:")
-            print("    1. Edit Tier 1 (Chill)")
-            print("    2. Edit Tier 2 (Shred)")
-            print("    3. Edit Tier 3 (Brutal)")
-            print("    4. Edit Tier 4 (Insane)")
-            print("    5. Reset All Tiers to Defaults")
+            print("  Difficulty Tiers (Chart Intensity - Average NPS):")
+            print("     1. Edit Tier 1")
+            print("     2. Edit Tier 2")
+            print("     3. Edit Tier 3")
+            print("     4. Edit Tier 4")
+            print("     5. Reset All Chart Intensity Tiers to Defaults")
+            print()
+            print("  Peak Intensity Tiers (1-second Burst NPS):")
+            print("    10. Edit Tier 1")
+            print("    11. Edit Tier 2")
+            print("    12. Edit Tier 3")
+            print("    13. Edit Tier 4")
+            print("    14. Reset All Peak Intensity Tiers to Defaults")
             print()
             print("  /hardest Command:")
-            print("    6. Set Minimum Notes Filter")
-            print("    7. Set Default Min NPS")
-            print("    8. Set Default Max NPS")
+            print("     6. Set Minimum Notes Filter")
+            print("     7. Set Default Min NPS")
+            print("     8. Set Default Max NPS")
             print()
             print("  Emoji Help:")
-            print("    9. Show Available Emoji Names")
+            print("     9. Show Available Emoji Names")
             print()
-            print("    0. Back to Main Menu")
+            print("     0. Back to Main Menu")
             print()
 
             choice = self._get_input("Enter selection: ")
@@ -497,6 +515,17 @@ class SettingsMenu:
                         print_warning("[Settings] Maximum NPS must be greater than 0")
                 except ValueError:
                     print_warning("[Settings] Invalid number format")
+            elif choice in ["10", "11", "12", "13"]:
+                # Edit peak intensity tiers
+                tier_num = int(choice) - 9  # 10->1, 11->2, 12->3, 13->4
+                tier_key = f"tier{tier_num}"
+                self._edit_peak_intensity_tier(tier_key)
+            elif choice == "14":
+                # Reset peak intensity tiers to defaults
+                default = self._create_default_peak_intensity_tiers()
+                self.config.config['peak_intensity_tiers'] = default
+                self.changes_made = True
+                print_success("[Settings] Peak Intensity tiers reset to defaults (Calm/Spicy/Extreme/Ridiculous)")
             elif choice == "9":
                 # Show available emoji names
                 print()
@@ -608,6 +637,79 @@ class SettingsMenu:
             "tier2": {"name": "Shred", "emoji": "🟡", "min_nps": 3.0, "max_nps": 5.0},
             "tier3": {"name": "Brutal", "emoji": "🟠", "min_nps": 5.0, "max_nps": 6.0},
             "tier4": {"name": "Insane", "emoji": "🔴", "min_nps": 6.0, "max_nps": 999.0}
+        }
+
+    def _edit_peak_intensity_tier(self, tier_key: str):
+        """Edit a specific peak intensity tier"""
+        print("\n" + "=" * 80)
+        print(f" Editing Peak Intensity Tier: {tier_key.upper()}")
+        print("=" * 80)
+        print()
+
+        current_tier = self.config.get(f'peak_intensity_tiers.{tier_key}', {})
+        current_name = current_tier.get('name', '')
+        current_emoji = current_tier.get('emoji', '')
+        current_min = current_tier.get('min_nps', 0)
+        current_max = current_tier.get('max_nps', 0)
+
+        print(f"Current: {current_emoji} {current_name} ({current_min:.1f} - {current_max:.1f} NPS)")
+        print()
+        print("Enter new values (press Enter to keep current):")
+        print()
+
+        # Get new values
+        new_name = self._get_input(f"Tier name [{current_name}]: ").strip()
+        if not new_name:
+            new_name = current_name
+
+        # Emoji input with helpful instructions
+        print(f"Emoji [{current_emoji}]:")
+        print("  Tip: Enter emoji name like 'green_circle', ':yellow_circle:', or 'fire'")
+        print("  Common: green_circle, yellow_circle, orange_circle, red_circle, fire, skull")
+        emoji_input = self._get_input("  > ").strip()
+        if not emoji_input:
+            new_emoji = current_emoji
+        else:
+            new_emoji = parse_emoji_input(emoji_input)
+
+        min_nps_str = self._get_input(f"Minimum NPS [{current_min}]: ").strip()
+        try:
+            new_min = float(min_nps_str) if min_nps_str else current_min
+        except ValueError:
+            print_warning("[Settings] Invalid NPS value, keeping current")
+            new_min = current_min
+
+        max_nps_str = self._get_input(f"Maximum NPS [{current_max}]: ").strip()
+        try:
+            new_max = float(max_nps_str) if max_nps_str else current_max
+        except ValueError:
+            print_warning("[Settings] Invalid NPS value, keeping current")
+            new_max = current_max
+
+        # Validate NPS range
+        if new_min >= new_max:
+            print_warning("[Settings] Minimum NPS must be less than maximum NPS. Changes not saved.")
+            input("Press Enter to continue...")
+            return
+
+        # Update config
+        self.config.set(f'peak_intensity_tiers.{tier_key}.name', new_name)
+        self.config.set(f'peak_intensity_tiers.{tier_key}.emoji', new_emoji)
+        self.config.set(f'peak_intensity_tiers.{tier_key}.min_nps', new_min)
+        self.config.set(f'peak_intensity_tiers.{tier_key}.max_nps', new_max)
+        self.changes_made = True
+
+        print()
+        print_success(f"[Settings] {tier_key.upper()} updated: {new_emoji} {new_name} ({new_min:.1f} - {new_max:.1f} NPS)")
+        input("Press Enter to continue...")
+
+    def _create_default_peak_intensity_tiers(self):
+        """Create default peak intensity tiers (for 1-second burst NPS)"""
+        return {
+            "tier1": {"name": "Calm", "emoji": "🟢", "min_nps": 1.0, "max_nps": 5.0},
+            "tier2": {"name": "Spicy", "emoji": "🟡", "min_nps": 5.0, "max_nps": 8.0},
+            "tier3": {"name": "Extreme", "emoji": "🟠", "min_nps": 8.0, "max_nps": 12.0},
+            "tier4": {"name": "Ridiculous", "emoji": "🔴", "min_nps": 12.0, "max_nps": 999.0}
         }
 
     def _announcement_settings_menu(self):
@@ -963,6 +1065,8 @@ class SettingsMenu:
                 ('charter', 'Charter', True),
                 ('accuracy', 'Accuracy & Notes Display (format via option 27)', True),
                 ('play_count', 'Play Count', True),
+                ('chart_intensity', 'Chart Intensity (NPS)', True),
+                ('peak_intensity', 'Peak Intensity (1-sec burst NPS)', True),
                 ('best_streak', 'Best Streak', True),
                 ('previous_record', 'Previous Record', True),
                 ('improvement', 'Improvement', True),
@@ -984,6 +1088,8 @@ class SettingsMenu:
                 ('charter', 'Charter', True),
                 ('accuracy', 'Accuracy & Notes Display (format via option 27)', True),
                 ('play_count', 'Play Count', True),
+                ('chart_intensity', 'Chart Intensity (NPS)', True),
+                ('peak_intensity', 'Peak Intensity (1-sec burst NPS)', True),
                 ('enchor_link', 'Enchor.us Link', True),
                 ('chart_hash', 'Chart Hash', True),
                 ('chart_hash_format', 'Hash Format (abbreviated/full)', 'full'),
@@ -998,6 +1104,8 @@ class SettingsMenu:
                 ('charter', 'Charter', True),
                 ('accuracy', 'Accuracy & Notes Display (format via option 27)', True),
                 ('play_count', 'Play Count', True),
+                ('chart_intensity', 'Chart Intensity (NPS)', True),
+                ('peak_intensity', 'Peak Intensity (1-sec burst NPS)', True),
                 ('previous_best', 'Previous Best', True),
                 ('improvement', 'Improvement', True),
                 ('server_record_holder', 'Server Record Holder', True),
@@ -1018,6 +1126,7 @@ class SettingsMenu:
                 ('accuracy', 'Accuracy & Notes Display (format via option 27)', True),
                 ('play_count', 'Play Count', True),
                 ('chart_intensity', 'Chart Intensity (NPS)', True),
+                ('peak_intensity', 'Peak Intensity (1-sec burst NPS)', True),
                 ('enchor_link', 'Enchor.us Link', True),
                 ('chart_hash', 'Chart Hash', True),
                 ('chart_hash_format', 'Hash Format (abbreviated/full)', 'full'),
@@ -1108,6 +1217,8 @@ class SettingsMenu:
                 ('charter', 'Charter', True),
                 ('accuracy', 'Accuracy & Notes Display (format via option 27)', True),
                 ('play_count', 'Play Count', True),
+                ('chart_intensity', 'Chart Intensity (NPS)', True),
+                ('peak_intensity', 'Peak Intensity (1-sec burst NPS)', True),
                 ('previous_record', 'Previous Record', True),
                 ('improvement', 'Improvement', True),
                 ('enchor_link', 'Enchor.us Link', False),
@@ -1128,6 +1239,8 @@ class SettingsMenu:
                 ('charter', 'Charter', False),
                 ('accuracy', 'Accuracy & Notes Display (format via option 27)', False),
                 ('play_count', 'Play Count', False),
+                ('chart_intensity', 'Chart Intensity (NPS)', False),
+                ('peak_intensity', 'Peak Intensity (1-sec burst NPS)', False),
                 ('enchor_link', 'Enchor.us Link', False),
                 ('chart_hash', 'Chart Hash', True),
                 ('chart_hash_format', 'Hash Format (abbreviated/full)', 'abbreviated'),
@@ -1142,6 +1255,8 @@ class SettingsMenu:
                 ('charter', 'Charter', False),
                 ('accuracy', 'Accuracy & Notes Display (format via option 27)', True),
                 ('play_count', 'Play Count', False),
+                ('chart_intensity', 'Chart Intensity (NPS)', False),
+                ('peak_intensity', 'Peak Intensity (1-sec burst NPS)', False),
                 ('previous_best', 'Previous Best', True),
                 ('improvement', 'Improvement', True),
                 ('server_record_holder', 'Server Record Holder', True),
@@ -1162,6 +1277,7 @@ class SettingsMenu:
                 ('accuracy', 'Accuracy & Notes Display (format via option 27)', True),
                 ('play_count', 'Play Count', False),
                 ('chart_intensity', 'Chart Intensity (NPS)', True),
+                ('peak_intensity', 'Peak Intensity (1-sec burst NPS)', True),
                 ('enchor_link', 'Enchor.us Link', False),
                 ('chart_hash', 'Chart Hash', True),
                 ('chart_hash_format', 'Hash Format (abbreviated/full)', 'abbreviated'),

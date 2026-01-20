@@ -15,8 +15,8 @@ from shared.console import print_success, print_info, print_warning, print_error
 class ConfigManager:
     """Manages bot configuration with version tracking and migrations"""
 
-    CONFIG_VERSION = 6  # Current config version for v2.6.0
-    BOT_VERSION = "2.6.0"
+    CONFIG_VERSION = 7  # Current config version for v2.6.4
+    BOT_VERSION = "2.6.4"
 
     def __init__(self, config_path: Optional[Path] = None):
         """
@@ -400,6 +400,33 @@ class ConfigManager:
                 }
             },
 
+            "peak_intensity_tiers": {
+                "tier1": {
+                    "name": "Calm",
+                    "emoji": "🟢",
+                    "min_nps": 1.0,
+                    "max_nps": 5.0
+                },
+                "tier2": {
+                    "name": "Spicy",
+                    "emoji": "🟡",
+                    "min_nps": 5.0,
+                    "max_nps": 8.0
+                },
+                "tier3": {
+                    "name": "Extreme",
+                    "emoji": "🟠",
+                    "min_nps": 8.0,
+                    "max_nps": 12.0
+                },
+                "tier4": {
+                    "name": "Ridiculous",
+                    "emoji": "🔴",
+                    "min_nps": 12.0,
+                    "max_nps": 999.0
+                }
+            },
+
             "hardest_command": {
                 "min_notes_filter": 100,
                 "default_min_nps": 0.0,
@@ -444,6 +471,10 @@ class ConfigManager:
         # Migration v5 -> v6 (v2.6.0)
         if from_version < 6:
             self._migrate_v5_to_v6()
+
+        # Migration v6 -> v7 (v2.6.4)
+        if from_version < 7:
+            self._migrate_v6_to_v7()
 
         print_success(f"[Config] Migration complete!")
 
@@ -509,6 +540,45 @@ class ConfigManager:
         # Update config version
         self.config['config_version'] = 6
         print_success("[Config] v2.6.0 migration complete - all existing settings preserved!")
+
+    def _migrate_v6_to_v7(self):
+        """Migrate from v6 to v7 (add v2.6.4 features)"""
+        print_info("[Config] Adding v2.6.4 features (Peak Intensity tiers, chart/peak intensity fields for all announcements)")
+
+        default = self._create_default_config()
+
+        # Add peak intensity tiers config if missing
+        if 'peak_intensity_tiers' not in self.config:
+            self.config['peak_intensity_tiers'] = default['peak_intensity_tiers']
+            print_success("[Config] Added peak intensity tier settings (Calm/Spicy/Extreme/Ridiculous)")
+
+        # Add chart_intensity and peak_intensity fields to all announcement types
+        if 'announcements' in self.config:
+            for announcement_type in ['record_breaks', 'first_time_scores', 'personal_bests', 'full_combos']:
+                if announcement_type in self.config['announcements']:
+                    # Add to full_fields if missing
+                    if 'full_fields' in self.config['announcements'][announcement_type]:
+                        if 'chart_intensity' not in self.config['announcements'][announcement_type]['full_fields']:
+                            self.config['announcements'][announcement_type]['full_fields']['chart_intensity'] = True
+                        if 'peak_intensity' not in self.config['announcements'][announcement_type]['full_fields']:
+                            self.config['announcements'][announcement_type]['full_fields']['peak_intensity'] = True
+
+                    # Add to minimalist_fields if missing
+                    if 'minimalist_fields' in self.config['announcements'][announcement_type]:
+                        if 'chart_intensity' not in self.config['announcements'][announcement_type]['minimalist_fields']:
+                            # Default ON for record_breaks and full_combos, OFF for others
+                            default_value = True if announcement_type in ['record_breaks', 'full_combos'] else False
+                            self.config['announcements'][announcement_type]['minimalist_fields']['chart_intensity'] = default_value
+                        if 'peak_intensity' not in self.config['announcements'][announcement_type]['minimalist_fields']:
+                            # Default ON for record_breaks and full_combos, OFF for others
+                            default_value = True if announcement_type in ['record_breaks', 'full_combos'] else False
+                            self.config['announcements'][announcement_type]['minimalist_fields']['peak_intensity'] = default_value
+
+            print_success("[Config] Added chart intensity and peak intensity fields to all announcement types")
+
+        # Update config version
+        self.config['config_version'] = 7
+        print_success("[Config] v2.6.4 migration complete - all existing settings preserved!")
 
     def _deep_merge_config(self, user_config: dict, default_config: dict) -> dict:
         """

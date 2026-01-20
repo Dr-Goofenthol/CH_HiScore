@@ -121,7 +121,7 @@ def generate_daily_log(activity_data: Dict, date_str: str) -> str:
         lines.append(f"Mystery Hashes: {mystery}/{total_charts} charts ({mystery_pct:.1f}%)")
         lines.append("")
 
-    # RECORDS BROKEN TODAY
+    # RECORDS BROKEN TODAY - v2.6.4: Enhanced with improvement % and held duration
     if record_breaks:
         lines.append("RECORDS BROKEN TODAY")
         lines.append("-" * 20)
@@ -133,7 +133,16 @@ def generate_daily_log(activity_data: Dict, date_str: str) -> str:
             # Song info
             song_title = rec.get('song_title', '[unknown]')
             artist = rec.get('song_artist', '')
-            song_display = f"{song_title} - {artist}" if artist else song_title
+            charter = rec.get('song_charter', '')
+            chart_hash = rec.get('chart_hash', '')
+
+            # Include charter in display
+            if charter:
+                song_display = f"{song_title} ({charter})"
+            else:
+                song_display = song_title
+            if artist:
+                song_display = f"{song_display} - {artist}"
 
             # Instrument and difficulty
             inst = INSTRUMENTS.get(rec['instrument_id'], '?')
@@ -142,18 +151,55 @@ def generate_daily_log(activity_data: Dict, date_str: str) -> str:
             # Previous holder info
             prev_score = rec.get('previous_score')
             prev_holder = rec.get('previous_holder_name')
+            new_score = rec['new_score']
 
             lines.append(f"[{time_str}] {rec['breaker_name']} broke the record on {song_display}")
+
             if prev_score and prev_holder:
-                lines.append(f"           {diff} {inst}: {rec['new_score']:,} pts (prev: {prev_score:,} by {prev_holder})")
+                # Calculate improvement percentage
+                improvement = new_score - prev_score
+                improvement_pct = (improvement / prev_score * 100) if prev_score > 0 else 0
+
+                # Calculate how long record was held
+                held_duration_str = ""
+                if rec.get('previous_record_set_at'):
+                    try:
+                        from datetime import datetime
+                        broken_time = datetime.fromisoformat(timestamp)
+                        set_time = datetime.fromisoformat(rec['previous_record_set_at'])
+                        held_duration = broken_time - set_time
+
+                        days = held_duration.days
+                        hours = held_duration.seconds // 3600
+                        minutes = (held_duration.seconds % 3600) // 60
+
+                        if days > 0:
+                            held_duration_str = f" (held for {days}d {hours}h)"
+                        elif hours > 0:
+                            held_duration_str = f" (held for {hours}h {minutes}m)"
+                        elif minutes > 0:
+                            held_duration_str = f" (held for {minutes}m)"
+                    except:
+                        pass
+
+                lines.append(f"           {diff} {inst}: {new_score:,} pts [+{improvement_pct:.1f}% vs. {prev_holder}]")
+                lines.append(f"           Previous: {prev_score:,} pts{held_duration_str}")
             elif prev_score:
-                lines.append(f"           {diff} {inst}: {rec['new_score']:,} pts (prev: {prev_score:,})")
+                improvement = new_score - prev_score
+                improvement_pct = (improvement / prev_score * 100) if prev_score > 0 else 0
+                lines.append(f"           {diff} {inst}: {new_score:,} pts [+{improvement_pct:.1f}%]")
+                lines.append(f"           Previous: {prev_score:,} pts")
             else:
-                lines.append(f"           {diff} {inst}: {rec['new_score']:,} pts (first score on chart)")
+                lines.append(f"           {diff} {inst}: {new_score:,} pts [FIRST SCORE ON CHART]")
+
+            # Add chart hash
+            if chart_hash:
+                lines.append(f"           Hash: [{chart_hash[:8]}]")
+
             lines.append("")
         lines.append("")
 
-    # DETAILED SUBMISSIONS (Chronological)
+    # DETAILED SUBMISSIONS (Chronological) - v2.6.4: Enhanced multi-line format
     if all_submissions:
         lines.append("DETAILED SUBMISSIONS (Chronological)")
         lines.append("-" * 36)
@@ -166,17 +212,40 @@ def generate_daily_log(activity_data: Dict, date_str: str) -> str:
             # Song info
             song_title = sub.get('song_title', '[unknown]')
             artist = sub.get('song_artist', '')
-            song_display = f"{song_title} - {artist}" if artist else song_title
+            charter = sub.get('song_charter', '')
+            chart_hash = sub.get('chart_hash', '')
 
-            # Instrument and difficulty
+            # Line 1: Timestamp, username, song title (with charter if available)
+            if charter:
+                song_display = f"{song_title} ({charter})"
+            else:
+                song_display = song_title
+            if artist:
+                song_display = f"{song_display} - {artist}"
+
+            lines.append(f"[{time_str}] {sub['discord_username']} - {song_display}")
+
+            # Line 2: Difficulty/instrument, score, accuracy, FC indicator, stars
             inst = INSTRUMENTS.get(sub['instrument_id'], '?')
             diff = DIFFICULTIES.get(sub['difficulty_id'], '?')
 
+            # Calculate accuracy
+            notes_hit = sub.get('notes_hit')
+            notes_total = sub.get('notes_total')
+            accuracy_str = ""
+            if notes_hit is not None and notes_total is not None and notes_total > 0:
+                accuracy = (notes_hit / notes_total) * 100
+                accuracy_str = f" {notes_hit}/{notes_total} notes ({accuracy:.1f}%)"
+
+            # FC indicator
+            is_fc = sub.get('is_full_combo', 0) == 1
+            fc_tag = " [FC]" if is_fc else ""
+
             # Stars
             stars = sub.get('stars', 0)
-            star_display = "⭐" * stars if stars > 0 else ""
+            star_display = " " + ("⭐" * stars) if stars > 0 else ""
 
-            # Check if this was a record
+            # Check if this was a record or personal best
             is_record = any(
                 rb['chart_hash'] == sub['chart_hash'] and
                 rb['instrument_id'] == sub['instrument_id'] and
@@ -185,10 +254,35 @@ def generate_daily_log(activity_data: Dict, date_str: str) -> str:
                 rb['new_score'] == sub['score']
                 for rb in record_breaks
             )
-            record_tag = " [RECORD]" if is_record else ""
+            record_tag = " [RECORD]" if is_record else " [PB]"
 
-            lines.append(f"[{time_str}] {sub['discord_username']} - {song_display}")
-            lines.append(f"           ({diff} {inst}): {sub['score']:,} pts {star_display}{record_tag}")
+            lines.append(f"           {diff} {inst}: {sub['score']:,} pts{fc_tag}{accuracy_str}{star_display}{record_tag}")
+
+            # Line 3: Chart metadata (NPS, peak NPS, play count, hash)
+            metadata_parts = []
+
+            # Chart difficulty indicators
+            chart_nps = sub.get('chart_nps')
+            chart_peak_nps = sub.get('chart_peak_nps')
+            if chart_nps is not None and chart_nps > 0:
+                if chart_peak_nps is not None and chart_peak_nps > 0:
+                    metadata_parts.append(f"Chart: {chart_nps:.1f} NPS (peak: {chart_peak_nps:.1f})")
+                else:
+                    metadata_parts.append(f"Chart: {chart_nps:.1f} NPS")
+
+            # Play count
+            play_count = sub.get('play_count')
+            if play_count is not None and play_count > 0:
+                metadata_parts.append(f"Play #{play_count}")
+
+            # Hash (abbreviated)
+            if chart_hash:
+                metadata_parts.append(f"Hash: [{chart_hash[:8]}]")
+
+            if metadata_parts:
+                lines.append(f"           {' | '.join(metadata_parts)}")
+
+            lines.append("")  # Blank line between entries
 
         lines.append("")
 

@@ -139,7 +139,7 @@ class ChartData:
     def calculate_peak_note_density(self, instrument: Instrument, difficulty: Difficulty, window_seconds: float = 1.0) -> float:
         """
         Calculate peak NPS for a specific instrument/difficulty combination.
-        v2.6.3: Added to support per-chart peak intensity display.
+        v2.6.4: Fixed to actually call the helper function (was stub in v2.6.3).
 
         Args:
             instrument: Instrument to analyze
@@ -149,9 +149,8 @@ class ChartData:
         Returns:
             Peak notes per second in any window
         """
-        # Will call _calculate_peak_nps helper function defined later in this module
-        # Note: This is a forward reference - the function is defined after the class
-        pass  # Actual implementation added via monkey-patching below
+        # Call the helper function defined later in this module
+        return _calculate_peak_nps(self, instrument, difficulty, window_seconds)
 
 
 class ChartParser:

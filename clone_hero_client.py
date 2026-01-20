@@ -4,7 +4,7 @@ Clone Hero High Score Client
 Monitors your Clone Hero scores and submits them to the Discord scoreboard.
 """
 
-VERSION = "2.6.3"
+VERSION = "2.6.4"
 
 # GitHub repository for auto-updates
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
@@ -47,6 +47,137 @@ except ImportError:
 
 # Initialize logger
 logger = get_client_logger()
+
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def get_instrument_name(instrument_id: int) -> str:
+    """
+    Get instrument name from instrument ID
+
+    Args:
+        instrument_id: Instrument ID (0-10)
+
+    Returns:
+        Instrument name string
+    """
+    instrument_names = {
+        0: "Lead Guitar",
+        1: "Bass Guitar",
+        2: "Rhythm Guitar",
+        3: "Keys",
+        4: "Drums",
+        5: "GHL Guitar",
+        6: "GHL Bass",
+        7: "Unknown (ID 7)",
+        8: "Co-op",
+        9: "Unknown (ID 9)",
+        10: "Unknown (ID 10)"
+    }
+    return instrument_names.get(instrument_id, f"Unknown (ID {instrument_id})")
+
+
+# ============================================================================
+# SESSION TRACKING (v2.6.4)
+# ============================================================================
+
+class SessionTracker:
+    """
+    Tracks scoring activity for the current session
+
+    Maintains statistics about scores submitted since tracker started,
+    including records broken, FCs achieved, personal bests, etc.
+    """
+
+    def __init__(self):
+        self.session_start = time.time()
+        self.scores = []  # All scores this session
+        self.records_broken = []  # Scores that broke records
+        self.new_fcs = []  # New full combos
+        self.personal_bests = []  # Personal bests (not records)
+        self.total_notes_hit = 0
+
+    def add_score(self, score_data: dict):
+        """
+        Track a score submission
+
+        Args:
+            score_data: Dict with keys:
+                - chart_hash, instrument_id, difficulty_id, score
+                - song_title, song_artist (optional)
+                - is_record, is_fc, is_personal_best
+                - notes_hit, notes_total (optional)
+                - completion_percent
+                - timestamp
+        """
+        # Add timestamp if not present
+        if 'timestamp' not in score_data:
+            score_data['timestamp'] = time.time()
+
+        self.scores.append(score_data)
+
+        # Categorize the score
+        if score_data.get('is_record'):
+            self.records_broken.append(score_data)
+        if score_data.get('is_fc') and score_data.get('is_new_fc'):
+            self.new_fcs.append(score_data)
+        if score_data.get('is_personal_best') and not score_data.get('is_record'):
+            self.personal_bests.append(score_data)
+
+        # Track notes
+        if score_data.get('notes_hit'):
+            self.total_notes_hit += score_data['notes_hit']
+
+    def get_session_duration(self) -> tuple:
+        """Get session duration in (hours, minutes, seconds)"""
+        duration_seconds = int(time.time() - self.session_start)
+        hours = duration_seconds // 3600
+        minutes = (duration_seconds % 3600) // 60
+        seconds = duration_seconds % 60
+        return (hours, minutes, seconds)
+
+    def get_average_accuracy(self) -> float:
+        """Calculate average accuracy for the session"""
+        if not self.scores:
+            return 0.0
+        accuracies = [s.get('completion_percent', 0) for s in self.scores]
+        return sum(accuracies) / len(accuracies)
+
+    def get_instruments_played(self) -> dict:
+        """Get count of scores per instrument"""
+        from collections import Counter
+        instrument_names = {
+            0: "Lead Guitar", 1: "Bass Guitar", 2: "Rhythm Guitar",
+            3: "Keys", 4: "Drums", 5: "GHL Guitar", 6: "GHL Bass"
+        }
+        instruments = [s.get('instrument_id') for s in self.scores]
+        counts = Counter(instruments)
+        return {instrument_names.get(i, f"Unknown({i})"): count
+                for i, count in counts.items()}
+
+    def get_best_score(self) -> dict:
+        """Get highest scoring play this session"""
+        if not self.scores:
+            return None
+        return max(self.scores, key=lambda s: s.get('score', 0))
+
+    def get_recent_scores(self, limit=5) -> list:
+        """Get most recent scores (newest first)"""
+        return list(reversed(self.scores[-limit:]))
+
+    def has_activity(self) -> bool:
+        """Check if any scores were submitted this session"""
+        return len(self.scores) > 0
+
+    def reset(self):
+        """Reset session tracking (start new session)"""
+        self.__init__()
+
+
+# Global session tracker instance
+session_tracker = SessionTracker()
 
 
 def show_ascii_banner():
@@ -120,6 +251,10 @@ _ocr_stats = {
     'successes': 0,
     'last_attempt': None
 }
+
+# v2.6.4: Smart prompting for chart scans (session-scoped)
+_unknown_chart_count = 0
+_scan_prompt_shown_this_session = False
 
 # Chart file cache for v2.6.0 chart parsing (chart_hash -> Path to chart file)
 _chart_file_cache = {}
@@ -248,6 +383,52 @@ def set_windows_startup(enable: bool) -> bool:
     except Exception as e:
         print_error(f"Failed to modify Windows startup: {e}")
         return False
+
+
+def ensure_startup_entry_current():
+    """
+    Update Windows startup registry entry to current executable path.
+    Called on startup when start_with_windows is enabled.
+    Prevents startup failures after updating to new exe versions.
+    """
+    if sys.platform != 'win32':
+        return
+
+    settings = load_settings()
+    if not settings.get('start_with_windows', False):
+        return  # Feature not enabled
+
+    # Silently update registry to point to current exe
+    app_name = "CloneHeroScoreTracker"
+    current_exe_path = get_executable_path()
+
+    try:
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0,
+            winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE
+        )
+
+        # Check if entry exists and if it's outdated
+        try:
+            existing_path, _ = winreg.QueryValueEx(key, app_name)
+            existing_path_clean = existing_path.strip('"')
+            current_path_clean = current_exe_path
+
+            # Update if paths don't match
+            if existing_path_clean != current_path_clean:
+                winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, f'"{current_exe_path}"')
+                logger.info(f"Updated startup registry entry to: {current_exe_path}")
+        except FileNotFoundError:
+            # Entry doesn't exist, create it
+            winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, f'"{current_exe_path}"')
+            logger.info(f"Created startup registry entry: {current_exe_path}")
+
+        winreg.CloseKey(key)
+    except Exception as e:
+        # Silent fail - don't block startup
+        logger.debug(f"Failed to update startup entry: {e}")
 
 
 # System tray globals
@@ -1494,6 +1675,77 @@ def format_score_output(score, song_title, song_artist, song_charter, notes_hit,
     print("=" * 80)
 
 
+def handle_unparsed_score_warning(chart_hash):
+    """
+    Show warning when about to submit unparsed score
+
+    Returns:
+        str: "submit", "scan", or "skip" based on user choice
+    """
+    print("\n" + "="*60)
+    print_warning("WARNING: Missing Song Metadata")
+    print("="*60)
+    print()
+    print("This score cannot be matched to a song name.")
+    print(f"Chart Hash: [{chart_hash[:8]}]")
+    print()
+    print("Submitting without metadata will result in:")
+    print("  • Discord announcements showing only hash")
+    print("  • Song won't appear in searches")
+    print("  • Can't generate Enchor.us links")
+    print()
+    print("Options:")
+    print("  1. Run 'scancharts' now and retry (RECOMMENDED)")
+    print("  2. Submit anyway with abbreviated hash")
+    print("  3. Skip this score (don't submit)")
+    print()
+
+    while True:
+        choice = input("Choice [1]: ").strip() or "1"
+
+        if choice == "1":
+            print()
+            scancharts_command()
+            print()
+            return "scan"
+        elif choice == "2":
+            print_warning("  Submitting with abbreviated hash...")
+            return "submit"
+        elif choice == "3":
+            print_info("  Score skipped.")
+            return "skip"
+        else:
+            print_warning("  Invalid choice. Enter 1, 2, or 3.")
+
+
+def check_smart_prompt_for_scan():
+    """
+    Check if we should prompt user to run scancharts
+
+    Triggers after 5 unknown charts + once per session max
+    """
+    global _unknown_chart_count, _scan_prompt_shown_this_session
+
+    _unknown_chart_count += 1
+
+    # Only prompt if we've hit threshold AND haven't prompted yet this session
+    if _unknown_chart_count >= 5 and not _scan_prompt_shown_this_session:
+        print("\n" + "="*60)
+        print_warning(f"Detected {_unknown_chart_count} new charts without metadata")
+        print_info("Running 'scancharts' will enable full metadata for offline scores")
+        print()
+        response = input("Run chart scan now? (yes/no): ").strip().lower()
+
+        if response == 'yes' or response == 'y':
+            print()
+            scancharts_command()
+            print()
+
+        # Mark as shown for this session (won't prompt again)
+        _scan_prompt_shown_this_session = True
+        _unknown_chart_count = 0
+
+
 def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
     """Create a score handler with the given auth token and optional song cache"""
 
@@ -1617,6 +1869,48 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
                 print_warning(f"Failed to check songcache.bin: {e}")
 
         # =====================================================
+        # STEP 3.5: Try chart index for offline scores (v2.6.4)
+        # =====================================================
+        # If still no metadata, check local chart index
+        if score_type == "raw":
+            print_info("Checking local chart index...")
+            chart_info = lookup_chart_in_index(score.chart_hash)
+
+            if chart_info:
+                print_success("Chart found in local index!")
+                print(f"    - Title: {chart_info['title']}")
+                if chart_info.get('artist'):
+                    print(f"    - Artist: {chart_info['artist']}")
+                if chart_info.get('charter'):
+                    print(f"    - Charter: {chart_info['charter']}")
+
+                # Use chart index metadata
+                song_title = chart_info['title']
+                song_artist = chart_info.get('artist', '')
+                song_charter = chart_info.get('charter')
+                score_type = "rich"
+            else:
+                # Not in index - try on-demand scan
+                print_info("Chart not in index, attempting on-demand scan...")
+                found_path = find_chart_by_hash_on_demand(score.chart_hash, max_duration=10)
+
+                if found_path:
+                    # Parse found chart
+                    try:
+                        ini_data = parse_song_ini(str(found_path))
+                        if ini_data:
+                            song_title = ini_data.get('name', ini_data.get('title', song_title))
+                            song_artist = ini_data.get('artist', song_artist)
+                            song_charter = ini_data.get('charter', ini_data.get('frets'))
+                            score_type = "rich"
+                            print_success("Metadata extracted from found chart!")
+                    except Exception as e:
+                        logger.debug(f"Failed to parse found chart: {e}")
+                else:
+                    print_warning("Chart not found via on-demand scan")
+                    print("    (Will submit with abbreviated hash)")
+
+        # =====================================================
         # STEP 4: Parse chart file for accurate note count (v2.6.0)
         # =====================================================
         total_notes_in_chart = None
@@ -1659,6 +1953,32 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
         # Calculate notes_hit from completion_percent if we have total notes
         if notes_hit is None and notes_total is not None and score.completion_percent > 0:
             notes_hit = int(notes_total * (score.completion_percent / 100.0))
+
+        # =====================================================
+        # STEP 4.5: Pre-submission warning for unparsed scores (v2.6.4)
+        # =====================================================
+        if score_type == "raw":
+            # Track unknown chart for smart prompting
+            check_smart_prompt_for_scan()
+
+            # Show pre-submission warning
+            action = handle_unparsed_score_warning(score.chart_hash)
+
+            if action == "skip":
+                return  # Don't submit this score
+            elif action == "scan":
+                # User ran scancharts - check index again
+                chart_info = lookup_chart_in_index(score.chart_hash)
+                if chart_info:
+                    print_success("Chart now in index! Using metadata...")
+                    song_title = chart_info['title']
+                    song_artist = chart_info.get('artist', '')
+                    song_charter = chart_info.get('charter')
+                    score_type = "rich"
+                else:
+                    print_warning("Chart still not found after scan")
+                    print_info("Proceeding with abbreviated hash...")
+            # action == "submit" - continue with raw score
 
         # Send score to bot API
         try:
@@ -1704,6 +2024,26 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
 
             if response.status_code == 200:
                 result = response.json()
+
+                # Track in session (v2.6.4)
+                session_tracker.add_score({
+                    'chart_hash': score.chart_hash,
+                    'instrument_id': score.instrument_id,
+                    'difficulty_id': score.difficulty,
+                    'score': score.score,
+                    'song_title': song_title,
+                    'song_artist': song_artist,
+                    'song_charter': song_charter,
+                    'is_record': result.get('is_record_broken', False),
+                    'is_fc': is_fc,
+                    'is_new_fc': is_fc and result.get('is_high_score', False) and result.get('improvement', 0) == 0,  # New FC if first time FC
+                    'is_personal_best': result.get('is_high_score', False),
+                    'notes_hit': notes_hit,
+                    'notes_total': notes_total,
+                    'completion_percent': score.completion_percent,
+                    'stars': score.stars,
+                    'nps': nps
+                })
 
                 # Display score with API response (v2.6.2 format)
                 print()  # Spacing before result display
@@ -2195,10 +2535,18 @@ def settings_menu():
         else:
             print_plain("    Disabled", indent=1)
 
+        # v2.6.4: Session summary setting
+        current_session_summary = settings.get('show_session_summary_on_exit', True)
+        print_plain(f"\n[7] Show Session Summary on Exit")
+        if current_session_summary:
+            print_success("Enabled", indent=1)
+        else:
+            print_plain("    Disabled", indent=1)
+
         print_plain(f"\n[0] Back to main menu")
         print("\n" + "=" * 50)
 
-        choice = input("Select option (0-6): ").strip()
+        choice = input("Select option (0-7): ").strip()
 
         if choice == '0':
             break
@@ -2441,6 +2789,26 @@ def settings_menu():
                 settings['bridge_integration']['enabled'] = False
                 save_settings(settings)
                 print_success("Bridge Integration disabled")
+
+        elif choice == '7':
+            current_session_summary = settings.get('show_session_summary_on_exit', True)
+            print(f"\nShow Session Summary on Exit is currently: {'Enabled' if current_session_summary else 'Disabled'}")
+            print("\nWhen enabled, typing 'quit' will show a summary of your session")
+            print("before exiting (if you submitted any scores).")
+
+            print(f"\n  1. Enable Session Summary on Exit")
+            print(f"  2. Disable Session Summary on Exit")
+            print(f"  0. Cancel")
+
+            summary_choice = input("\nSelect option: ").strip()
+            if summary_choice == '1':
+                settings['show_session_summary_on_exit'] = True
+                save_settings(settings)
+                print_success("Session Summary on Exit enabled")
+            elif summary_choice == '2':
+                settings['show_session_summary_on_exit'] = False
+                save_settings(settings)
+                print_success("Session Summary on Exit disabled")
 
         else:
             print_warning("Invalid option")
@@ -2886,6 +3254,963 @@ def release_instance_lock():
         pass
 
 
+# Records Report Generation (v2.6.4)
+INSTRUMENTS = {0: "Lead", 1: "Bass", 2: "Rhythm", 3: "Keys", 4: "Drums", 7: "GHLGuitar", 8: "GHLBass", 9: "Vocals", 10: "CoDrums"}
+DIFFICULTIES = {0: "Easy", 1: "Medium", 2: "Hard", 3: "Expert"}
+
+
+def format_records_text(data: dict) -> str:
+    """Format records report as human-readable text"""
+    from datetime import datetime
+
+    lines = []
+    lines.append("=" * 60)
+    lines.append("YOUR RECORD HOLDINGS REPORT")
+    lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append(f"Player: {data['user']['discord_username']}")
+    lines.append(f"Total Records Held: {data['total_records']}")
+    lines.append("=" * 60)
+    lines.append("")
+
+    if data['total_records'] == 0:
+        lines.append("You don't hold any #1 records yet.")
+        lines.append("Keep playing to earn your first record!")
+        lines.append("")
+        lines.append("=" * 60)
+        return "\n".join(lines)
+
+    for i, record in enumerate(data['records'], 1):
+        lines.append(f"RECORD #{i}")
+        lines.append("-" * 8)
+
+        # Song info
+        lines.append(f"Song: {record['song_title']}")
+        if record.get('song_artist'):
+            lines.append(f"Artist: {record['song_artist']}")
+        if record.get('song_charter'):
+            lines.append(f"Charter: {record['song_charter']}")
+        if record.get('song_album'):
+            lines.append(f"Album: {record['song_album']}")
+        if record.get('song_genre'):
+            lines.append(f"Genre: {record['song_genre']}")
+        lines.append("")
+
+        # Chart details
+        lines.append("Chart Details:")
+        inst_name = INSTRUMENTS.get(record['instrument_id'], f"Unknown({record['instrument_id']})")
+        diff_name = DIFFICULTIES.get(record['difficulty_id'], f"Unknown({record['difficulty_id']})")
+        lines.append(f"  Instrument: {inst_name}")
+        lines.append(f"  Difficulty: {diff_name}")
+
+        if record.get('chart_nps'):
+            if record.get('chart_peak_nps'):
+                lines.append(f"  NPS: {record['chart_nps']:.1f} (Peak: {record['chart_peak_nps']:.1f})")
+            else:
+                lines.append(f"  NPS: {record['chart_nps']:.1f}")
+
+        if record.get('chart_total_notes'):
+            lines.append(f"  Total Notes: {record['chart_total_notes']:,}")
+
+        if record.get('song_length_ms'):
+            length_sec = record['song_length_ms'] / 1000
+            minutes = int(length_sec // 60)
+            seconds = int(length_sec % 60)
+            lines.append(f"  Song Length: {minutes}m {seconds}s")
+
+        lines.append("")
+
+        # Your score
+        lines.append("Your Score:")
+        lines.append(f"  Score: {record['score']:,} pts")
+
+        if record.get('notes_hit') and record.get('notes_total'):
+            accuracy = (record['notes_hit'] / record['notes_total']) * 100
+            lines.append(f"  Accuracy: {accuracy:.1f}% ({record['notes_hit']}/{record['notes_total']} notes)")
+
+        fc_status = "Yes" if record.get('is_full_combo') else "No"
+        stars = "⭐" * record.get('stars', 0) if record.get('stars') else ""
+        lines.append(f"  Full Combo: {fc_status} {stars}")
+
+        if record.get('submitted_at'):
+            # Parse timestamp and calculate days ago
+            try:
+                sub_time = datetime.fromisoformat(record['submitted_at'].replace(' ', 'T'))
+                now = datetime.now()
+                delta = now - sub_time
+                days = delta.days
+                hours = delta.seconds // 3600
+
+                if days > 0:
+                    time_ago = f"{days} day{'s' if days != 1 else ''} ago"
+                elif hours > 0:
+                    time_ago = f"{hours} hour{'s' if hours != 1 else ''} ago"
+                else:
+                    time_ago = "today"
+
+                lines.append(f"  Achieved: {sub_time.strftime('%Y-%m-%d %H:%M:%S')} ({time_ago})")
+
+                # Calculate held duration
+                lines.append(f"  Held For: {days} days, {hours} hours")
+            except:
+                lines.append(f"  Achieved: {record['submitted_at']}")
+
+        if record.get('play_count'):
+            lines.append(f"  Play Count: {record['play_count']}")
+
+        lines.append("")
+
+        # Previous record
+        if record.get('previous_score'):
+            lines.append("Previous Record:")
+            lines.append(f"  Score: {record['previous_score']:,} pts")
+            if record.get('previous_holder'):
+                lines.append(f"  Holder: {record['previous_holder']}")
+            if record.get('previous_set_at'):
+                lines.append(f"  Set: {record['previous_set_at']}")
+
+            # Calculate improvement
+            improvement = record['score'] - record['previous_score']
+            improvement_pct = (improvement / record['previous_score']) * 100
+            lines.append(f"  Improvement: +{improvement_pct:.1f}% (+{improvement:,} pts)")
+        else:
+            lines.append("Previous Record: None (You set the first score!)")
+
+        lines.append("")
+
+        # Chart hash and link
+        if record.get('chart_hash'):
+            lines.append(f"Chart Hash: [{record['chart_hash'][:16]}...]")
+            # Generate Enchor.us link
+            enchor_url = f"https://enchor.us/?s={record['chart_hash']}&i={record['instrument_id']}&d={record['difficulty_id']}"
+            lines.append(f"Enchor.us: {enchor_url}")
+
+        lines.append("")
+        lines.append("")
+
+    lines.append("=" * 60)
+    lines.append("End of Report")
+    lines.append("=" * 60)
+
+    return "\n".join(lines)
+
+
+def format_records_csv(data: dict) -> str:
+    """Format records report as CSV"""
+    import csv
+    from io import StringIO
+
+    output = StringIO()
+    writer = csv.writer(output)
+
+    # Header
+    writer.writerow([
+        'Rank', 'Song', 'Artist', 'Charter', 'Album', 'Genre',
+        'Instrument', 'Difficulty', 'Score', 'Accuracy', 'FC', 'Stars',
+        'Notes Hit', 'Notes Total', 'NPS', 'Peak NPS', 'Song Length (ms)',
+        'Achieved Date', 'Held Duration (days)', 'Play Count',
+        'Previous Score', 'Previous Holder', 'Improvement %',
+        'Chart Hash', 'Enchor Link'
+    ])
+
+    # Data rows
+    for i, record in enumerate(data['records'], 1):
+        inst_name = INSTRUMENTS.get(record['instrument_id'], f"Unknown({record['instrument_id']})")
+        diff_name = DIFFICULTIES.get(record['difficulty_id'], f"Unknown({record['difficulty_id']})")
+
+        # Calculate accuracy
+        accuracy = ""
+        if record.get('notes_hit') and record.get('notes_total'):
+            accuracy = f"{(record['notes_hit'] / record['notes_total']) * 100:.1f}"
+
+        # Calculate held duration in days
+        held_days = ""
+        if record.get('submitted_at'):
+            try:
+                from datetime import datetime
+                sub_time = datetime.fromisoformat(record['submitted_at'].replace(' ', 'T'))
+                now = datetime.now()
+                delta = now - sub_time
+                held_days = f"{delta.days + (delta.seconds / 86400):.2f}"
+            except:
+                pass
+
+        # Calculate improvement
+        improvement_pct = ""
+        if record.get('previous_score'):
+            improvement = record['score'] - record['previous_score']
+            improvement_pct = f"{(improvement / record['previous_score']) * 100:.1f}"
+
+        # Enchor.us link
+        enchor_url = ""
+        if record.get('chart_hash'):
+            enchor_url = f"https://enchor.us/?s={record['chart_hash']}&i={record['instrument_id']}&d={record['difficulty_id']}"
+
+        writer.writerow([
+            i,
+            record.get('song_title', ''),
+            record.get('song_artist', ''),
+            record.get('song_charter', ''),
+            record.get('song_album', ''),
+            record.get('song_genre', ''),
+            inst_name,
+            diff_name,
+            record.get('score', ''),
+            accuracy,
+            'Yes' if record.get('is_full_combo') else 'No',
+            record.get('stars', ''),
+            record.get('notes_hit', ''),
+            record.get('notes_total', ''),
+            f"{record.get('chart_nps', ''):.1f}" if record.get('chart_nps') else '',
+            f"{record.get('chart_peak_nps', ''):.1f}" if record.get('chart_peak_nps') else '',
+            record.get('song_length_ms', ''),
+            record.get('submitted_at', ''),
+            held_days,
+            record.get('play_count', ''),
+            record.get('previous_score', ''),
+            record.get('previous_holder', ''),
+            improvement_pct,
+            record.get('chart_hash', ''),
+            enchor_url
+        ])
+
+    return output.getvalue()
+
+
+def format_records_json(data: dict) -> str:
+    """Format records report as JSON (pretty-printed)"""
+    return json.dumps(data, indent=2, ensure_ascii=False)
+
+
+def recordsreport_command(format_option=None):
+    """
+    Generate comprehensive records report showing all #1 records held by user
+
+    Args:
+        format_option: Optional format override ('text', 'csv', 'json', 'all')
+    """
+    import os
+    from datetime import datetime
+
+    print_header("GENERATE RECORDS REPORT")
+    print()
+    print("This will generate a comprehensive report of all records")
+    print("you currently hold (#1 position) with full metadata.")
+    print()
+
+    # Check auth token
+    config = load_config()
+    auth_token = config.get('auth_token')
+    if not auth_token:
+        print_error("Not paired! Use Discord to pair first (/pair)")
+        return
+
+    bot_url = get_bot_url()
+
+    # Fetch records from server
+    print("[*] Fetching your records from server...")
+    try:
+        response = requests.get(
+            f"{bot_url}/api/user_records",
+            headers={'Authorization': f'Bearer {auth_token}'},
+            timeout=30
+        )
+
+        if response.status_code != 200:
+            print_error(f"Server error: HTTP {response.status_code}")
+            return
+
+        data = response.json()
+        if not data.get('success'):
+            print_error(f"Server error: {data.get('error', 'Unknown')}")
+            return
+
+        total_records = data.get('total_records', 0)
+        print_success(f"Found {total_records} records!")
+
+        if total_records == 0:
+            print_info("You don't hold any #1 records yet.")
+            print_info("Keep playing to earn your first record!")
+            print()
+            return
+
+    except Exception as e:
+        print_error(f"Failed to fetch records: {e}")
+        return
+
+    # Determine format choice
+    if format_option:
+        # Command-line option provided
+        format_map = {
+            'text': '1',
+            'csv': '2',
+            'json': '3',
+            'all': '4'
+        }
+        choice = format_map.get(format_option.lower(), '1')
+    else:
+        # Interactive mode
+        print()
+        print("Select output format:")
+        print("  1. Text (human-readable, default)")
+        print("  2. CSV (spreadsheet)")
+        print("  3. JSON (programmatic)")
+        print("  4. All formats")
+        print()
+        choice = input("Choice [1]: ").strip() or "1"
+
+    # Generate output directory
+    ch_dir = Path.home() / 'Documents' / 'Clone Hero'
+    output_dir = ch_dir / 'records'
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generate timestamp for filename
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    username = data['user']['discord_username'].replace(' ', '_')
+
+    generated_files = []
+
+    print()
+    print("[*] Generating report...")
+
+    # Generate requested formats
+    if choice in ('1', '4'):
+        # Text format
+        text_content = format_records_text(data)
+        text_file = output_dir / f"{username}_records_{timestamp}.txt"
+        with open(text_file, 'w', encoding='utf-8') as f:
+            f.write(text_content)
+        generated_files.append(str(text_file))
+        print_success(f"Text report: {text_file}")
+
+    if choice in ('2', '4'):
+        # CSV format
+        csv_content = format_records_csv(data)
+        csv_file = output_dir / f"{username}_records_{timestamp}.csv"
+        with open(csv_file, 'w', encoding='utf-8', newline='') as f:
+            f.write(csv_content)
+        generated_files.append(str(csv_file))
+        print_success(f"CSV report: {csv_file}")
+
+    if choice in ('3', '4'):
+        # JSON format
+        json_content = format_records_json(data)
+        json_file = output_dir / f"{username}_records_{timestamp}.json"
+        with open(json_file, 'w', encoding='utf-8') as f:
+            f.write(json_content)
+        generated_files.append(str(json_file))
+        print_success(f"JSON report: {json_file}")
+
+    print()
+    print_success(f"Report generation complete! ({len(generated_files)} file(s) created)")
+    print()
+    print("Location: " + str(output_dir))
+    print()
+
+
+def session_command():
+    """Display current session statistics (v2.6.4)"""
+    from datetime import datetime, timedelta
+
+    print_header("CURRENT SESSION SUMMARY")
+    print()
+
+    # Check if there's any activity
+    if not session_tracker.has_activity():
+        print_info("No scores submitted this session yet.")
+        print()
+        print("Play some Clone Hero and submit scores to see session stats!")
+        print()
+        return
+
+    # Session duration
+    hours, minutes, seconds = session_tracker.get_session_duration()
+    if hours > 0:
+        duration_str = f"{hours}h {minutes}m"
+    elif minutes > 0:
+        duration_str = f"{minutes}m {seconds}s"
+    else:
+        duration_str = f"{seconds}s"
+
+    start_time = datetime.fromtimestamp(session_tracker.session_start)
+    time_ago = datetime.now() - start_time
+    if time_ago.total_seconds() < 120:
+        time_ago_str = "just now"
+    elif time_ago.total_seconds() < 3600:
+        time_ago_str = f"{int(time_ago.total_seconds() / 60)} minutes ago"
+    else:
+        time_ago_str = f"{int(time_ago.total_seconds() / 3600)} hours ago"
+
+    print(f"Started: {start_time.strftime('%Y-%m-%d %H:%M:%S')} ({time_ago_str})")
+    print(f"Duration: {duration_str}")
+    print()
+
+    # Overall stats
+    print(f"{Fore.CYAN}SCORES THIS SESSION{Style.RESET_ALL}")
+    print(f"  Total Scores: {len(session_tracker.scores)}")
+    if session_tracker.records_broken:
+        print(f"  {Fore.RED}New Records: {len(session_tracker.records_broken)} 🏆{Style.RESET_ALL}")
+    if session_tracker.new_fcs:
+        print(f"  {Fore.GREEN}New FCs: {len(session_tracker.new_fcs)} ⭐{Style.RESET_ALL}")
+    if session_tracker.personal_bests:
+        print(f"  Personal Bests: {len(session_tracker.personal_bests)}")
+    print()
+
+    # Recent scores (last 5)
+    print(f"{Fore.CYAN}RECENT SCORES (Last 5){Style.RESET_ALL}")
+    recent = session_tracker.get_recent_scores(limit=5)
+    for score in recent:
+        timestamp = datetime.fromtimestamp(score['timestamp'])
+        time_str = timestamp.strftime('%H:%M')
+
+        # Build score line
+        song = score.get('song_title', f"[{score['chart_hash'][:8]}]")
+        if score.get('song_artist'):
+            song += f" - {score['song_artist']}"
+
+        instrument_names = {
+            0: "Lead", 1: "Bass", 2: "Rhythm", 3: "Keys", 4: "Drums",
+            5: "GHLGuitar", 6: "GHLBass"
+        }
+        difficulty_names = {0: "Easy", 1: "Medium", 2: "Hard", 3: "Expert"}
+
+        inst = instrument_names.get(score['instrument_id'], f"Inst{score['instrument_id']}")
+        diff = difficulty_names.get(score['difficulty_id'], f"Diff{score['difficulty_id']}")
+
+        # Status indicators
+        status = []
+        if score.get('is_record'):
+            status.append(f"{Fore.RED}NEW RECORD!{Style.RESET_ALL}")
+        if score.get('is_new_fc'):
+            status.append(f"{Fore.GREEN}NEW FC!{Style.RESET_ALL}")
+        elif score.get('is_fc'):
+            status.append("FC")
+        if score.get('is_personal_best') and not score.get('is_record'):
+            status.append("PB")
+
+        status_str = " | ".join(status) if status else ""
+
+        print(f"  [{time_str}] {song}")
+        print(f"         {diff} {inst} | {score['score']:,} pts | {score['completion_percent']:.1f}%")
+        if status_str:
+            print(f"         {status_str}")
+        print()
+
+    # Session performance
+    print(f"{Fore.CYAN}SESSION PERFORMANCE{Style.RESET_ALL}")
+    avg_acc = session_tracker.get_average_accuracy()
+    print(f"  Average Accuracy: {avg_acc:.1f}%")
+
+    best_score = session_tracker.get_best_score()
+    if best_score:
+        best_song = best_score.get('song_title', f"[{best_score['chart_hash'][:8]}]")
+        print(f"  Best Score: {best_score['score']:,} pts ({best_song})")
+
+    instruments = session_tracker.get_instruments_played()
+    if instruments:
+        inst_list = ", ".join([f"{name} ({count})" for name, count in instruments.items()])
+        print(f"  Instruments Played: {inst_list}")
+
+    if session_tracker.total_notes_hit > 0:
+        print(f"  Total Notes Hit: {session_tracker.total_notes_hit:,}")
+
+    print()
+    print("=" * 60)
+    print()
+
+
+def mystats_command(timeframe='all', instrument_id=None, full=False):
+    """
+    Display comprehensive statistics from server (v2.6.4)
+
+    Args:
+        timeframe: '7d', '30d', '90d', or 'all' (default)
+        instrument_id: Optional instrument filter (0-10)
+        full: If True, show extended breakdown details
+    """
+    print_header("YOUR STATISTICS")
+    print()
+
+    # Check auth token
+    config = load_config()
+    auth_token = config.get('auth_token')
+    if not auth_token:
+        print_error("Not paired! Use Discord to pair first (/pair)")
+        return
+
+    bot_url = get_bot_url()
+
+    # Build query parameters
+    params = {'timeframe': timeframe}
+    if instrument_id is not None:
+        params['instrument'] = instrument_id
+
+    # Fetch stats from server
+    print("[*] Fetching your statistics from server...")
+    try:
+        response = requests.get(
+            f"{bot_url}/api/user_stats_detailed",
+            headers={'Authorization': f'Bearer {auth_token}'},
+            params=params,
+            timeout=30
+        )
+
+        if response.status_code != 200:
+            print_error(f"Server error: HTTP {response.status_code}")
+            if response.status_code == 400:
+                print(f"    {response.json().get('error', 'Bad request')}")
+            return
+
+        data = response.json()
+        if not data.get('success'):
+            print_error(f"Server error: {data.get('error', 'Unknown')}")
+            return
+
+        stats = data.get('stats', {})
+        print_success("Statistics retrieved!")
+        print()
+
+    except Exception as e:
+        print_error(f"Failed to fetch statistics: {e}")
+        return
+
+    # Display timeframe filter
+    timeframe_labels = {'7d': 'Last 7 Days', '30d': 'Last 30 Days', '90d': 'Last 90 Days', 'all': 'All Time'}
+    print(f"Timeframe: {timeframe_labels.get(timeframe, timeframe)}")
+    if instrument_id is not None:
+        instrument_names = {
+            0: "Lead Guitar", 1: "Bass Guitar", 2: "Rhythm Guitar",
+            3: "Keys", 4: "Drums", 5: "GHL Guitar", 6: "GHL Bass"
+        }
+        print(f"Instrument Filter: {instrument_names.get(instrument_id, f'Instrument {instrument_id}')}")
+    print()
+
+    # === OVERALL PERFORMANCE ===
+    overall = stats.get('overall', {})
+    print(f"{Fore.CYAN}OVERALL PERFORMANCE{Style.RESET_ALL}")
+    print(f"  Total Scores Submitted: {overall.get('total_scores', 0):,}")
+    print(f"  Records Held (#1): {overall.get('records_held', 0)}")
+    print(f"  Full Combos: {overall.get('full_combos', 0)}")
+
+    avg_acc = overall.get('avg_accuracy')
+    if avg_acc is not None:
+        print(f"  Average Accuracy: {avg_acc:.1f}%")
+    print()
+
+    # === BREAKDOWN BY INSTRUMENT ===
+    by_instrument = stats.get('by_instrument', [])
+    if by_instrument and (full or not instrument_id):
+        print(f"{Fore.CYAN}BREAKDOWN BY INSTRUMENT{Style.RESET_ALL}")
+        instrument_names = {
+            0: "Lead Guitar", 1: "Bass Guitar", 2: "Rhythm Guitar",
+            3: "Keys", 4: "Drums", 5: "GHL Guitar", 6: "GHL Bass",
+            7: "Unknown-7", 8: "Co-op", 9: "Unknown-9", 10: "Unknown-10"
+        }
+
+        for inst in by_instrument:
+            inst_name = instrument_names.get(inst['instrument_id'], f"Inst-{inst['instrument_id']}")
+            total = inst.get('total_scores', 0)
+            records = inst.get('records', 0)
+            fcs = inst.get('full_combos', 0)
+            acc = inst.get('avg_accuracy', 0)
+
+            print(f"  {inst_name:15} {total:4} scores | {records:3} records | {fcs:3} FCs | {acc:5.1f}% avg")
+        print()
+
+    # === BREAKDOWN BY DIFFICULTY ===
+    by_difficulty = stats.get('by_difficulty', [])
+    if by_difficulty and full:
+        print(f"{Fore.CYAN}BREAKDOWN BY DIFFICULTY{Style.RESET_ALL}")
+        difficulty_names = {0: "Easy", 1: "Medium", 2: "Hard", 3: "Expert"}
+
+        for diff in by_difficulty:
+            diff_name = difficulty_names.get(diff['difficulty_id'], f"Diff-{diff['difficulty_id']}")
+            total = diff.get('total_scores', 0)
+            records = diff.get('records', 0)
+            fcs = diff.get('full_combos', 0)
+            acc = diff.get('avg_accuracy', 0)
+
+            print(f"  {diff_name:8} {total:4} scores | {records:3} records | {fcs:3} FCs | {acc:5.1f}% avg")
+        print()
+
+    # === TOP ACHIEVEMENTS ===
+    top = stats.get('top_achievements', {})
+    if top:
+        print(f"{Fore.CYAN}TOP ACHIEVEMENTS{Style.RESET_ALL}")
+
+        hardest_fc = top.get('hardest_fc')
+        if hardest_fc:
+            song_title = hardest_fc.get('song_title', '[Unknown]')
+            nps = hardest_fc.get('nps', 0)
+            inst_id = hardest_fc.get('instrument_id', 0)
+            diff_id = hardest_fc.get('difficulty_id', 3)
+            instrument_names = {0: "Lead", 1: "Bass", 2: "Rhythm", 3: "Keys", 4: "Drums"}
+            difficulty_names = {0: "Easy", 1: "Medium", 2: "Hard", 3: "Expert"}
+            inst = instrument_names.get(inst_id, f"Inst{inst_id}")
+            diff = difficulty_names.get(diff_id, f"Diff{diff_id}")
+            print(f"  Hardest FC: {song_title} ({diff} {inst}, {nps:.1f} NPS)")
+
+        highest_score = top.get('highest_score')
+        if highest_score:
+            song_title = highest_score.get('song_title', '[Unknown]')
+            score = highest_score.get('score', 0)
+            inst_id = highest_score.get('instrument_id', 0)
+            diff_id = highest_score.get('difficulty_id', 3)
+            instrument_names = {0: "Lead", 1: "Bass", 2: "Rhythm", 3: "Keys", 4: "Drums"}
+            difficulty_names = {0: "Easy", 1: "Medium", 2: "Hard", 3: "Expert"}
+            inst = instrument_names.get(inst_id, f"Inst{inst_id}")
+            diff = difficulty_names.get(diff_id, f"Diff{diff_id}")
+            print(f"  Highest Score: {song_title} ({diff} {inst}, {score:,} pts)")
+
+        most_played = top.get('most_played')
+        if most_played:
+            song_title = most_played.get('song_title', '[Unknown]')
+            play_count = most_played.get('play_count', 0)
+            print(f"  Most Played: {song_title} ({play_count} plays)")
+
+        print()
+
+    # === RECENT ACTIVITY (Last 7 Days) ===
+    recent = stats.get('recent_activity', {})
+    if recent and timeframe == 'all':  # Only show if viewing all-time stats
+        print(f"{Fore.CYAN}RECENT ACTIVITY (Last 7 Days){Style.RESET_ALL}")
+        scores_submitted = recent.get('scores_submitted', 0)
+        records_broken = recent.get('records_broken', 0)
+        new_fcs = recent.get('new_fcs', 0)
+        recent_acc = recent.get('avg_accuracy')
+
+        print(f"  Scores Submitted: {scores_submitted}")
+        if records_broken > 0:
+            print(f"  Records Broken: {records_broken}")
+        if new_fcs > 0:
+            print(f"  New FCs: {new_fcs}")
+        if recent_acc is not None:
+            print(f"  Avg Accuracy: {recent_acc:.1f}%")
+
+        print()
+
+    print("=" * 60)
+    print()
+
+
+def search_command(query=None, instrument_id=None, difficulty_id=None, fc_only=False, page=1):
+    """
+    Search user's scores with various filters (v2.6.4)
+
+    Args:
+        query: Text search for song title/artist
+        instrument_id: Filter by instrument (0-10)
+        difficulty_id: Filter by difficulty (0-3)
+        fc_only: Only show full combos
+        page: Page number for pagination (default: 1)
+    """
+    from datetime import datetime
+
+    config = load_config()
+    auth_token = config.get('auth_token')
+    if not auth_token:
+        print_error("Not paired! Use Discord to pair first (/pair)")
+        return
+
+    bot_url = get_bot_url()
+
+    print_header("SEARCH YOUR SCORES")
+    print()
+
+    # Build query parameters
+    params = {}
+    if query:
+        params['query'] = query
+    if instrument_id is not None:
+        params['instrument'] = instrument_id
+    if difficulty_id is not None:
+        params['difficulty'] = difficulty_id
+    if fc_only:
+        params['fc'] = 'true'
+
+    # Pagination (10 per page)
+    limit = 10
+    offset = (page - 1) * limit
+    params['offset'] = offset
+    params['limit'] = limit
+
+    try:
+        # Fetch results from API
+        response = requests.get(
+            f"{bot_url}/api/search_scores",
+            headers={'Authorization': f'Bearer {auth_token}'},
+            params=params,
+            timeout=30
+        )
+
+        if response.status_code == 401:
+            print_error("Authentication failed. Try re-pairing with /pair in Discord.")
+            return
+        elif response.status_code != 200:
+            print_error(f"API request failed: {response.status_code}")
+            if response.text:
+                print(f"Error: {response.text}")
+            return
+
+        data = response.json()
+        if not data.get('success'):
+            print_error(f"Error: {data.get('error', 'Unknown error')}")
+            return
+
+        result = data.get('data', {})
+        results = result.get('results', [])
+        total_count = result.get('total_count', 0)
+
+        # Display filters
+        if query or instrument_id is not None or difficulty_id is not None or fc_only:
+            print(f"{Fore.CYAN}Filters:{Style.RESET_ALL}")
+            if query:
+                print(f"  Query: \"{query}\"")
+            if instrument_id is not None:
+                inst_name = get_instrument_name(instrument_id)
+                print(f"  Instrument: {inst_name}")
+            if difficulty_id is not None:
+                diff_name = ['Easy', 'Medium', 'Hard', 'Expert'][difficulty_id]
+                print(f"  Difficulty: {diff_name}")
+            if fc_only:
+                print(f"  Full Combos Only: Yes")
+            print()
+
+        # Display results
+        if total_count == 0:
+            print_warning("No scores found matching your search criteria.")
+            print()
+            return
+
+        # Pagination info
+        total_pages = (total_count + limit - 1) // limit
+        print(f"{Fore.CYAN}Results:{Style.RESET_ALL} Showing {offset + 1}-{min(offset + len(results), total_count)} of {total_count} scores (Page {page}/{total_pages})")
+        print()
+
+        # Display each result
+        for i, score in enumerate(results, start=1):
+            # Song info
+            song_title = score.get('title') or '[Unknown Song]'
+            artist = score.get('artist')
+            chart_hash_short = score.get('chart_hash', '')[:8]
+
+            # Score details
+            score_value = score.get('score', 0)
+            stars = score.get('stars', 0)
+            completion = score.get('completion_percent', 0.0)
+            rank = score.get('rank', 0)
+            is_record = score.get('is_record', False)
+            is_fc = score.get('is_fc', False)
+
+            # Instrument & difficulty
+            inst_name = get_instrument_name(score.get('instrument_id', 0))
+            diff_name = ['Easy', 'Medium', 'Hard', 'Expert'][score.get('difficulty_id', 3)]
+
+            # Date
+            submitted_at = score.get('submitted_at', '')
+            if submitted_at:
+                try:
+                    dt = datetime.fromisoformat(submitted_at.replace('Z', '+00:00'))
+                    date_str = dt.strftime('%Y-%m-%d')
+                except:
+                    date_str = submitted_at[:10]
+            else:
+                date_str = 'Unknown'
+
+            # Print result
+            print(f"{Fore.CYAN}#{offset + i}{Style.RESET_ALL}  {song_title}")
+            if artist:
+                print(f"    Artist: {artist}")
+            print(f"    {diff_name} {inst_name} | Score: {score_value:,} pts | {'⭐' * stars}")
+
+            # Status indicators
+            status_parts = []
+            if is_fc:
+                status_parts.append("FC")
+            if is_record:
+                status_parts.append("RECORD HOLDER")
+            else:
+                status_parts.append(f"Rank #{rank}")
+            status_parts.append(f"{completion:.1f}%")
+            status_parts.append(f"Played: {date_str}")
+
+            print(f"    {' | '.join(status_parts)}")
+            print(f"    Chart: [{chart_hash_short}]")
+            print()
+
+        # Pagination controls
+        if total_pages > 1:
+            print(f"{Fore.CYAN}Pagination:{Style.RESET_ALL}")
+            if page > 1:
+                print(f"  Previous page: search <same filters> --page {page - 1}")
+            if page < total_pages:
+                print(f"  Next page: search <same filters> --page {page + 1}")
+            print()
+
+    except requests.exceptions.Timeout:
+        print_error("Request timed out. Please try again.")
+    except requests.exceptions.RequestException as e:
+        print_error(f"Network error: {str(e)}")
+    except Exception as e:
+        print_error(f"Error: {str(e)}")
+
+    print("=" * 60)
+    print()
+
+
+def compare_command(user2_discord_id):
+    """
+    Compare your scores head-to-head with another user (v2.6.4)
+
+    Args:
+        user2_discord_id: Discord ID of the user to compare against
+    """
+    config = load_config()
+    auth_token = config.get('auth_token')
+    if not auth_token:
+        print_error("Not paired! Use Discord to pair first (/pair)")
+        return
+
+    bot_url = get_bot_url()
+
+    print_header("HEAD-TO-HEAD COMPARISON")
+    print()
+
+    try:
+        # Fetch comparison from API
+        response = requests.get(
+            f"{bot_url}/api/compare",
+            headers={'Authorization': f'Bearer {auth_token}'},
+            params={'user2': user2_discord_id},
+            timeout=30
+        )
+
+        if response.status_code == 401:
+            print_error("Authentication failed. Try re-pairing with /pair in Discord.")
+            return
+        elif response.status_code == 404:
+            print_error("User not found. Make sure they have paired their tracker with Discord.")
+            return
+        elif response.status_code != 200:
+            print_error(f"API request failed: {response.status_code}")
+            if response.text:
+                print(f"Error: {response.text}")
+            return
+
+        data = response.json()
+        if not data.get('success'):
+            print_error(f"Error: {data.get('error', 'Unknown error')}")
+            return
+
+        result = data.get('data', {})
+
+        # Check for message (no common songs)
+        if 'message' in result:
+            print_warning(result['message'])
+            print()
+            return
+
+        # Display users
+        user1 = result.get('user1', {})
+        user2 = result.get('user2', {})
+        user1_name = user1.get('username', 'Unknown')
+        user2_name = user2.get('username', 'Unknown')
+
+        print(f"{Fore.CYAN}You vs. {user2_name}{Style.RESET_ALL}")
+        print()
+
+        # Overall record
+        overall = result.get('overall', {})
+        user1_wins = overall.get('user1_records', 0)
+        user2_wins = overall.get('user2_records', 0)
+        tied = overall.get('tied', 0)
+        win_rate = overall.get('user1_win_rate', 0)
+
+        print(f"{Fore.CYAN}OVERALL RECORD:{Style.RESET_ALL}")
+        print(f"  Songs where you're #1: {user1_wins}")
+        print(f"  Songs where they're #1: {user2_wins}")
+        print(f"  Tied: {tied}")
+        print()
+        print(f"  Your win rate: {win_rate:.1f}%")
+        print()
+
+        # Breakdown by instrument
+        by_instrument = result.get('by_instrument', [])
+        if by_instrument:
+            print(f"{Fore.CYAN}BREAKDOWNS:{Style.RESET_ALL}")
+            for inst_stat in by_instrument:
+                inst_id = inst_stat.get('instrument_id', 0)
+                inst_name = get_instrument_name(inst_id)
+                u1_w = inst_stat.get('user1_wins', 0)
+                u2_w = inst_stat.get('user2_wins', 0)
+                t = inst_stat.get('tied', 0)
+                print(f"  {inst_name:15} You: {u1_w:2} | Them: {u2_w:2} | Tied: {t:2}")
+            print()
+
+        # User1's biggest wins
+        user1_biggest = result.get('user1_biggest_wins', [])
+        if user1_biggest:
+            print(f"{Fore.CYAN}YOUR BIGGEST WINS (Score Difference):{Style.RESET_ALL}")
+            for i, match in enumerate(user1_biggest[:5], 1):
+                song_title = match.get('song_title') or '[Unknown]'
+                inst_name = get_instrument_name(match.get('instrument_id', 0))
+                diff_name = ['Easy', 'Medium', 'Hard', 'Expert'][match.get('difficulty_id', 3)]
+
+                u1_score = match.get('user1_score', 0)
+                u2_score = match.get('user2_score', 0)
+                diff_pts = match.get('diff_points', 0)
+                diff_pct = match.get('diff_percent', 0)
+
+                print(f"  #{i}  {song_title} ({diff_name} {inst_name})")
+                print(f"      You: {u1_score:,} pts | Them: {u2_score:,} pts | {diff_pts:+,} ({diff_pct:+.1f}%)")
+                print()
+
+        # User2's biggest wins
+        user2_biggest = result.get('user2_biggest_wins', [])
+        if user2_biggest:
+            print(f"{Fore.CYAN}THEIR BIGGEST WINS:{Style.RESET_ALL}")
+            for i, match in enumerate(user2_biggest[:5], 1):
+                song_title = match.get('song_title') or '[Unknown]'
+                inst_name = get_instrument_name(match.get('instrument_id', 0))
+                diff_name = ['Easy', 'Medium', 'Hard', 'Expert'][match.get('difficulty_id', 3)]
+
+                u1_score = match.get('user1_score', 0)
+                u2_score = match.get('user2_score', 0)
+                diff_pts = match.get('diff_points', 0)
+                diff_pct = match.get('diff_percent', 0)
+
+                print(f"  #{i}  {song_title} ({diff_name} {inst_name})")
+                print(f"      Them: {u2_score:,} pts | You: {u1_score:,} pts | {diff_pts:,} ({diff_pct:.1f}%)")
+                print()
+
+        # Close matches
+        close_matches = result.get('close_matches', [])
+        if close_matches:
+            print(f"{Fore.CYAN}CLOSE MATCHES (<1% difference):{Style.RESET_ALL}")
+            for match in close_matches[:5]:
+                song_title = match.get('song_title') or '[Unknown]'
+                inst_name = get_instrument_name(match.get('instrument_id', 0))
+                diff_name = ['Easy', 'Medium', 'Hard', 'Expert'][match.get('difficulty_id', 3)]
+
+                u1_score = match.get('user1_score', 0)
+                u2_score = match.get('user2_score', 0)
+                diff_pts = match.get('diff_points', 0)
+                diff_pct = match.get('diff_percent', 0)
+
+                print(f"  • {song_title} ({diff_name} {inst_name})")
+                print(f"    You: {u1_score:,} | Them: {u2_score:,} ({diff_pts:+,}, {diff_pct:+.2f}%)")
+            print()
+
+    except requests.exceptions.Timeout:
+        print_error("Request timed out. Please try again.")
+    except requests.exceptions.RequestException as e:
+        print_error(f"Network error: {str(e)}")
+    except Exception as e:
+        print_error(f"Error: {str(e)}")
+
+    print("=" * 60)
+    print()
+
+
 def resolve_hashes_command():
     """
     Resolve chart hashes by scanning local songs folder
@@ -3148,27 +4473,315 @@ def resolve_hashes_command():
         print_error(f"Failed to send updates: {e}")
 
 
-def scancharts_command():
-    """
-    Scan all local charts and upload metadata to server (v2.6.0)
+# ============================================================================
+# Chart Index System (v2.6.4)
+# ============================================================================
 
-    This command parses ALL charts in your Clone Hero song folders and sends
+def get_chart_index_path():
+    """Get path to chart index file"""
+    ch_dir = Path.home() / 'Documents' / 'Clone Hero'
+    return ch_dir / '.score_tracker_chart_index.json'
+
+
+def load_chart_index():
+    """
+    Load chart index from disk
+
+    Returns:
+        dict: Chart index with structure:
+            {
+                "version": 1,
+                "last_full_scan": "ISO timestamp",
+                "scan_count": int,
+                "charts": {
+                    "chart_hash": {
+                        "file_path": str,
+                        "last_modified": float,
+                        "title": str,
+                        "artist": str,
+                        "charter": str,
+                        "total_notes": int,
+                        "note_density": float,
+                        "peak_note_density": float,
+                        "scanned_at": "ISO timestamp"
+                    }
+                }
+            }
+    """
+    index_path = get_chart_index_path()
+
+    if not index_path.exists():
+        return {
+            "version": 1,
+            "last_full_scan": None,
+            "scan_count": 0,
+            "charts": {}
+        }
+
+    try:
+        with open(index_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning(f"Failed to load chart index: {e}")
+        return {
+            "version": 1,
+            "last_full_scan": None,
+            "scan_count": 0,
+            "charts": {}
+        }
+
+
+def save_chart_index(index):
+    """Save chart index to disk"""
+    index_path = get_chart_index_path()
+
+    try:
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(index_path, 'w', encoding='utf-8') as f:
+            json.dump(index, f, indent=2)
+    except Exception as e:
+        logger.error(f"Failed to save chart index: {e}")
+        print_warning(f"Could not save chart index: {e}")
+
+
+def lookup_chart_in_index(chart_hash):
+    """
+    Look up a chart in the local index
+
+    Args:
+        chart_hash: The chart hash to look up
+
+    Returns:
+        dict or None: Chart metadata if found, None otherwise
+    """
+    index = load_chart_index()
+    return index.get('charts', {}).get(chart_hash)
+
+
+def add_chart_to_index(chart_hash, chart_info):
+    """
+    Add or update a chart in the index
+
+    Args:
+        chart_hash: The chart hash
+        chart_info: Dict with chart metadata
+    """
+    index = load_chart_index()
+    index['charts'][chart_hash] = chart_info
+    save_chart_index(index)
+
+
+def find_chart_by_hash_on_demand(target_hash, max_duration=10):
+    """
+    Search for a specific chart hash in song folders (on-demand scan)
+
+    Args:
+        target_hash: The chart hash to find
+        max_duration: Maximum search time in seconds (default 10)
+
+    Returns:
+        Path or None: Path to chart file if found, None otherwise
+    """
+    import hashlib
+    from datetime import datetime
+
+    start_time = time.time()
+
+    # Get song folders from settings
+    ch_dir = Path.home() / 'Documents' / 'Clone Hero'
+    settings_path = ch_dir / "settings.ini"
+    song_folders = []
+
+    if settings_path.exists():
+        try:
+            config = configparser.ConfigParser()
+            config.read(str(settings_path))
+
+            for section in config.sections():
+                for key in config.options(section):
+                    if key.startswith('path') and key[4:].isdigit():
+                        folder = config.get(section, key)
+                        if folder and Path(folder).exists():
+                            song_folders.append(Path(folder))
+        except:
+            pass
+
+    # Fallback to tracker's configured folder
+    if not song_folders:
+        settings = load_settings()
+        fallback_folder = settings.get('songs_folder')
+        if fallback_folder and Path(fallback_folder).exists():
+            song_folders.append(Path(fallback_folder))
+
+    if not song_folders:
+        return None
+
+    print_info(f"Searching for chart [{target_hash[:8]}]...")
+
+    for folder in song_folders:
+        print(f"  Searching in: {folder.name}...", end='\r')
+
+        for root, dirs, files in os.walk(folder):
+            # Check timeout
+            if time.time() - start_time > max_duration:
+                print()
+                print_warning(f"  Search timeout after {max_duration}s")
+                return None
+
+            chart_files = [f for f in files if f.lower() in ['notes.chart', 'notes.mid', 'notes.midi']]
+            if not chart_files:
+                continue
+
+            chart_path = Path(root) / chart_files[0]
+
+            # Quick hash calculation
+            try:
+                with open(chart_path, 'rb') as f:
+                    chart_hash = hashlib.md5(f.read()).hexdigest()
+
+                if chart_hash == target_hash:
+                    print()
+                    print_success(f"  Found chart in: {chart_path.parent.name}/")
+
+                    # Parse and add to index for future use
+                    try:
+                        chart_data = parse_chart_file(chart_path)
+                        ini_data = parse_song_ini(str(chart_path))
+
+                        song_name = ''
+                        artist = ''
+                        charter = ''
+
+                        if ini_data:
+                            song_name = ini_data.get('name', ini_data.get('title', ''))
+                            artist = ini_data.get('artist', '')
+                            charter = ini_data.get('charter', ini_data.get('frets', ''))
+
+                        if not song_name:
+                            song_name = Path(root).name
+
+                        # Add to index
+                        chart_info = {
+                            'file_path': str(chart_path),
+                            'last_modified': chart_path.stat().st_mtime,
+                            'title': song_name,
+                            'artist': artist,
+                            'charter': charter,
+                            'scanned_at': datetime.now().isoformat()
+                        }
+
+                        add_chart_to_index(chart_hash, chart_info)
+                        print_info("  Added to chart index for future lookups")
+                    except Exception as e:
+                        logger.debug(f"Failed to parse found chart: {e}")
+
+                    return chart_path
+            except Exception as e:
+                continue
+
+    print()
+    print_warning(f"  Chart not found in {len(song_folders)} song folder(s)")
+    return None
+
+
+def format_progress_bar(current, total, width=20):
+    """
+    Create ASCII progress bar
+
+    Args:
+        current: Current progress value
+        total: Total value
+        width: Width of progress bar in characters (default: 20)
+
+    Returns:
+        str: ASCII progress bar like [████████░░░░] 67%
+    """
+    if total == 0:
+        return "[" + "░" * width + "] 0%"
+
+    percentage = min(100, int((current / total) * 100))
+    filled = int((current / total) * width)
+    empty = width - filled
+
+    bar = "[" + "█" * filled + "░" * empty + "]"
+    return f"{bar} {percentage}%"
+
+
+def format_time(seconds):
+    """
+    Format seconds into human-readable time
+
+    Args:
+        seconds: Time in seconds
+
+    Returns:
+        str: Formatted time like "5m 32s" or "1h 23m"
+    """
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    elif seconds < 3600:
+        minutes = int(seconds / 60)
+        secs = int(seconds % 60)
+        return f"{minutes}m {secs}s"
+    else:
+        hours = int(seconds / 3600)
+        minutes = int((seconds % 3600) / 60)
+        return f"{hours}h {minutes}m"
+
+
+def scancharts_command(force_full=False, silent=False):
+    """
+    Scan all local charts and upload metadata to server (v2.6.4)
+
+    Args:
+        force_full: Force complete re-scan (ignore index)
+        silent: Suppress prompts and run quietly
+
+    This command parses charts in your Clone Hero song folders and sends
     detailed metadata (total notes, NPS, chord count, etc.) to the server.
-    This enables features like:
+
+    v2.6.4: Now supports incremental scanning (only scans new/changed charts)
+
+    Features enabled:
     - /hardest command (shows hardest songs by NPS)
     - Chart Intensity badges in announcements
     - Accurate note counts
+    - Local chart index for offline score metadata
     """
-    print_header("SCAN CHARTS FOR METADATA")
-    print()
-    print("This will:")
-    print("  1. Scan ALL charts in your Clone Hero songs folder(s)")
-    print("  2. Parse note data for each instrument/difficulty")
-    print("  3. Calculate note density (NPS)")
-    print("  4. Upload metadata to server")
-    print()
-    print_warning("This may take several minutes for large libraries!")
-    print()
+    if not silent:
+        print_header("SCAN CHARTS FOR METADATA")
+        print()
+        if force_full:
+            print("Mode: FULL SCAN (re-scanning all charts)")
+        else:
+            print("Mode: INCREMENTAL SCAN (only new/changed charts)")
+        print()
+        print("This will:")
+        print("  1. Scan charts in your Clone Hero songs folder(s)")
+        print("  2. Parse note data for each instrument/difficulty")
+        print("  3. Calculate note density (NPS)")
+        print("  4. Build local chart index")
+        print("  5. Upload metadata to server")
+        print()
+        if force_full:
+            print_warning("Full scan may take several minutes for large libraries!")
+        else:
+            print_info("Incremental scan only processes new/modified charts (much faster!)")
+        print()
+
+    # Load existing index (for incremental scan)
+    from datetime import datetime
+    chart_index = load_chart_index()
+    existing_charts = chart_index.get('charts', {}) if not force_full else {}
+
+    # Build lookup: file_path -> (hash, last_modified)
+    path_lookup = {}
+    if not force_full:
+        for chart_hash, info in existing_charts.items():
+            file_path = info.get('file_path')
+            last_modified = info.get('last_modified')
+            if file_path and last_modified:
+                path_lookup[file_path] = (chart_hash, last_modified)
 
     # Check auth token
     config = load_config()
@@ -3244,16 +4857,56 @@ def scancharts_command():
 
     print()
     print(f"[*] Will scan {len(song_folders)} song folder(s)")
+
+    # v2.6.4: Pre-scan to count total charts (for progress bar and ETA)
+    if not silent:
+        print()
+        print("[*] Quick pre-scan to count charts...")
+
+    total_chart_files = 0
+    for songs_path in song_folders:
+        for root, dirs, files in os.walk(songs_path):
+            chart_files = [f for f in files if f.lower() in ['notes.chart', 'notes.mid', 'notes.midi']]
+            if chart_files:
+                total_chart_files += 1
+
+    if not silent and total_chart_files > 0:
+        print_success(f"    Found {total_chart_files:,} chart files in {len(song_folders)} song folder(s)")
+
+        # Estimate time based on chart count
+        if force_full or len(existing_charts) == 0:
+            # First-time scan estimate: ~1.5 seconds per chart
+            estimated_seconds = total_chart_files * 1.5
+            if estimated_seconds > 300:  # More than 5 minutes
+                minutes = int(estimated_seconds / 60)
+                print()
+                print("=" * 60)
+                print_warning(f"IMPORTANT: First-time scan may take {minutes}-{minutes+15} minutes!")
+                print_info(f"Processing {total_chart_files:,} charts...")
+                print_info("Future scans will be much faster (incremental mode).")
+                print("=" * 60)
+        else:
+            # Incremental scan - much faster
+            print_info("Incremental mode: Most charts will be skipped (unchanged)")
+
     print()
 
     # Step 2: Scan all charts and parse metadata
     chart_metadata = []
     scanned = 0
     parsed = 0
+    skipped = 0
+    updated = 0
+    new_charts = 0
     failed = 0
 
+    # Progress tracking
+    scan_start_time = time.time()
+    last_progress_update = time.time()
+
     for songs_path in song_folders:
-        print(f"[*] Scanning: {songs_path}")
+        if not silent:
+            print(f"[*] Scanning: {songs_path}")
         for root, dirs, files in os.walk(songs_path):
             # Look for chart files
             chart_files = [f for f in files if f.lower() in ['notes.chart', 'notes.mid', 'notes.midi']]
@@ -3262,17 +4915,55 @@ def scancharts_command():
                 continue
 
             scanned += 1
-
-            # Show progress every 100 charts
-            if scanned % 100 == 0:
-                print(f"  Scanned {scanned} songs... ({parsed} parsed, {failed} failed)", end='\r')
-
             chart_path = Path(root) / chart_files[0]
+            chart_path_str = str(chart_path)
+
+            # Check if we should skip this chart (incremental scan)
+            if not force_full and chart_path_str in path_lookup:
+                # Check if file was modified
+                try:
+                    current_mtime = chart_path.stat().st_mtime
+                    cached_hash, cached_mtime = path_lookup[chart_path_str]
+
+                    # Skip if file timestamp matches (not modified)
+                    if current_mtime == cached_mtime:
+                        skipped += 1
+                        # Update progress display every 100 charts (reduced frequency for cleaner output)
+                        if not silent and scanned % 100 == 0 and total_chart_files > 0:
+                            elapsed = time.time() - scan_start_time
+                            charts_per_sec = scanned / elapsed if elapsed > 0 else 0
+                            remaining = total_chart_files - scanned
+                            eta_seconds = remaining / charts_per_sec if charts_per_sec > 0 else 0
+
+                            progress_bar = format_progress_bar(scanned, total_chart_files)
+                            # Use newline for reliable Windows terminal output
+                            print(f"Progress: {progress_bar} ({scanned:,}/{total_chart_files:,}) | Skip:{skipped} New:{new_charts} Upd:{updated} Fail:{failed} | {charts_per_sec:.1f} ch/s ETA:{format_time(eta_seconds)} Elapsed:{format_time(elapsed)}")
+                        continue
+                except:
+                    pass  # File might be deleted, parse anyway
+
+            # Show progress every 100 charts (for charts being processed)
+            if not silent and scanned % 100 == 0 and total_chart_files > 0:
+                elapsed = time.time() - scan_start_time
+                charts_per_sec = scanned / elapsed if elapsed > 0 else 0
+                remaining = total_chart_files - scanned
+                eta_seconds = remaining / charts_per_sec if charts_per_sec > 0 else 0
+
+                progress_bar = format_progress_bar(scanned, total_chart_files)
+                # Use newline for reliable Windows terminal output
+                print(f"Progress: {progress_bar} ({scanned:,}/{total_chart_files:,}) | Skip:{skipped} New:{new_charts} Upd:{updated} Fail:{failed} | {charts_per_sec:.1f} ch/s ETA:{format_time(eta_seconds)} Elapsed:{format_time(elapsed)}")
 
             # Calculate MD5 hash
             try:
                 with open(chart_path, 'rb') as f:
                     chart_hash = hashlib.md5(f.read()).hexdigest()
+
+                # Track if this is new or updated
+                is_new = chart_hash not in existing_charts
+                if is_new:
+                    new_charts += 1
+                else:
+                    updated += 1
 
                 # Parse chart file for metadata
                 chart_data = parse_chart_file(chart_path)
@@ -3325,20 +5016,55 @@ def scancharts_command():
 
                 parsed += 1
 
+                # v2.6.4: Update chart index
+                chart_index['charts'][chart_hash] = {
+                    'file_path': chart_path_str,
+                    'last_modified': chart_path.stat().st_mtime,
+                    'title': song_name,
+                    'artist': artist,
+                    'charter': charter,
+                    'scanned_at': datetime.now().isoformat()
+                }
+
             except Exception as e:
                 failed += 1
                 logger.debug(f"Failed to parse {chart_path}: {e}")
                 continue
 
-    print(f"\n\n[*] Scan complete!")
-    print(f"  • Charts scanned: {scanned}")
-    print(f"  • Successfully parsed: {parsed}")
-    print(f"  • Failed to parse: {failed}")
-    print(f"  • Total metadata entries: {len(chart_metadata)}")
-    print()
+    # Update index metadata and save
+    chart_index['last_full_scan'] = datetime.now().isoformat()
+    chart_index['scan_count'] = chart_index.get('scan_count', 0) + 1
+    save_chart_index(chart_index)
+
+    if not silent:
+        # Clear progress bar line
+        print()  # Move to new line after progress bar
+
+        # Show final progress summary (100%)
+        if total_chart_files > 0:
+            total_elapsed = time.time() - scan_start_time
+            final_speed = scanned / total_elapsed if total_elapsed > 0 else 0
+            progress_bar = format_progress_bar(scanned, total_chart_files)
+            print(f"Final Progress: {progress_bar} ({scanned:,}/{total_chart_files:,})")
+            print(f"  • Skipped: {skipped}  • New: {new_charts}  • Updated: {updated}  • Failed: {failed}")
+            print(f"  • Speed: {final_speed:.1f} charts/sec  • Total Time: {format_time(total_elapsed)}")
+            print()
+
+        print("[*] Scan complete!")
+        print(f"  • Charts encountered: {scanned:,}")
+        if not force_full and skipped > 0:
+            print(f"  • Skipped (unchanged): {skipped:,}")
+            print(f"  • New charts: {new_charts:,}")
+            print(f"  • Updated charts: {updated:,}")
+        print(f"  • Successfully parsed: {parsed:,}")
+        print(f"  • Failed to parse: {failed:,}")
+        print(f"  • Total metadata entries: {len(chart_metadata):,}")
+        print(f"  • Chart index updated ({len(chart_index['charts']):,} total charts)")
+        print()
 
     if not chart_metadata:
-        print_warning("No charts were successfully parsed!")
+        if not silent:
+            print_warning("No new/updated charts to upload!")
         return
 
     # Step 3: Confirm upload
@@ -3587,6 +5313,574 @@ def bridge_status_command():
     print()
 
 
+# Detailed help functions for --help flag
+def show_command_help(command):
+    """Display detailed help for a specific command"""
+    help_functions = {
+        'resolvehashes': show_resolvehashes_help,
+        'scancharts': show_scancharts_help,
+        'resync': show_resync_help,
+        'reset': show_reset_help,
+        'settings': show_settings_help,
+        'backup': show_backup_help,
+        'restore': show_restore_help,
+        'unpair': show_unpair_help,
+        'status': show_status_help,
+        'stats': show_stats_help,
+        'update': show_update_help,
+        'bridgestatus': show_bridgestatus_help,
+        'recordsreport': show_recordsreport_help,
+        'session': show_session_help,
+        'mystats': show_mystats_help,
+        'search': show_search_help,
+        'compare': show_compare_help,
+    }
+
+    help_func = help_functions.get(command)
+    if help_func:
+        help_func()
+        return True
+    else:
+        print_warning(f"No detailed help available for '{command}'")
+        print_info("Type 'help' to see all available commands")
+        print()
+        return False
+
+
+def show_resolvehashes_help():
+    print_header("COMMAND: resolvehashes", width=60)
+    print()
+    print(f"{Fore.CYAN}PURPOSE:{Style.RESET_ALL}")
+    print("  Fix old mystery hashes by replacing them with song names.")
+    print("  This updates PAST scores that were submitted as [abc12345].")
+    print()
+    print(f"{Fore.CYAN}HOW IT WORKS:{Style.RESET_ALL}")
+    print("  1. Fetches list of unresolved hashes from server")
+    print("     (only charts YOU have played)")
+    print("  2. Scans your Clone Hero songs folder(s)")
+    print("  3. Matches hashes and extracts song metadata")
+    print("  4. Sends updates to server (with your confirmation)")
+    print()
+    print(f"{Fore.CYAN}WHEN TO USE:{Style.RESET_ALL}")
+    print("  • You have old mystery hashes in score history")
+    print("  • Leaderboards show [abc12345] instead of song names")
+    print("  • You want to fix existing database entries")
+    print()
+    print(f"{Fore.CYAN}DATA COLLECTED:{Style.RESET_ALL}")
+    print("  • Song title, artist, charter (from song.ini)")
+    print()
+    print(f"{Fore.CYAN}NOTE:{Style.RESET_ALL}")
+    print("  This only affects PAST scores. For future offline")
+    print("  scores, use 'scancharts' instead.")
+    print()
+    print(f"{Fore.CYAN}USAGE:{Style.RESET_ALL}")
+    print("  > resolvehashes")
+    print()
+
+
+def show_scancharts_help():
+    print_header("COMMAND: scancharts", width=60)
+    print()
+    print(f"{Fore.CYAN}PURPOSE:{Style.RESET_ALL}")
+    print("  Upload comprehensive chart metadata to prepare for")
+    print("  FUTURE offline scores with full song information.")
+    print()
+    print(f"{Fore.CYAN}HOW IT WORKS:{Style.RESET_ALL}")
+    print("  1. Scans ALL charts in your library")
+    print("  2. Parses full chart data (notes, NPS, difficulty)")
+    print("  3. Builds local index for fast lookups")
+    print("  4. Uploads metadata to server database")
+    print()
+    print(f"{Fore.CYAN}WHEN TO USE:{Style.RESET_ALL}")
+    print("  • First time setup (runs automatically)")
+    print("  • After adding new charts to library")
+    print("  • Want offline scores to have full metadata")
+    print()
+    print(f"{Fore.CYAN}DATA COLLECTED:{Style.RESET_ALL}")
+    print("  • Song title, artist, charter, genre")
+    print("  • NPS, peak NPS, note counts, chord counts")
+    print("  • Per-difficulty/instrument data")
+    print()
+    print(f"{Fore.CYAN}SCANNING:{Style.RESET_ALL}")
+    print("  • Incremental: skips unchanged files")
+    print("  • Progress bar with ETA")
+    print("  • Use --full to force complete rescan")
+    print()
+    print(f"{Fore.CYAN}USAGE:{Style.RESET_ALL}")
+    print("  > scancharts          # Incremental scan")
+    print("  > scancharts --full   # Full rescan")
+    print()
+
+
+def show_resync_help():
+    print_header("COMMAND: resync", width=60)
+    print()
+    print(f"{Fore.CYAN}PURPOSE:{Style.RESET_ALL}")
+    print("  Scan for scores that were achieved while the bot was")
+    print("  offline or disconnected.")
+    print()
+    print(f"{Fore.CYAN}HOW IT WORKS:{Style.RESET_ALL}")
+    print("  1. Reads entire scoredata.bin file")
+    print("  2. Compares against local known scores cache")
+    print("  3. Submits any new/improved scores to server")
+    print("  4. Updates local cache with new scores")
+    print()
+    print(f"{Fore.CYAN}WHEN TO USE:{Style.RESET_ALL}")
+    print("  • After playing Clone Hero with tracker closed")
+    print("  • After bot/server was offline")
+    print("  • Suspect some scores weren't submitted")
+    print("  • After tracker crash or restart")
+    print()
+    print(f"{Fore.CYAN}NOTE:{Style.RESET_ALL}")
+    print("  Offline scores may show as [abc12345] if chart")
+    print("  metadata is missing. Run 'scancharts' first to")
+    print("  ensure proper metadata for offline plays.")
+    print()
+    print(f"{Fore.CYAN}USAGE:{Style.RESET_ALL}")
+    print("  > resync")
+    print()
+
+
+def show_reset_help():
+    print_header("COMMAND: reset", width=60)
+    print()
+    print(f"{Fore.CYAN}PURPOSE:{Style.RESET_ALL}")
+    print("  Clear all tracked score history and re-submit")
+    print("  ALL your scores to the server from scratch.")
+    print()
+    print(f"{Fore.CYAN}HOW IT WORKS:{Style.RESET_ALL}")
+    print("  1. Clears local known_scores cache")
+    print("  2. Reads entire scoredata.bin file")
+    print("  3. Submits every score as 'new'")
+    print("  4. Rebuilds local cache")
+    print()
+    print(f"{Fore.CYAN}WHEN TO USE:{Style.RESET_ALL}")
+    print("  • Connecting to a NEW server")
+    print("  • Your scores are completely out of sync")
+    print("  • Server database was reset")
+    print("  • Starting fresh after major issues")
+    print()
+    print(f"{Fore.CYAN}WARNING:{Style.RESET_ALL}")
+    print("  This will re-submit HUNDREDS or THOUSANDS of scores.")
+    print("  Only use when absolutely necessary!")
+    print()
+    print(f"{Fore.CYAN}USAGE:{Style.RESET_ALL}")
+    print("  > reset")
+    print("  (Requires 'yes' confirmation)")
+    print()
+
+
+def show_settings_help():
+    print_header("COMMAND: settings", width=60)
+    print()
+    print(f"{Fore.CYAN}PURPOSE:{Style.RESET_ALL}")
+    print("  Configure tracker settings including bot URL,")
+    print("  paths, features, and integrations.")
+    print()
+    print(f"{Fore.CYAN}AVAILABLE SETTINGS:{Style.RESET_ALL}")
+    print("  • Bot URL - Server connection endpoint")
+    print("  • Clone Hero Path - Installation directory")
+    print("  • Songs Folder - Custom songs location")
+    print("  • OCR Settings - Results screen capture")
+    print("  • Minimize to Tray - System tray integration")
+    print("  • Start with Windows - Auto-launch on boot")
+    print("  • Bridge Integration - Clone Hero Bridge support")
+    print()
+    print(f"{Fore.CYAN}USAGE:{Style.RESET_ALL}")
+    print("  > settings")
+    print("  (Opens interactive menu)")
+    print()
+
+
+def show_backup_help():
+    print_header("COMMAND: backup", width=60)
+    print()
+    print(f"{Fore.CYAN}PURPOSE:{Style.RESET_ALL}")
+    print("  Create a backup of your current configuration")
+    print("  to protect against data loss or corruption.")
+    print()
+    print(f"{Fore.CYAN}WHAT GETS BACKED UP:{Style.RESET_ALL}")
+    print("  • Configuration (.score_tracker_config.json)")
+    print("  • Settings (.score_tracker_settings.json)")
+    print("  • Known scores state (.score_tracker_state.json)")
+    print("  • Chart index (.score_tracker_chart_index.json)")
+    print()
+    print(f"{Fore.CYAN}BACKUP LOCATION:{Style.RESET_ALL}")
+    print("  Saved to: Documents\\Clone Hero\\backups\\")
+    print("  Filename: tracker_backup_YYYYMMDD_HHMMSS.zip")
+    print()
+    print(f"{Fore.CYAN}USAGE:{Style.RESET_ALL}")
+    print("  > backup")
+    print()
+
+
+def show_restore_help():
+    print_header("COMMAND: restore", width=60)
+    print()
+    print(f"{Fore.CYAN}PURPOSE:{Style.RESET_ALL}")
+    print("  Restore configuration from a previous backup.")
+    print()
+    print(f"{Fore.CYAN}HOW IT WORKS:{Style.RESET_ALL}")
+    print("  1. Lists available backups")
+    print("  2. You select which backup to restore")
+    print("  3. Extracts backup files to tracker directory")
+    print("  4. Tracker restarts with restored config")
+    print()
+    print(f"{Fore.CYAN}WHAT GETS RESTORED:{Style.RESET_ALL}")
+    print("  • All configuration files")
+    print("  • Known scores state")
+    print("  • Chart index (if exists)")
+    print()
+    print(f"{Fore.CYAN}USAGE:{Style.RESET_ALL}")
+    print("  > restore")
+    print("  (Shows interactive backup selection)")
+    print()
+
+
+def show_unpair_help():
+    print_header("COMMAND: unpair", width=60)
+    print()
+    print(f"{Fore.CYAN}PURPOSE:{Style.RESET_ALL}")
+    print("  Disconnect this tracker from your Discord account.")
+    print()
+    print(f"{Fore.CYAN}HOW IT WORKS:{Style.RESET_ALL}")
+    print("  1. Removes auth_token from configuration")
+    print("  2. Tracker will prompt for pairing on next restart")
+    print()
+    print(f"{Fore.CYAN}WHEN TO USE:{Style.RESET_ALL}")
+    print("  • Switching to different Discord account")
+    print("  • Giving PC to someone else")
+    print("  • Troubleshooting pairing issues")
+    print()
+    print(f"{Fore.CYAN}NOTE:{Style.RESET_ALL}")
+    print("  Your scores remain on server. This only affects")
+    print("  the link between this PC and your Discord account.")
+    print()
+    print(f"{Fore.CYAN}USAGE:{Style.RESET_ALL}")
+    print("  > unpair")
+    print("  (Requires 'yes' confirmation)")
+    print()
+
+
+def show_status_help():
+    print_header("COMMAND: status", width=60)
+    print()
+    print(f"{Fore.CYAN}PURPOSE:{Style.RESET_ALL}")
+    print("  Comprehensive diagnostic view of tracker status.")
+    print()
+    print(f"{Fore.CYAN}INFORMATION SHOWN:{Style.RESET_ALL}")
+    print("  • Server Connection - Live connectivity test")
+    print("  • Score Tracking - Known scores count")
+    print("  • OCR Status - Detailed OCR performance stats")
+    print("  • Features - Individual feature enable/disable status")
+    print()
+    print(f"{Fore.CYAN}USE CASE:{Style.RESET_ALL}")
+    print("  Troubleshooting - 'Is everything working correctly?'")
+    print()
+    print(f"{Fore.CYAN}USAGE:{Style.RESET_ALL}")
+    print("  > status")
+    print()
+
+
+def show_stats_help():
+    print_header("COMMAND: stats", width=60)
+    print()
+    print(f"{Fore.CYAN}PURPOSE:{Style.RESET_ALL}")
+    print("  Quick at-a-glance summary of your activity.")
+    print()
+    print(f"{Fore.CYAN}INFORMATION SHOWN:{Style.RESET_ALL}")
+    print("  • Total Scores Tracked - Overall count")
+    print("  • Last Score - Timestamp + relative time")
+    print("  • OCR - One-line summary")
+    print("  • Features - Comma-separated enabled features")
+    print()
+    print(f"{Fore.CYAN}USE CASE:{Style.RESET_ALL}")
+    print("  Quick glance - 'What's my recent activity?'")
+    print()
+    print(f"{Fore.CYAN}USAGE:{Style.RESET_ALL}")
+    print("  > stats")
+    print()
+
+
+def show_update_help():
+    print_header("COMMAND: update", width=60)
+    print()
+    print(f"{Fore.CYAN}PURPOSE:{Style.RESET_ALL}")
+    print("  Check for and download tracker updates.")
+    print()
+    print(f"{Fore.CYAN}HOW IT WORKS:{Style.RESET_ALL}")
+    print("  1. Checks GitHub for latest release")
+    print("  2. Compares against current version")
+    print("  3. Downloads new exe if update available")
+    print("  4. Prompts to restart with new version")
+    print()
+    print(f"{Fore.CYAN}AUTO-UPDATE:{Style.RESET_ALL}")
+    print("  Tracker automatically checks for updates on startup.")
+    print("  This command forces an immediate check.")
+    print()
+    print(f"{Fore.CYAN}USAGE:{Style.RESET_ALL}")
+    print("  > update")
+    print()
+
+
+def show_bridgestatus_help():
+    print_header("COMMAND: bridgestatus", width=60)
+    print()
+    print(f"{Fore.CYAN}PURPOSE:{Style.RESET_ALL}")
+    print("  Check Clone Hero Bridge integration status.")
+    print()
+    print(f"{Fore.CYAN}INFORMATION SHOWN:{Style.RESET_ALL}")
+    print("  • Bridge Path - Installation location")
+    print("  • Protocol Registration - chhb:// URL handler status")
+    print("  • Integration Setting - Enabled/Disabled")
+    print()
+    print(f"{Fore.CYAN}WHAT IS BRIDGE:{Style.RESET_ALL}")
+    print("  Clone Hero Bridge allows you to download songs")
+    print("  directly from Discord links or websites.")
+    print()
+    print(f"{Fore.CYAN}USAGE:{Style.RESET_ALL}")
+    print("  > bridgestatus")
+    print()
+
+
+def show_recordsreport_help():
+    print_header("COMMAND: recordsreport", width=60)
+    print()
+    print(f"{Fore.CYAN}PURPOSE:{Style.RESET_ALL}")
+    print("  Generate comprehensive reports of all #1 records")
+    print("  you currently hold on the server.")
+    print()
+    print(f"{Fore.CYAN}WHAT IT SHOWS:{Style.RESET_ALL}")
+    print("  • Song Information - Title, artist, charter, album, genre")
+    print("  • Chart Details - Instrument, difficulty, length, NPS, peak NPS")
+    print("  • Your Performance - Score, accuracy, FC status, stars")
+    print("  • Record Context - Previous holder, improvement %, held duration")
+    print("  • Quick Links - Enchor.us URL for easy chart access")
+    print()
+    print(f"{Fore.CYAN}OUTPUT FORMATS:{Style.RESET_ALL}")
+    print("  • Text (default) - Human-readable with ASCII formatting")
+    print("  • CSV - Spreadsheet format (Excel, Google Sheets)")
+    print("  • JSON - Programmatic format for custom tools")
+    print("  • All - Generate all three formats at once")
+    print()
+    print(f"{Fore.CYAN}SAVE LOCATION:{Style.RESET_ALL}")
+    print("  Reports saved to: Documents\\Clone Hero\\records\\")
+    print("  Filename format: {username}_records_{timestamp}.{ext}")
+    print()
+    print(f"{Fore.CYAN}WHEN TO USE:{Style.RESET_ALL}")
+    print("  • Track your overall #1 record count")
+    print("  • Share accomplishments with friends/community")
+    print("  • Analyze your strengths (instruments, difficulties)")
+    print("  • Export data for custom analysis or spreadsheets")
+    print()
+    print(f"{Fore.CYAN}USAGE:{Style.RESET_ALL}")
+    print("  > recordsreport            # Interactive mode (prompts for format)")
+    print("  > recordsreport --text     # Text format only")
+    print("  > recordsreport --csv      # CSV format only")
+    print("  > recordsreport --json     # JSON format only")
+    print("  > recordsreport --all      # Generate all 3 formats")
+    print()
+    print(f"{Fore.CYAN}OPTIONS:{Style.RESET_ALL}")
+    print("  --text    Generate human-readable text report")
+    print("  --csv     Generate spreadsheet-compatible CSV report")
+    print("  --json    Generate programmatic JSON report")
+    print("  --all     Generate all three formats at once")
+    print()
+
+
+def show_session_help():
+    print_header("COMMAND: session", width=60)
+    print()
+    print(f"{Fore.CYAN}PURPOSE:{Style.RESET_ALL}")
+    print("  View statistics for your current play session.")
+    print()
+    print(f"{Fore.CYAN}WHAT IT SHOWS:{Style.RESET_ALL}")
+    print("  • Session duration and start time")
+    print("  • Total scores submitted this session")
+    print("  • Records broken, new FCs, personal bests")
+    print("  • Recent scores with timestamps (last 5)")
+    print("  • Average accuracy and best score")
+    print("  • Instruments played and total notes hit")
+    print()
+    print(f"{Fore.CYAN}WHEN TO USE:{Style.RESET_ALL}")
+    print("  • Check progress during long play sessions")
+    print("  • Review what you've accomplished today")
+    print("  • Quick 'how am I doing right now?' check")
+    print()
+    print(f"{Fore.CYAN}AUTO-SUMMARY ON EXIT:{Style.RESET_ALL}")
+    print("  When you type 'quit', a session summary is shown")
+    print("  automatically (if you submitted any scores).")
+    print("  This can be toggled in Settings.")
+    print()
+    print(f"{Fore.CYAN}SESSION TRACKING:{Style.RESET_ALL}")
+    print("  • Session starts when tracker launches")
+    print("  • Resets when you close and restart tracker")
+    print("  • All stats are client-side (instant, no API calls)")
+    print()
+    print(f"{Fore.CYAN}USAGE:{Style.RESET_ALL}")
+    print("  > session")
+    print()
+
+
+def show_mystats_help():
+    print_header("COMMAND: mystats", width=60)
+    print()
+    print(f"{Fore.CYAN}PURPOSE:{Style.RESET_ALL}")
+    print("  View comprehensive statistics from the server about all")
+    print("  your scores, records, and achievements.")
+    print()
+    print(f"{Fore.CYAN}WHAT IT SHOWS:{Style.RESET_ALL}")
+    print("  • Overall performance (total scores, records, FCs, avg accuracy)")
+    print("  • Breakdown by instrument")
+    print("  • Breakdown by difficulty (with --full flag)")
+    print("  • Top achievements (hardest FC, highest score, most played)")
+    print("  • Recent activity (last 7 days)")
+    print()
+    print(f"{Fore.CYAN}FILTERS:{Style.RESET_ALL}")
+    print("  --timeframe, -t  Limit to specific time period:")
+    print("                   7d (last 7 days)")
+    print("                   30d (last 30 days)")
+    print("                   90d (last 90 days)")
+    print("                   all (all-time, default)")
+    print()
+    print("  --instrument, -i  Filter to specific instrument:")
+    print("                   0 (Lead Guitar)")
+    print("                   1 (Bass)")
+    print("                   2 (Rhythm)")
+    print("                   3 (Keys)")
+    print("                   4 (Drums)")
+    print()
+    print("  --full, -f       Show extended details including difficulty")
+    print("                   breakdown (larger output)")
+    print()
+    print(f"{Fore.CYAN}EXAMPLES:{Style.RESET_ALL}")
+    print("  > mystats")
+    print("    View all-time stats for all instruments")
+    print()
+    print("  > mystats --timeframe 30d")
+    print("    View stats for last 30 days only")
+    print()
+    print("  > mystats --instrument 0")
+    print("    View stats for Lead Guitar only")
+    print()
+    print("  > mystats -t 7d -i 4")
+    print("    View last week's Drums stats")
+    print()
+    print("  > mystats --full")
+    print("    View all-time stats with full difficulty breakdown")
+    print()
+    print(f"{Fore.CYAN}DIFFERENCE FROM SESSION:{Style.RESET_ALL}")
+    print("  session  = Current play session (resets on restart)")
+    print("  mystats  = All-time server statistics (persistent)")
+    print()
+
+
+def show_search_help():
+    print_header("COMMAND: search", width=60)
+    print()
+    print(f"{Fore.CYAN}PURPOSE:{Style.RESET_ALL}")
+    print("  Search your scores with flexible filters including text")
+    print("  search, instrument, difficulty, and full combo status.")
+    print()
+    print(f"{Fore.CYAN}SEARCH SYNTAX:{Style.RESET_ALL}")
+    print("  search [query] [filters]")
+    print()
+    print("  The query is any text after 'search' that doesn't start")
+    print("  with '--'. It will match song titles and artist names.")
+    print()
+    print(f"{Fore.CYAN}FILTERS:{Style.RESET_ALL}")
+    print("  --instrument, -i  Filter by instrument ID:")
+    print("                   0 (Lead Guitar)")
+    print("                   1 (Bass)")
+    print("                   2 (Rhythm)")
+    print("                   3 (Keys)")
+    print("                   4 (Drums)")
+    print()
+    print("  --difficulty, -d  Filter by difficulty ID:")
+    print("                   0 (Easy)")
+    print("                   1 (Medium)")
+    print("                   2 (Hard)")
+    print("                   3 (Expert)")
+    print()
+    print("  --fc             Show only full combos")
+    print()
+    print("  --page, -p       Jump to specific page (10 results per page)")
+    print()
+    print(f"{Fore.CYAN}EXAMPLES:{Style.RESET_ALL}")
+    print("  > search")
+    print("    Show all your scores (paginated)")
+    print()
+    print("  > search dragonforce")
+    print("    Find all your Dragonforce scores")
+    print()
+    print("  > search --instrument 0")
+    print("    Show all Lead Guitar scores")
+    print()
+    print("  > search --instrument 0 --difficulty 3")
+    print("    Show all Expert Lead Guitar scores")
+    print()
+    print("  > search --fc")
+    print("    Show all your full combos")
+    print()
+    print("  > search ttfaf --instrument 0 --page 2")
+    print("    Search for 'ttfaf' on Lead Guitar, page 2")
+    print()
+    print(f"{Fore.CYAN}PAGINATION:{Style.RESET_ALL}")
+    print("  Results show 10 scores per page. Use --page to navigate.")
+    print("  The command will show you the page range and total results.")
+    print()
+    print(f"{Fore.CYAN}RESULT DISPLAY:{Style.RESET_ALL}")
+    print("  Each result shows:")
+    print("  • Song title, artist, difficulty, instrument")
+    print("  • Your score, stars, and rank")
+    print("  • FC status and date played")
+    print("  • Chart hash for reference")
+    print()
+
+
+def show_compare_help():
+    print_header("COMMAND: compare", width=60)
+    print()
+    print(f"{Fore.CYAN}PURPOSE:{Style.RESET_ALL}")
+    print("  Compare your scores head-to-head with another user to")
+    print("  see who's winning on which songs and instruments.")
+    print()
+    print(f"{Fore.CYAN}SYNTAX:{Style.RESET_ALL}")
+    print("  compare <discord_user_id>")
+    print()
+    print(f"{Fore.CYAN}GETTING A DISCORD USER ID:{Style.RESET_ALL}")
+    print("  1. Enable Developer Mode in Discord:")
+    print("     • Settings > App Settings > Advanced")
+    print("     • Toggle 'Developer Mode' ON")
+    print()
+    print("  2. Copy the user's ID:")
+    print("     • Right-click their profile or message")
+    print("     • Select 'Copy User ID'")
+    print()
+    print(f"{Fore.CYAN}WHAT IT SHOWS:{Style.RESET_ALL}")
+    print("  • Overall record (who's winning more songs)")
+    print("  • Your win rate percentage")
+    print("  • Breakdown by instrument")
+    print("  • Your biggest wins (largest score gaps)")
+    print("  • Their biggest wins")
+    print("  • Close matches (within 1% difference)")
+    print()
+    print(f"{Fore.CYAN}EXAMPLES:{Style.RESET_ALL}")
+    print("  > compare 123456789012345678")
+    print("    Compare your scores with user ID 123456789012345678")
+    print()
+    print(f"{Fore.CYAN}REQUIREMENTS:{Style.RESET_ALL}")
+    print("  • Both you and the other user must be paired")
+    print("  • You must have played at least one common song")
+    print("  • Comparisons are per chart/instrument/difficulty")
+    print()
+    print(f"{Fore.CYAN}NOTE:{Style.RESET_ALL}")
+    print("  Only songs you've BOTH played on the same instrument")
+    print("  and difficulty are compared. If you haven't played any")
+    print("  common songs, the command will tell you.")
+    print()
+
+
 def main():
     import sys
 
@@ -3730,8 +6024,50 @@ def main():
             print_error("Pairing failed. Exiting.")
             input("\nPress Enter to exit...")
             return
+
+        # v2.6.4: Prompt new users to run initial chart scan
+        print("\n" + "=" * 50)
+        print_header("CHART SCAN SETUP (v2.6.4)", width=50)
+        print("\nNew feature: Local chart indexing!")
+        print("\nRunning a chart scan will:")
+        print("  • Build a local index of all your charts")
+        print("  • Enable full metadata for offline scores")
+        print("  • Reduce 'mystery hashes' by 90%+")
+        print("\nThis scan may take a few minutes for large libraries.")
+        print()
+        response = input("Run initial chart scan now? (yes/no) [yes]: ").strip().lower() or "yes"
+
+        if response == 'yes' or response == 'y':
+            print()
+            scancharts_command()
+            print()
+            print_success("Chart scan complete! You're all set.")
+        else:
+            print_info("Skipped chart scan. You can run it later with 'scancharts'")
+
     else:
         print_success("Already paired (auth token found)")
+
+        # v2.6.4: Check if upgrading user needs chart index
+        chart_index_path = get_chart_index_path()
+        if not chart_index_path.exists():
+            print("\n" + "=" * 50)
+            print_header("NEW FEATURE: Chart Index (v2.6.4)", width=50)
+            print("\nChart indexing enables full metadata for offline scores!")
+            print("\nRunning a chart scan will:")
+            print("  • Build a local index of all your charts")
+            print("  • Enable full song names for offline play")
+            print("  • Reduce 'mystery hashes' by 90%+")
+            print("\nThis is a one-time setup (takes a few minutes).")
+            print()
+            response = input("Run chart scan to enable this feature? (yes/no): ").strip().lower()
+
+            if response == 'yes' or response == 'y':
+                print()
+                scancharts_command()
+                print()
+            else:
+                print_info("Skipped chart scan. You can run it later with 'scancharts'")
 
         # Check if Bridge integration setup is needed (upgrade detection)
         bridge_config = settings.get('bridge_integration', {})
@@ -3959,6 +6295,9 @@ def main():
             print_warning("Minimize to tray enabled but pystray not installed")
             tray_enabled = False
 
+    # Ensure Windows startup registry points to current exe (v2.6.4 fix)
+    ensure_startup_entry_current()
+
     # State file to track which scores we've already seen
     # Store in Clone Hero directory so it persists across EXE runs
     state_file = ch_dir / '.score_tracker_state.json'
@@ -4017,30 +6356,54 @@ def main():
                 if not cmd:
                     continue
 
+                # Parse --help flag
+                if ' --help' in cmd or cmd.endswith('--help'):
+                    # Extract base command (remove --help)
+                    base_cmd = cmd.replace(' --help', '').replace('--help', '').strip()
+                    if base_cmd:
+                        show_command_help(base_cmd)
+                    else:
+                        # Just "--help" with no command
+                        print_info("Usage: COMMAND --help")
+                        print_info("Example: resolvehashes --help")
+                        print()
+                    continue
+
                 elif cmd == "help" or cmd == "?":
                     print_header("AVAILABLE COMMANDS", width=50)
 
-                    print(f"{Fore.CYAN}Monitoring:{Style.RESET_ALL}")
-                    print_plain("  status         Check connection and score tracking status")
-                    print_plain("  stats          Quick stats overview")
-                    print_plain("  resync         Scan for scores made while offline")
-                    print_plain("  resolvehashes  Fix mystery hashes by scanning songs")
-                    print_plain("  scancharts     Upload chart metadata (notes, NPS) to server")
-                    print_plain("  reset          Clear state and re-submit ALL scores")
+                    print(f"{Fore.CYAN}Monitoring & Status:{Style.RESET_ALL}")
+                    print_plain("  status         Check server connection and score tracking status")
+                    print_plain("  stats          View quick stats (tracked scores, OCR, features)")
+
+                    print(f"\n{Fore.CYAN}Score Management:{Style.RESET_ALL}")
+                    print_plain("  resync         Scan for scores made while bot was offline")
+                    print_plain("  reset          Clear state and re-submit ALL scores to server")
+
+                    print(f"\n{Fore.CYAN}Chart Metadata:{Style.RESET_ALL}")
+                    print_plain("  resolvehashes  Fix old mystery hashes with song names (past scores)")
+                    print_plain("  scancharts     Upload chart data for future offline scores")
+                    print_plain("  refreshcache   Reload song metadata from Clone Hero")
 
                     print(f"\n{Fore.CYAN}Configuration:{Style.RESET_ALL}")
                     print_plain("  settings       Configure bot URL, paths, and options")
-                    print_plain("  backup         Backup current configuration")
-                    print_plain("  restore        Restore configuration from backup")
-                    print_plain("  update         Check for and download updates")
+                    print_plain("  backup         Backup current configuration to file")
+                    print_plain("  restore        Restore configuration from backup file")
+                    print_plain("  update         Check for and download tracker updates")
+
+                    print(f"\n{Fore.CYAN}Analysis & Stats:{Style.RESET_ALL}")
+                    print_plain("  mystats        View comprehensive server statistics")
+                    print_plain("  search         Search your scores with filters")
+                    print_plain("  compare        Head-to-head comparison with another user")
+                    print_plain("  session        View current session summary")
+                    print_plain("  recordsreport  Generate comprehensive records report")
 
                     print(f"\n{Fore.CYAN}Utilities:{Style.RESET_ALL}")
-                    print_plain("  refreshcache   Reload song metadata from Clone Hero")
                     print_plain("  bridgestatus   Check Bridge integration status")
                     print_plain("  exportlogs     Export debug logs to zip file")
                     print_plain("  unpair         Disconnect from Discord account")
                     if tray_enabled:
-                        print_plain("  minimize       Minimize to system tray")
+                        print_plain("  minimize       Minimize to system tray (if enabled)")
                     print_plain("  debug          Enter debug mode (password required)")
 
                     print(f"\n{Fore.CYAN}General:{Style.RESET_ALL}")
@@ -4048,7 +6411,8 @@ def main():
                     print_plain("  quit           Exit the tracker")
 
                     print("\n" + "=" * 50)
-                    print("Type any command at the > prompt")
+                    print("Type 'COMMAND --help' for detailed info")
+                    print("Example: resolvehashes --help")
                     print("=" * 50 + "\n")
 
                 elif cmd == "status":
@@ -4111,8 +6475,10 @@ def main():
                 elif cmd == "resolvehashes":
                     resolve_hashes_command()
 
-                elif cmd == "scancharts":
-                    scancharts_command()
+                elif cmd == "scancharts" or cmd.startswith("scancharts "):
+                    # v2.6.4: Support --full flag
+                    force_full = "--full" in cmd
+                    scancharts_command(force_full=force_full)
 
                 elif cmd == "reset":
                     print("\n" + "=" * 50)
@@ -4222,6 +6588,131 @@ def main():
                     bridge_status_command()
                     print()
 
+                elif cmd == "recordsreport" or cmd.startswith("recordsreport "):
+                    # v2.6.4: Support format flags (--text, --csv, --json, --all)
+                    format_option = None
+                    if "--text" in cmd:
+                        format_option = "text"
+                    elif "--csv" in cmd:
+                        format_option = "csv"
+                    elif "--json" in cmd:
+                        format_option = "json"
+                    elif "--all" in cmd:
+                        format_option = "all"
+
+                    print()
+                    recordsreport_command(format_option=format_option)
+                    print()
+
+                elif cmd == "session":
+                    print()
+                    session_command()
+                    print()
+
+                elif cmd == "mystats" or cmd.startswith("mystats "):
+                    # v2.6.4: Support timeframe and instrument flags
+                    timeframe = 'all'
+                    instrument_id = None
+                    full = False
+
+                    if "--timeframe" in cmd or "-t" in cmd:
+                        # Extract timeframe value
+                        parts = cmd.split()
+                        for i, part in enumerate(parts):
+                            if part in ("--timeframe", "-t") and i + 1 < len(parts):
+                                timeframe = parts[i + 1]
+                                break
+
+                    if "--instrument" in cmd or "-i" in cmd:
+                        # Extract instrument ID
+                        parts = cmd.split()
+                        for i, part in enumerate(parts):
+                            if part in ("--instrument", "-i") and i + 1 < len(parts):
+                                try:
+                                    instrument_id = int(parts[i + 1])
+                                except ValueError:
+                                    print_warning(f"Invalid instrument ID: {parts[i + 1]}")
+
+                    if "--full" in cmd or "-f" in cmd:
+                        full = True
+
+                    print()
+                    mystats_command(timeframe=timeframe, instrument_id=instrument_id, full=full)
+                    print()
+
+                elif cmd == "search" or cmd.startswith("search "):
+                    # v2.6.4: Search user's scores with filters
+                    query = None
+                    instrument_id = None
+                    difficulty_id = None
+                    fc_only = False
+                    page = 1
+
+                    # Extract query (any text not starting with --)
+                    parts = cmd.split()
+                    query_parts = []
+                    i = 1  # Skip "search"
+                    while i < len(parts) and not parts[i].startswith('-'):
+                        query_parts.append(parts[i])
+                        i += 1
+                    if query_parts:
+                        query = ' '.join(query_parts)
+
+                    if "--instrument" in cmd or "-i" in cmd:
+                        parts = cmd.split()
+                        for j, part in enumerate(parts):
+                            if part in ("--instrument", "-i") and j + 1 < len(parts):
+                                try:
+                                    instrument_id = int(parts[j + 1])
+                                except ValueError:
+                                    print_warning(f"Invalid instrument ID: {parts[j + 1]}")
+
+                    if "--difficulty" in cmd or "-d" in cmd:
+                        parts = cmd.split()
+                        for j, part in enumerate(parts):
+                            if part in ("--difficulty", "-d") and j + 1 < len(parts):
+                                try:
+                                    difficulty_id = int(parts[j + 1])
+                                except ValueError:
+                                    print_warning(f"Invalid difficulty ID: {parts[j + 1]}")
+
+                    if "--fc" in cmd:
+                        fc_only = True
+
+                    if "--page" in cmd or "-p" in cmd:
+                        parts = cmd.split()
+                        for j, part in enumerate(parts):
+                            if part in ("--page", "-p") and j + 1 < len(parts):
+                                try:
+                                    page = int(parts[j + 1])
+                                    if page < 1:
+                                        page = 1
+                                except ValueError:
+                                    print_warning(f"Invalid page number: {parts[j + 1]}")
+
+                    print()
+                    search_command(query=query, instrument_id=instrument_id, difficulty_id=difficulty_id,
+                                   fc_only=fc_only, page=page)
+                    print()
+
+                elif cmd == "compare" or cmd.startswith("compare "):
+                    # v2.6.4: Compare scores with another user
+                    # Extract Discord user ID from command
+                    parts = cmd.split()
+                    if len(parts) < 2:
+                        print_warning("Usage: compare <discord_user_id>")
+                        print()
+                        print("To get a user's Discord ID:")
+                        print("  1. Enable Developer Mode in Discord (Settings > Advanced)")
+                        print("  2. Right-click the user's profile or message")
+                        print("  3. Select 'Copy User ID'")
+                        print()
+                    else:
+                        user2_discord_id = parts[1]
+                        print()
+                        compare_command(user2_discord_id)
+                        print()
+
                 elif cmd == "refreshcache":
                     print()
                     print_info("Reloading song metadata from Clone Hero...")
@@ -4299,6 +6790,61 @@ def main():
                     print()
 
                 elif cmd == "quit" or cmd == "exit":
+                    # Show session summary if enabled (v2.6.4)
+                    settings = load_settings()
+                    show_summary = settings.get('show_session_summary_on_exit', True)
+
+                    if show_summary and session_tracker.has_activity():
+                        from datetime import datetime
+                        print()
+                        print("=" * 60)
+                        print(f"  {Fore.CYAN}SESSION COMPLETE{Style.RESET_ALL}")
+                        print("=" * 60)
+
+                        # Duration
+                        hours, minutes, seconds = session_tracker.get_session_duration()
+                        if hours > 0:
+                            duration_str = f"{hours} hour{'s' if hours != 1 else ''} {minutes} minute{'s' if minutes != 1 else ''}"
+                        elif minutes > 0:
+                            duration_str = f"{minutes} minute{'s' if minutes != 1 else ''}"
+                        else:
+                            duration_str = f"{seconds} second{'s' if seconds != 1 else ''}"
+
+                        print(f"  Duration: {duration_str}")
+                        print()
+
+                        # Summary stats
+                        print(f"  Great session! You submitted {Fore.WHITE}{len(session_tracker.scores)}{Style.RESET_ALL} scores:")
+                        if session_tracker.records_broken:
+                            print(f"    • {Fore.RED}{len(session_tracker.records_broken)} new record{'s' if len(session_tracker.records_broken) != 1 else ''} 🏆{Style.RESET_ALL}")
+                        if session_tracker.new_fcs:
+                            print(f"    • {Fore.GREEN}{len(session_tracker.new_fcs)} new full combo{'s' if len(session_tracker.new_fcs) != 1 else ''} ⭐{Style.RESET_ALL}")
+                        if session_tracker.personal_bests:
+                            print(f"    • {len(session_tracker.personal_bests)} personal best{'s' if len(session_tracker.personal_bests) != 1 else ''}")
+
+                        avg_acc = session_tracker.get_average_accuracy()
+                        print(f"    • Average accuracy: {avg_acc:.1f}%")
+
+                        # Top moment
+                        if session_tracker.records_broken:
+                            top_record = max(session_tracker.records_broken, key=lambda s: s.get('score', 0))
+                            top_song = top_record.get('song_title', f"[{top_record['chart_hash'][:8]}]")
+                            print()
+                            print(f"  {Fore.YELLOW}Top moment:{Style.RESET_ALL} Broke the record on {top_song}!")
+                        elif session_tracker.new_fcs:
+                            top_fc = max(session_tracker.new_fcs, key=lambda s: s.get('score', 0))
+                            top_song = top_fc.get('song_title', f"[{top_fc['chart_hash'][:8]}]")
+                            print()
+                            print(f"  {Fore.YELLOW}Top moment:{Style.RESET_ALL} First FC on {top_song}!")
+
+                        print()
+                        print("  See you next time! 👋")
+                        print()
+                        print("=" * 60)
+                        print()
+
+                        input("Press Enter to exit...")
+
                     print("\n[*] Shutting down...")
                     watcher.stop()
                     stop_tray_icon()

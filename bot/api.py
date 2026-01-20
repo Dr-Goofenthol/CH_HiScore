@@ -135,6 +135,10 @@ class ScoreAPI:
         self.app.router.add_get('/api/unresolved_hashes', self.get_unresolved_hashes)
         self.app.router.add_post('/api/resolve_hashes', self.resolve_hashes)
         self.app.router.add_post('/api/chart_metadata', self.upload_chart_metadata)  # v2.6.0: Bulk chart upload
+        self.app.router.add_get('/api/user_records', self.get_user_records)  # v2.6.4: Records report
+        self.app.router.add_get('/api/user_stats_detailed', self.get_user_stats_detailed)  # v2.6.4: Detailed stats
+        self.app.router.add_get('/api/search_scores', self.search_user_scores)  # v2.6.4: Search scores
+        self.app.router.add_get('/api/compare', self.compare_users)  # v2.6.4: Compare users
 
     async def index(self, request):
         """Root endpoint - API info"""
@@ -1720,6 +1724,352 @@ class ScoreAPI:
         except Exception as e:
             print_error(f"[API] Error uploading chart metadata: {e}")
             log_exception(logger, "Error uploading chart metadata", e)
+            return web.json_response({
+                'success': False,
+                'error': str(e)
+            }, status=500)
+
+    async def get_user_records(self, request):
+        """
+        Get ALL records held by a user with comprehensive metadata (v2.6.4)
+
+        Requires authentication via auth_token header
+
+        Returns:
+        {
+            "success": true,
+            "user": {
+                "discord_id": "123456789",
+                "discord_username": "Username"
+            },
+            "total_records": 47,
+            "records": [
+                {
+                    "chart_hash": "abc123...",
+                    "instrument_id": 0,
+                    "difficulty_id": 3,
+                    "score": 973245,
+                    "notes_hit": 3674,
+                    "notes_total": 3722,
+                    "is_full_combo": 1,
+                    "stars": 5,
+                    "submitted_at": "2026-01-15 14:32:11",
+                    "play_count": 5,
+                    "song_title": "Through The Fire And Flames",
+                    "song_artist": "DragonForce",
+                    "song_charter": "FrostedGH",
+                    "song_album": "Inhuman Rampage",
+                    "song_genre": "Metal",
+                    "song_length_ms": 443000,
+                    "chart_nps": 12.3,
+                    "chart_peak_nps": 18.7,
+                    "chart_total_notes": 3722,
+                    "previous_score": 865120,
+                    "previous_holder": "RockGod92",
+                    "previous_set_at": "2026-01-10 17:15:44"
+                },
+                ...
+            ]
+        }
+        """
+        try:
+            # Check authentication
+            auth_token = request.headers.get('Authorization', '').replace('Bearer ', '')
+            if not auth_token:
+                return web.json_response({
+                    'success': False,
+                    'error': 'Missing auth token'
+                }, status=401)
+
+            # Verify user exists
+            user = self.bot.db.get_user_by_auth_token(auth_token)
+            if not user:
+                return web.json_response({
+                    'success': False,
+                    'error': 'Invalid auth token'
+                }, status=401)
+
+            # Get detailed records
+            records = self.bot.db.get_user_records_detailed(user['discord_id'])
+
+            print_info(
+                f"[API] Records report requested by {user['discord_username']} ({len(records)} records)"
+            )
+
+            return web.json_response({
+                'success': True,
+                'user': {
+                    'discord_id': user['discord_id'],
+                    'discord_username': user['discord_username']
+                },
+                'total_records': len(records),
+                'records': records
+            })
+
+        except Exception as e:
+            print_error(f"[API] Error fetching user records: {e}")
+            log_exception(logger, "Error fetching user records", e)
+            return web.json_response({
+                'success': False,
+                'error': str(e)
+            }, status=500)
+
+    async def get_user_stats_detailed(self, request):
+        """
+        Get detailed statistics for a user with optional filters (v2.6.4)
+
+        Query parameters:
+            - timeframe: '7d', '30d', '90d', or 'all' (default)
+            - instrument: instrument ID (0-10, optional)
+
+        Returns:
+        {
+            "success": true,
+            "stats": {
+                "overall": {
+                    "total_scores": 1247,
+                    "records_held": 47,
+                    "full_combos": 89,
+                    "avg_accuracy": 96.3
+                },
+                "by_instrument": [...],
+                "by_difficulty": [...],
+                "top_achievements": {...},
+                "recent_activity": {...}
+            }
+        }
+        """
+        try:
+            # Check authentication
+            auth_token = request.headers.get('Authorization', '').replace('Bearer ', '')
+            if not auth_token:
+                return web.json_response({
+                    'success': False,
+                    'error': 'Missing auth token'
+                }, status=401)
+
+            # Verify user exists
+            user = self.bot.db.get_user_by_auth_token(auth_token)
+            if not user:
+                return web.json_response({
+                    'success': False,
+                    'error': 'Invalid auth token'
+                }, status=401)
+
+            # Parse query parameters
+            timeframe = request.query.get('timeframe', 'all')
+            instrument_str = request.query.get('instrument')
+
+            # Validate timeframe
+            if timeframe not in ['7d', '30d', '90d', 'all']:
+                return web.json_response({
+                    'success': False,
+                    'error': f'Invalid timeframe: {timeframe}. Must be 7d, 30d, 90d, or all'
+                }, status=400)
+
+            # Parse instrument ID
+            instrument_id = None
+            if instrument_str:
+                try:
+                    instrument_id = int(instrument_str)
+                    if instrument_id < 0 or instrument_id > 10:
+                        return web.json_response({
+                            'success': False,
+                            'error': 'Instrument ID must be 0-10'
+                        }, status=400)
+                except ValueError:
+                    return web.json_response({
+                        'success': False,
+                        'error': 'Invalid instrument ID'
+                    }, status=400)
+
+            # Get detailed stats
+            stats = self.bot.db.get_user_stats_detailed(
+                user['discord_id'],
+                timeframe=timeframe,
+                instrument_id=instrument_id
+            )
+
+            if stats is None:
+                return web.json_response({
+                    'success': False,
+                    'error': 'User not found'
+                }, status=404)
+
+            print_info(
+                f"[API] Stats requested by {user['discord_username']} (timeframe={timeframe}, instrument={instrument_id})"
+            )
+
+            return web.json_response({
+                'success': True,
+                'stats': stats
+            })
+
+        except Exception as e:
+            print_error(f"[API] Error fetching user stats: {e}")
+            log_exception(logger, "Error fetching user stats", e)
+            return web.json_response({
+                'success': False,
+                'error': str(e)
+            }, status=500)
+
+    async def search_user_scores(self, request):
+        """
+        Search a user's scores with filters (v2.6.4)
+
+        Query parameters:
+            - query: Text search (song title/artist/hash)
+            - instrument: Instrument ID (0-10)
+            - difficulty: Difficulty ID (0-3)
+            - fc: "true" to show only full combos
+            - offset: Pagination offset (default: 0)
+            - limit: Results per page (default: 10)
+        """
+        try:
+            # Authentication check
+            auth_token = request.headers.get('Authorization', '').replace('Bearer ', '')
+            if not auth_token:
+                return web.json_response({
+                    'success': False,
+                    'error': 'Authorization token required'
+                }, status=401)
+
+            user = self.bot.db.get_user_by_auth_token(auth_token)
+            if not user:
+                return web.json_response({
+                    'success': False,
+                    'error': 'Invalid authorization token'
+                }, status=401)
+
+            # Parse query parameters
+            query = request.query.get('query')  # Optional text search
+
+            instrument_str = request.query.get('instrument')
+            instrument_id = None
+            if instrument_str is not None:
+                try:
+                    instrument_id = int(instrument_str)
+                    if not (0 <= instrument_id <= 10):
+                        return web.json_response({
+                            'success': False,
+                            'error': f'Invalid instrument ID: {instrument_id} (must be 0-10)'
+                        }, status=400)
+                except ValueError:
+                    return web.json_response({
+                        'success': False,
+                        'error': f'Invalid instrument ID: {instrument_str}'
+                    }, status=400)
+
+            difficulty_str = request.query.get('difficulty')
+            difficulty_id = None
+            if difficulty_str is not None:
+                try:
+                    difficulty_id = int(difficulty_str)
+                    if not (0 <= difficulty_id <= 3):
+                        return web.json_response({
+                            'success': False,
+                            'error': f'Invalid difficulty ID: {difficulty_id} (must be 0-3)'
+                        }, status=400)
+                except ValueError:
+                    return web.json_response({
+                        'success': False,
+                        'error': f'Invalid difficulty ID: {difficulty_str}'
+                    }, status=400)
+
+            fc_only = request.query.get('fc', '').lower() == 'true'
+
+            offset_str = request.query.get('offset', '0')
+            try:
+                offset = int(offset_str)
+                if offset < 0:
+                    offset = 0
+            except ValueError:
+                offset = 0
+
+            limit_str = request.query.get('limit', '10')
+            try:
+                limit = int(limit_str)
+                if limit < 1:
+                    limit = 10
+                elif limit > 100:  # Cap at 100 for performance
+                    limit = 100
+            except ValueError:
+                limit = 10
+
+            # Execute search
+            results = self.bot.db.search_user_scores(
+                discord_id=user['discord_id'],
+                query=query,
+                instrument_id=instrument_id,
+                difficulty_id=difficulty_id,
+                fc_only=fc_only,
+                offset=offset,
+                limit=limit
+            )
+
+            return web.json_response({
+                'success': True,
+                'data': results
+            })
+
+        except Exception as e:
+            print_error(f"[API] Error in search_user_scores: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return web.json_response({
+                'success': False,
+                'error': str(e)
+            }, status=500)
+
+    async def compare_users(self, request):
+        """
+        Compare two users head-to-head (v2.6.4)
+
+        Query parameters:
+            - user2: Discord ID of the user to compare against
+        """
+        try:
+            # Authentication check (get user1 from auth token)
+            auth_token = request.headers.get('Authorization', '').replace('Bearer ', '')
+            if not auth_token:
+                return web.json_response({
+                    'success': False,
+                    'error': 'Authorization token required'
+                }, status=401)
+
+            user1 = self.bot.db.get_user_by_auth_token(auth_token)
+            if not user1:
+                return web.json_response({
+                    'success': False,
+                    'error': 'Invalid authorization token'
+                }, status=401)
+
+            # Get user2 discord_id from query params
+            user2_discord_id = request.query.get('user2')
+            if not user2_discord_id:
+                return web.json_response({
+                    'success': False,
+                    'error': 'Missing required parameter: user2 (Discord ID)'
+                }, status=400)
+
+            # Execute comparison
+            comparison = self.bot.db.compare_users(user1['discord_id'], user2_discord_id)
+
+            if 'error' in comparison:
+                return web.json_response({
+                    'success': False,
+                    'error': comparison['error']
+                }, status=404)
+
+            return web.json_response({
+                'success': True,
+                'data': comparison
+            })
+
+        except Exception as e:
+            print_error(f"[API] Error in compare_users: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return web.json_response({
                 'success': False,
                 'error': str(e)

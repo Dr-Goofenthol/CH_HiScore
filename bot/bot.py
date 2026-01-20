@@ -480,8 +480,8 @@ class CloneHeroBot(commands.Bot):
             target_time = self.config_manager.get('daily_activity_log.generation_time', '00:00')
             target_hour, target_minute = map(int, target_time.split(':'))
 
-            # Check if it's time to generate the log
-            now = datetime.now()
+            # Check if it's time to generate the log (use UTC to match score timestamps)
+            now = datetime.utcnow()
             current_hour = now.hour
             current_minute = now.minute
 
@@ -501,7 +501,7 @@ class CloneHeroBot(commands.Bot):
             # Generate the log
             print_info(f"[Activity Log] Generating daily activity log for {today_str}")
 
-            # Get yesterday's date range (the day we're logging)
+            # Get yesterday's date range in UTC (the day we're logging)
             yesterday = now - timedelta(days=1)
             start_time = yesterday.strftime('%Y-%m-%d 00:00:00')
             end_time = today_str + ' 00:00:00'
@@ -1002,7 +1002,8 @@ async def mystats(interaction: discord.Interaction, user: discord.Member = None)
             instruments = {0: "Lead", 1: "Bass", 2: "Rhythm", 3: "Keys", 4: "Drums"}
             difficulties = {0: "Easy", 1: "Med", 2: "Hard", 3: "Expert"}
 
-            records_text = ""
+            # Build entries as a list first (for field splitting)
+            entries = []
             for rec in records:
                 inst = instruments.get(rec['instrument_id'], '?')
                 diff = difficulties.get(rec['difficulty_id'], '?')
@@ -1016,6 +1017,7 @@ async def mystats(interaction: discord.Interaction, user: discord.Member = None)
                 # Check if mystery hash
                 is_mystery = not song_title or song_title.startswith('[')
 
+                entry = ""
                 if is_mystery:
                     # Truncate hash to first 8 chars
                     song_display = f"🔍 `[{chart_hash[:8]}]`"
@@ -1024,22 +1026,42 @@ async def mystats(interaction: discord.Interaction, user: discord.Member = None)
                     if artist:
                         song_display += f" - {artist}"
 
-                records_text += f"• {song_display}\n"
-                records_text += f"  {rec['score']:,} pts | {diff} {inst}\n"
-                records_text += f"  Hash: `[{chart_hash[:8]}]`\n"
+                entry += f"• {song_display}\n"
+                entry += f"  {rec['score']:,} pts | {diff} {inst}\n"
+                entry += f"  Hash: `[{chart_hash[:8]}]`\n"
 
                 # Add Enchor.us link if we have metadata
                 if not is_mystery:
                     enchor_url = build_enchor_url(song_title, artist, charter)
-                    records_text += f"  🔗 [Search on Enchor.us]({enchor_url})\n"
+                    entry += f"  🔗 [Search on Enchor.us]({enchor_url})\n"
 
-                records_text += "\n"  # Blank line between records
+                entry += "\n"  # Blank line between records
+                entries.append(entry)
 
-            embed.add_field(
-                name="Top Records Held",
-                value=records_text,
-                inline=False
-            )
+            # Split entries into fields to avoid Discord's 1024 char limit
+            current_field = ""
+            field_count = 1
+            for entry in entries:
+                # Check if adding this entry would exceed the limit
+                if len(current_field) + len(entry) > 1000:  # Leave some margin
+                    # Add current field to embed
+                    embed.add_field(
+                        name="Top Records Held" if field_count == 1 else f"Records (cont'd {field_count})",
+                        value=current_field,
+                        inline=False
+                    )
+                    current_field = entry
+                    field_count += 1
+                else:
+                    current_field += entry
+
+            # Add remaining entries
+            if current_field:
+                embed.add_field(
+                    name="Top Records Held" if field_count == 1 else f"Records (cont'd {field_count})",
+                    value=current_field,
+                    inline=False
+                )
 
         embed.set_footer(text=f"Member since: {stats['member_since'][:10]}")
     else:

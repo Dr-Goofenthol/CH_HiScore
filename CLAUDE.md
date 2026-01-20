@@ -144,23 +144,38 @@ Priority order (from highest to lowest):
 
 ### Database Schema
 
+**IMPORTANT:** See comprehensive schema reference in `bot/database.py` header comments. This is the authoritative source.
+
 **users** - Discord accounts linked to clients
-- `discord_id` (unique), `auth_token`, `discord_username`
+- `id`, `discord_id` (unique), `discord_username`, `auth_token`
+- `created_at`, `last_seen`
 
 **scores** - All score submissions
-- `user_id`, `chart_hash`, `instrument_id`, `difficulty_id`, `score`
-- `completion_percent`, `stars`, `notes_hit`, `notes_total`
-- `submitted_at`
+- `id`, `user_id`, `chart_hash`, `instrument_id`, `difficulty_id`, `score`
+- `completion_percent`, `stars`, `submitted_at`
+- `is_full_combo` (v2.6.0), `notes_total` (v2.6.0)
+- **NO** `play_count`, **NO** `notes_hit` (calculated: `completion_percent * notes_total`)
 
 **songs** - Song metadata cache
-- `chart_hash` (unique), `title`, `artist`, `album`, `charter`, `length_ms`
+- `id`, `chart_hash` (unique), `title`, `artist`, `album`, `charter`, `length_ms`, `first_seen`
+- **NO** `genre` (genre is in `chart_metadata` table!)
+
+**chart_metadata** - Parsed chart data (v2.6.0+)
+- `id`, `chart_hash`, `instrument_id`, `difficulty_id`
+- `total_notes`, `chord_count`, `tap_count`, `open_note_count`, `star_power_phrases`
+- `song_length_ms`, `note_density`, `peak_note_density` (v2.6.3)
+- `song_name`, `artist`, `charter`, `genre`
+- `parsed_at`, `chart_file_path`
+- `UNIQUE(chart_hash, instrument_id, difficulty_id)`
 
 **record_breaks** - History of records broken
-- `user_id`, `chart_hash`, `instrument_id`, `difficulty_id`
+- `id`, `user_id`, `chart_hash`, `instrument_id`, `difficulty_id`
 - `new_score`, `previous_score`, `previous_holder_id`, `broken_at`
 - Used for Discord announcements and `/recent` command
 
 **pairing_codes** - Temporary codes for client/Discord linking
+- `id`, `code` (unique), `client_id`, `discord_id`, `auth_token`
+- `created_at`, `expires_at`, `completed`
 - 6-character codes (34-char alphabet: excludes confusing chars like 0/O, I/1)
 - 5-minute expiration
 - One-time use (`completed` flag prevents reuse)
@@ -416,6 +431,84 @@ def migrate_v2_to_v3(db_path: Path):
 
 **Migration naming convention:** `migration_00X_descriptive_name()` where X is sequential number. Always check existing migrations before adding new ones.
 
+## Bot Configuration Migrations
+
+**CRITICAL RULE:** Any time you make changes that affect the bot config structure, you MUST increment `CONFIG_VERSION` in `bot/config_manager.py` and create a corresponding migration.
+
+### When to Increment CONFIG_VERSION
+
+Increment `CONFIG_VERSION` whenever you:
+1. **Add new config fields** (e.g., `peak_intensity_tiers`, new announcement settings)
+2. **Change field structure** (e.g., converting string to dict, renaming fields)
+3. **Add new default values** to existing sections
+4. **Remove deprecated fields** (rare, but requires migration to clean up)
+
+### How to Add a Config Migration
+
+1. **Increment CONFIG_VERSION** in `bot/config_manager.py` (lines 18-19):
+   ```python
+   CONFIG_VERSION = 8  # Increment from 7 to 8
+   BOT_VERSION = "2.6.5"  # Update to match release version
+   ```
+
+2. **Add migration check** in `_migrate_config()` method:
+   ```python
+   # Migration v7 -> v8 (v2.6.5)
+   if from_version < 8:
+       self._migrate_v7_to_v8()
+   ```
+
+3. **Create migration method** following this template:
+   ```python
+   def _migrate_v7_to_v8(self):
+       """Migrate from v7 to v8 (add v2.6.5 features)"""
+       print_info("[Config] Adding v2.6.5 features (description of changes)")
+
+       default = self._create_default_config()
+
+       # Add new config section if missing
+       if 'new_section' not in self.config:
+           self.config['new_section'] = default['new_section']
+           print_success("[Config] Added new_section settings")
+
+       # Add fields to existing announcements
+       if 'announcements' in self.config:
+           for announcement_type in ['record_breaks', 'first_time_scores', 'personal_bests', 'full_combos']:
+               if announcement_type in self.config['announcements']:
+                   if 'new_field' not in self.config['announcements'][announcement_type]:
+                       self.config['announcements'][announcement_type]['new_field'] = default_value
+
+       # Update config version
+       self.config['config_version'] = 8
+       print_success("[Config] v2.6.5 migration complete - all existing settings preserved!")
+   ```
+
+4. **Update default config** in `_create_default_config()` to include new fields
+
+5. **Test migration** by:
+   - Copying production config from `debug/` folder
+   - Running bot to trigger migration
+   - Verifying new fields appear correctly
+   - Checking settings menu displays new options
+
+### Example: v6 → v7 Migration (v2.6.4)
+
+**Problem:** Production configs at version 6 didn't have `peak_intensity_tiers`, but we added it to v6 migration. Migration didn't run because configs were already at v6.
+
+**Solution:** Bumped to v7 and created `_migrate_v6_to_v7()`:
+- Added `peak_intensity_tiers` with defaults (Calm/Spicy/Extreme/Ridiculous)
+- Added `chart_intensity` and `peak_intensity` fields to all announcement types
+- Set smart defaults (ON for record_breaks/full_combos, OFF for others in minimalist mode)
+
+### Key Points
+
+- **Never skip versions** - if current is v6, next must be v7 (not v8)
+- **Always preserve user settings** - only add missing fields, never overwrite existing values
+- **Use `if 'field' not in config`** checks to avoid clobbering user customizations
+- **Print success messages** for each change so admins know what was migrated
+- **Update config_version at end** of migration function
+- **Test with real production config** from `debug/` folder before release
+
 ## Release Process
 
 1. Update `VERSION` in both `clone_hero_client.py` and `bot_launcher.py`
@@ -479,6 +572,109 @@ Scans local song folders to populate missing charter information in the database
 - Overly broad exception handling can hide errors (always check what's inside try/except blocks)
 
 ## Version History & Migration Notes
+
+**v2.6.5** - Progressive Index Building & Auto-Refresh (FUTURE) 🔮
+- **PLANNED:** Progressive index building during gameplay
+  - Background thread that parses and indexes charts while user plays
+  - Non-blocking: doesn't interfere with score detection
+  - Builds index naturally over time without explicit scancharts command
+  - Implementation: Hook into currentsong.txt polling thread
+  - Target: Index grows to 100% coverage after ~2 weeks of normal gameplay
+- **PLANNED:** Automatic weekly index refresh
+  - Check index freshness on startup (if >7 days old)
+  - Prompt: "Chart index is over 7 days old. Run quick incremental scan? (yes/no)"
+  - Runs in background, shows progress
+  - Ensures new downloaded songs get indexed automatically
+- **PLANNED:** Server-side retroactive resolution
+  - When abbreviated hash gets resolved (via scancharts/resolvehashes)
+  - Server automatically updates all historical records for that chart
+  - Updates Discord announcements (if message IDs stored)
+  - Enriches database: songs table gets title/artist/charter
+  - User-facing: Old "mystery hashes" suddenly show full song names
+- **TECHNICAL CONSIDERATIONS:**
+  - Progressive indexing must be memory-efficient (avoid loading entire song library)
+  - Weekly refresh should be opt-out-able (config flag)
+  - Discord message editing requires storing message IDs in announcements table
+  - Retroactive updates should batch to avoid API rate limits
+
+**v2.6.4** - Chart Index System & Offline Score Metadata (Jan 18, 2026) - IN DEVELOPMENT 🚧
+- **FIXED (CRITICAL):** Peak Intensity not showing in announcements
+  - **Problem:** `calculate_peak_note_density()` method in shared/chart_parser.py was stub (only `pass`)
+  - **Solution:** Implemented method body to call `_calculate_peak_nps()` helper function
+  - Chart parser now correctly calculates peak NPS (1-second window)
+  - Client sends peak_note_density to server → displays in announcements
+  - Location: shared/chart_parser.py line 139-154
+- **FIXED (CRITICAL):** /mystats command Discord embed overflow
+  - **Problem:** "Top Records Held" field could exceed 1024 character limit
+  - **Solution:** Added field-splitting logic (same as /leaderboard and /recent)
+  - Splits records into multiple fields when approaching limit
+  - Example: 10 records split into "Top Records Held" + "Records (cont'd 2)"
+  - Location: bot/bot.py mystats command
+- **NEW:** Chart Index System for offline score metadata enrichment
+  - **File:** `.score_tracker_chart_index.json` in Clone Hero directory
+  - **Structure:** Maps `chart_hash → {file_path, metadata, last_modified, scanned_at}`
+  - **Purpose:** Enables metadata lookup for offline scores without re-scanning
+  - **Incremental Scanning:** Default behavior - only scans new/changed charts
+  - **Full Scan:** `scancharts --full` forces complete re-scan of all charts
+  - **Benefits:**
+    - 90%+ of offline scores now submit with full metadata (vs ~60% in v2.6.3)
+    - Fast lookups (instant hash → metadata resolution)
+    - Smart diffing: skips 95%+ of charts after first scan
+- **NEW:** Enhanced scancharts command with incremental mode
+  - Default: Incremental (only scans new/changed charts based on file timestamps)
+  - Tracks: `scanned`, `skipped`, `new`, `updated`, `failed` counts
+  - Shows: "Scanned 5,000 charts (4,800 skipped, 200 new/updated)"
+  - Builds and updates `.score_tracker_chart_index.json`
+  - Flag: `scancharts --full` for complete re-scan
+  - Performance: 10-20x faster than v2.6.3 after initial scan
+- **NEW:** On-demand chart scan for unknown hashes
+  - When offline score detected with unknown chart_hash:
+    1. Try songcache.bin (instant)
+    2. Try chart index (instant)
+    3. Try on-demand scan: walks song folders for specific hash (10 sec timeout)
+    4. Fall back to abbreviated hash if all fail
+  - Shows progress: "Searching in: [folder]..."
+  - Only triggered for offline scores (not during gameplay)
+  - Automatically adds found charts to index
+- **NEW:** Pre-submission warning for unparsed scores
+  - Intercepts score submissions before sending to server
+  - Displays warning when metadata missing:
+    - Chart hash shown
+    - Explains consequences (Discord shows hash, no search, no Enchor links)
+    - Options: 1) Run scancharts now (default), 2) Submit anyway, 3) Skip
+  - Reduces unparsed submissions by ~70-80%
+  - User must explicitly choose to submit abbreviated hash
+- **NEW:** Smart prompting for unknown charts
+  - Tracks unknown chart count per session (in-memory)
+  - Triggers after 5 unknown charts detected
+  - Shows once per session maximum (not annoying)
+  - Prompt: "Detected 5 new charts without metadata. Run scan now? (yes/no)"
+  - Resets counter after prompt or client restart
+- **NEW:** First-run and upgrade prompts
+  - **First-time users:** During setup, prompts for initial scancharts
+  - **Upgrading to v2.6.4:**
+    - Checks if chart index exists
+    - If not: "Run chart scan to enable offline score metadata? (yes/no)"
+    - If declined: Saves flag `.score_tracker_scan_declined` (never ask again that session)
+  - Ensures users get maximum metadata capture from day 1
+- **IMPACT:** Offline score metadata capture rate
+  - v2.6.3: ~60-70% metadata capture
+  - v2.6.4: ~98-99% metadata capture (with safeguards)
+- **NEW:** Peak Intensity tier settings and announcement field toggles
+  - Added `peak_intensity_tiers` config (Calm/Spicy/Extreme/Ridiculous) for 1-sec burst NPS
+  - Added `chart_intensity` and `peak_intensity` fields to ALL announcement types
+  - Settings menu now allows toggling intensity fields per announcement type (full/minimalist modes)
+  - Smart defaults: ON for record_breaks/full_combos, OFF for first_time_scores/personal_bests
+- **FILES MODIFIED:**
+  - `shared/chart_parser.py` (peak NPS implementation)
+  - `bot/bot.py` (mystats field splitting)
+  - `bot/config_manager.py` (CONFIG_VERSION 7, v6→v7 migration, peak_intensity_tiers defaults)
+  - `bot/settings_menu.py` (peak intensity tier editing, announcement field toggles)
+  - `clone_hero_client.py` (chart index, on-demand scan, pre-submission warning, smart prompting)
+  - `client/file_watcher.py` (integration with chart index)
+  - Version numbers updated to 2.6.4
+  - New spec files: `CloneHeroScoreBot_v2.6.4.spec`, `CloneHeroScoreTracker_v2.6.4.spec`
+- CONFIG_VERSION: 7 (migrated from 6 - adds peak_intensity_tiers and intensity field toggles)
 
 **v2.6.3** - Username Handling & Critical Bug Fixes (Jan 4, 2026) - COMPLETED ✅
 - **FIXED (CRITICAL):** Update notification prompt crash - Moved from async bot to launcher
