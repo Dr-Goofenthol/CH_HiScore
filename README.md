@@ -136,7 +136,7 @@ The bot will start automatically and connect to Discord.
 
 1. Run `CloneHeroScoreTracker_vX.X.X.exe`
 2. Follow the setup wizard:
-   - Enter bot URL (usually `http://localhost:5000` if on same PC)
+   - Enter bot URL (usually `http://localhost:5000` if on same PC) (ask your server admin for their IP / DNS name if not hosting locally)
    - Client generates a 6-digit pairing code
    - In Discord, type `/pair <code>` to link your account
    - Client starts monitoring your Clone Hero folder
