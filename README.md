@@ -44,62 +44,86 @@ A powerful, free, and open-source system that automatically detects your Clone H
 
 ## 📸 Screenshots
 
-> **Note:**  More screenshots coming soon! This section will showcase Discord announcements, leaderboards, and the client interface.
+### Discord Announcements
 
-Discord Announcement (record break):
+<table>
+<tr>
+<td width="50%">
 
-<img width="465" height="447" alt="image" src="https://github.com/user-attachments/assets/79511758-e3f7-4220-afc0-677dd80a45d8" />
+**Record Break**
 
+<img alt="Discord record break announcement" src="https://github.com/user-attachments/assets/79511758-e3f7-4220-afc0-677dd80a45d8" />
 
-Discord Announcement (first-score):
+</td>
+<td width="50%">
 
-<img width="417" height="237" alt="image" src="https://github.com/user-attachments/assets/f1328578-102d-4bfe-bbd2-4daafc5a4cb9" />
+**First Score**
 
+<img alt="Discord first score announcement" src="https://github.com/user-attachments/assets/f1328578-102d-4bfe-bbd2-4daafc5a4cb9" />
 
-Discord Announcement (first full-clear [FC]):
+</td>
+</tr>
+<tr>
+<td>
 
-<img width="409" height="419" alt="image" src="https://github.com/user-attachments/assets/031cc55c-22a7-4605-b6c5-a40ff0621554" />
+**First Full Combo (FC)**
 
+<img alt="Discord first FC announcement" src="https://github.com/user-attachments/assets/031cc55c-22a7-4605-b6c5-a40ff0621554" />
 
-Discord Command - /leaderboard:
+</td>
+<td>
 
-<img width="421" height="686" alt="image" src="https://github.com/user-attachments/assets/a103cd6d-da79-470f-8279-525421b69e8e" />
+**Song Lookup**
 
+<img alt="Discord /lookupsong command" src="https://github.com/user-attachments/assets/69a515fb-b423-4830-b210-b507b041e576" />
 
-Discord Command - /mystats <username>:
+</td>
+</tr>
+</table>
 
-<img width="376" height="718" alt="image" src="https://github.com/user-attachments/assets/32bea17f-58c3-4666-828d-f2e87b9b3f94" />
+### Discord Commands
 
+<table>
+<tr>
+<td width="50%">
 
-Discord Command - /lookupsong <query>:
+**Leaderboard**
 
-<img width="469" height="302" alt="image" src="https://github.com/user-attachments/assets/69a515fb-b423-4830-b210-b507b041e576" />
+<img alt="Discord /leaderboard command" src="https://github.com/user-attachments/assets/a103cd6d-da79-470f-8279-525421b69e8e" />
 
+</td>
+<td width="50%">
 
-Client Splash screen:
+**Player Stats**
 
-<img width="979" height="512" alt="image" src="https://github.com/user-attachments/assets/3b0243e9-b71d-4386-b25e-2990494573c4" />
+<img alt="Discord /mystats command" src="https://github.com/user-attachments/assets/32bea17f-58c3-4666-828d-f2e87b9b3f94" />
 
+</td>
+</tr>
+</table>
 
-Score Detection:
+### Client Interface
 
-<img width="979" height="512" alt="image" src="https://github.com/user-attachments/assets/7a9c4d35-e879-441b-93f7-dedd8a892187" />
+<table>
+<tr>
+<td width="50%">
 
+**Splash Screen**
 
+<img alt="Client splash screen" src="https://github.com/user-attachments/assets/3b0243e9-b71d-4386-b25e-2990494573c4" />
 
+</td>
+<td width="50%">
 
+**Score Detection**
 
+<img alt="Client score detection" src="https://github.com/user-attachments/assets/7a9c4d35-e879-441b-93f7-dedd8a892187" />
 
-<!-- Placeholder for screenshots -->
-<!--
-Example structure:
-- Discord announcement (full mode)
-- Discord announcement (minimalist mode)
-- Leaderboard command
-- Stats command
-- Client monitoring
--->
+</td>
+</tr>
+</table>
 
+---
 ---
 
 ## 🚀 Quick Start
