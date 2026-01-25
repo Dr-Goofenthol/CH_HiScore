@@ -277,7 +277,7 @@ For temporary testing without port forwarding:
 | `/pair <code>` | Link your Clone Hero client to your Discord account |
 | `/leaderboard [difficulty] [instrument]` | View high scores for all songs or filtered by difficulty/instrument |
 | `/mystats [user]` | View your personal statistics or check another user's stats |
-| `/recent [count]` | Show recent record breaks (default: 10, max: 50) |
+| `/recent [count]` | Show recent record breaks (default: 5, max: 20) |
 | `/lookupsong <title>` | Search for a song by title and view its metadata |
 | `/hardest [difficulty] [instrument]` | View the most difficult songs ranked by NPS (Note Density) |
 
@@ -293,20 +293,83 @@ For temporary testing without port forwarding:
 | Command | Description |
 |---------|-------------|
 | `/setartist <hash> <artist>` | Update artist metadata for a specific chart |
-| `/updatesong <hash>` | Trigger manual metadata update for a chart |
+| `/updatesong <hash> [title] [artist]` | Manually update song title and/or artist for a chart |
 | `/missingartists` | List all charts that are missing artist information |
 
-### Client Commands (Terminal)
+### Client Terminal Commands
 
 These commands are available in the CloneHeroScoreTracker client terminal:
 
+#### Score & Metadata Management
+
 | Command | Description |
 |---------|-------------|
-| `resolvehashes` | Scan local song folders and resolve missing chart metadata on server |
-| `resync` | Force re-sync of all local scores with the server |
-| `settings` | Open interactive settings menu |
-| `debug` | Enter debug mode (password required) |
-| `exit` / `quit` | Exit the tracker client |
+| `resync` | Scan for scores made while offline and submit any missed scores |
+| `reset` | Clear all tracked score history and re-submit ALL scores (requires confirmation) |
+| `scancharts [--full]` | Upload chart metadata to enable offline score metadata capture (v2.6.4+) |
+| `resolvehashes` | Scan local song folders and resolve missing metadata for past scores |
+| `refreshcache` | Reload song metadata from Clone Hero's songcache.bin |
+
+#### Statistics & Analysis
+
+| Command | Description |
+|---------|-------------|
+| `mystats [-t TIMEFRAME] [-i INSTRUMENT] [-f]` | View your server stats with optional filters (today/week/month/all) |
+| `search [QUERY] [-i ID] [-d ID] [--fc] [-p NUM]` | Search your scores with advanced filters |
+| `compare <discord_user_id>` | Head-to-head comparison with another user |
+| `session` | View current session summary (duration, records, FCs, top moment) |
+| `recordsreport [--text\|--csv\|--json\|--all]` | Generate comprehensive records report in various formats |
+
+#### Configuration & Utilities
+
+| Command | Description |
+|---------|-------------|
+| `settings` | Open interactive settings menu (bot URL, paths, OCR, auto-start, etc.) |
+| `status` | Check server connection and tracking status |
+| `stats` | View quick stats (total scores, last submission, OCR stats) |
+| `update` | Check for and download tracker updates from GitHub |
+| `backup` / `restore` | Backup or restore configuration files |
+| `bridgestatus` | Check Bridge integration status (if using Bridge) |
+| `exportlogs` | Export debug logs to a zip file |
+| `unpair` | Disconnect this machine from Discord account (requires confirmation) |
+| `minimize` | Minimize tracker to system tray (if tray feature enabled) |
+| `debug` | Enter debug mode (password required - test scores, OCR, paths, sysinfo) |
+| `help` / `?` | Display help message with all available commands |
+| `quit` / `exit` | Gracefully exit the tracker |
+
+### Bot Server Terminal Commands
+
+These commands are available in the CloneHeroScoreBot launcher terminal:
+
+#### Main Menu Options
+
+| Command | Description |
+|---------|-------------|
+| `[1] Start Bot` | Launch the Discord bot server |
+| `[2] Settings Menu` | Configure all bot settings (token, channels, announcements, etc.) |
+| `[3] View Configuration` | Display current bot configuration (read-only) |
+| `[4] Check Status` | Verify bot health and configuration status |
+| `[5] Show Statistics` | Display database statistics (users, scores, songs, records) |
+| `[6] Admin Utilities` | Access advanced maintenance tools (see below) |
+| `[Q] Quit` | Exit the launcher |
+
+#### Runtime Commands
+
+| Command | Description |
+|---------|-------------|
+| `quit` / `stop` / `exit` | Gracefully shut down the running bot (type in terminal) |
+
+#### Admin Utilities (Submenu)
+
+| Command | Description |
+|---------|-------------|
+| `[1] Fix Note Counts` | Database migration to correct note counts from pre-v2.6.2 scores |
+| `[2] Scan Historical FCs` | Scan 100% completion scores and mark as Full Combos (v2.6.0+) |
+| `[3] Backup Database` | Create timestamped backup of scores database |
+| `[4] Export Logs` | Create timestamped copy of bot log file |
+| `[5] Send Update Notification` | Manually post update notification to Discord |
+| `[6] Verify Configuration` | Run diagnostic checks on bot configuration |
+| `[B] Back to Main Menu` | Return to launcher main menu |
 
 ---
 
