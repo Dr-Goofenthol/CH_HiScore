@@ -4,7 +4,7 @@ Clone Hero High Score Bot Launcher
 Standalone executable for the Discord bot with first-time setup.
 """
 
-VERSION = "2.6.5"
+VERSION = "2.6.6"
 
 # GitHub repository for auto-updates
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
@@ -344,6 +344,12 @@ def check_and_prompt_update(silent_if_current: bool = False) -> bool:
 def load_config():
     """Load bot configuration using ConfigManager"""
     from bot.config_manager import ConfigManager
+
+    # If no config file exists, return None to trigger first-time setup wizard.
+    # ConfigManager.load() auto-creates a default config when the file is missing,
+    # which would otherwise bypass the setup wizard entirely.
+    if not get_config_path().exists():
+        return None
 
     config_manager = ConfigManager()
     try:
@@ -720,6 +726,38 @@ GET DISCORD IDs:
     else:
         print("  [*] Personal best announcements disabled (recommended)")
 
+    # ==================== HISTORICAL SUBMISSIONS ====================
+
+    print("\n" + "-" * 60)
+    print("STEP 9: Historical Score Submissions")
+    print("-" * 60)
+    print("""
+When a player installs the client tracker for the first time (or runs
+the 'resync' / 'reset' commands), the client will submit ALL of their
+existing Clone Hero scores to your server in one batch.
+
+ALLOW (default): Historical scores are accepted and stored normally.
+  - Good for: servers that want complete leaderboards from day one
+  - Existing players' full score histories appear immediately
+  - The 'resync' and 'reset' commands work normally
+
+DENY: Only scores played AFTER the client was first connected are
+  accepted. Historical / batch submissions are silently rejected.
+  - Good for: fresh-start servers that want a level playing field
+  - Players must play songs again after connecting to appear on boards
+  - Note: Discord announcements for backlog scores are already
+    suppressed by default, so this mainly affects database storage
+
+You can change this setting later from the Settings Menu.
+""")
+    hist_choice = input("Allow historical score submissions? [yes]: ").strip().lower()
+    if hist_choice in ('n', 'no'):
+        config['announcements']['allow_historical_submissions'] = False
+        print("  [-] Historical submissions disabled - only live scores will be recorded")
+    else:
+        config['announcements']['allow_historical_submissions'] = True
+        print("  [+] Historical submissions allowed")
+
     # ==================== SUMMARY ====================
 
     print("\n" + "=" * 60)
@@ -751,6 +789,8 @@ GET DISCORD IDs:
     print(f"  Personal Bests: {'Enabled' if config['announcements']['personal_bests']['enabled'] else 'Disabled'}")
     if config['announcements']['personal_bests']['enabled']:
         print(f"    Min improvement: {config['announcements']['personal_bests']['min_improvement_percent']}% or {config['announcements']['personal_bests']['min_improvement_points']:,} points")
+    allow_hist = config['announcements'].get('allow_historical_submissions', True)
+    print(f"  Historical Submissions: {'Allowed' if allow_hist else 'Denied (live scores only)'}")
 
     print("=" * 60)
     print("\nNote: You can change these settings later using the Settings Menu")
@@ -2070,7 +2110,8 @@ def main():
             try:
                 async with bot_instance:
                     # Create task to start the bot
-                    bot_task = asyncio.create_task(bot_instance.start(config['DISCORD_TOKEN']))
+                    token = config.get('discord', {}).get('bot_token', config.get('DISCORD_TOKEN', ''))
+                    bot_task = asyncio.create_task(bot_instance.start(token))
 
                     # Monitor for shutdown flag
                     while not shutdown_requested['flag']:

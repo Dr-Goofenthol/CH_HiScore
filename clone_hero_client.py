@@ -4,7 +4,7 @@ Clone Hero High Score Client
 Monitors your Clone Hero scores and submits them to the Discord scoreboard.
 """
 
-VERSION = "2.6.5"
+VERSION = "2.6.6"
 
 # GitHub repository for auto-updates
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
@@ -252,9 +252,6 @@ _ocr_stats = {
     'last_attempt': None
 }
 
-# v2.6.4: Smart prompting for chart scans (session-scoped)
-_unknown_chart_count = 0
-_scan_prompt_shown_this_session = False
 
 # Chart file cache for v2.6.0 chart parsing (chart_hash -> Path to chart file)
 _chart_file_cache = {}
@@ -935,114 +932,6 @@ def do_pairing(is_existing_user=False):
             print("Scores will be automatically submitted!")
         print("=" * 50 + "\n")
 
-        # Offer Bridge integration setup for new users
-        from client.bridge_integration import is_bridge_installed, run_bridge_setup
-        import sys
-
-        print_header("BRIDGE INTEGRATION SETUP", width=50)
-        print("\nBridge Integration allows you to search for charts directly")
-        print("in the Bridge desktop app by clicking links in Discord.")
-
-        # Check for admin rights
-        if not is_admin():
-            print_warning("\nWARNING: Not running as Administrator!")
-            print("         Bridge Integration requires Administrator rights to:")
-            print("         - Register the chbridge:// protocol")
-            print("         - Modify Windows shortcuts")
-            print()
-            print("To enable Bridge Integration:")
-            print("  1. Close this tracker")
-            print("  2. Right-click the tracker exe")
-            print("  3. Select 'Run as administrator'")
-            print("  4. Complete setup again")
-            print()
-
-        print("\nEnable Bridge Integration? (Y/n)")
-        print("(You can change this later in Settings)")
-
-        choice = input("> ").strip().lower()
-
-        if choice in ['y', 'yes', '']:
-            print_info("\nRunning Bridge integration setup...")
-
-            # Get tracker exe path
-            if getattr(sys, 'frozen', False):
-                tracker_exe = sys.executable
-            else:
-                tracker_exe = str(Path(__file__).resolve())
-
-            # Check if Bridge is installed
-            is_installed, bridge_path = is_bridge_installed()
-
-            if not is_installed:
-                print_warning("\nBridge not found in common installation locations.")
-                print("Please enter the full path to Bridge.exe:")
-                print("(or press Enter to skip setup)")
-
-                custom_path = input("> ").strip()
-
-                if custom_path:
-                    bridge_path = Path(custom_path)
-                    if not bridge_path.exists():
-                        print_error(f"Path does not exist: {custom_path}")
-                        print_info("Skipping Bridge setup. You can enable it later in Settings.")
-                    elif not bridge_path.name.lower() == 'bridge.exe':
-                        print_error("File must be Bridge.exe")
-                        print_info("Skipping Bridge setup. You can enable it later in Settings.")
-                    else:
-                        # Run setup with custom path
-                        try:
-                            success, message = run_bridge_setup(tracker_exe)
-                            if success:
-                                settings = load_settings()
-                                if 'bridge_integration' not in settings:
-                                    settings['bridge_integration'] = {}
-                                settings['bridge_integration']['enabled'] = True
-                                settings['bridge_integration']['bridge_path'] = str(bridge_path)
-                                settings['bridge_integration']['protocol_registered'] = True
-                                settings['bridge_integration']['prompted'] = True
-                                save_settings(settings)
-                                print_success(f"\n{message}")
-                                print_success("Bridge Integration enabled!")
-                            else:
-                                print_error(f"\nSetup failed: {message}")
-                                print_info("You can enable it later in Settings.")
-                        except PermissionError:
-                            print_error("\nSetup failed: Permission denied")
-                            print_warning("Re-launch the tracker as Administrator to enable Bridge integration.")
-                else:
-                    print_info("Skipping Bridge setup. You can enable it later in Settings.")
-            else:
-                # Run setup with auto-detected path
-                try:
-                    success, message = run_bridge_setup(tracker_exe)
-                    if success:
-                        settings = load_settings()
-                        if 'bridge_integration' not in settings:
-                            settings['bridge_integration'] = {}
-                        settings['bridge_integration']['enabled'] = True
-                        settings['bridge_integration']['bridge_path'] = str(bridge_path)
-                        settings['bridge_integration']['protocol_registered'] = True
-                        settings['bridge_integration']['prompted'] = True
-                        save_settings(settings)
-                        print_success(f"\n{message}")
-                        print_success("Bridge Integration enabled!")
-                    else:
-                        print_error(f"\nSetup failed: {message}")
-                        print_info("You can enable it later in Settings.")
-                except PermissionError:
-                    print_error("\nSetup failed: Permission denied")
-                    print_warning("Re-launch the tracker as Administrator to enable Bridge integration.")
-        else:
-            print_info("Bridge Integration skipped. You can enable it later in Settings.")
-
-        # Always mark as prompted to prevent repeated asking
-        settings = load_settings()
-        if 'bridge_integration' not in settings:
-            settings['bridge_integration'] = {}
-        settings['bridge_integration']['prompted'] = True
-        save_settings(settings)
-
         # ==================== FEATURE CONFIGURATION ====================
         print("\n" + "=" * 50)
         print_header("FEATURE CONFIGURATION", width=50)
@@ -1137,10 +1026,6 @@ def do_pairing(is_existing_user=False):
             print_success("  + Start with Windows")
         else:
             print_plain("  - Auto-start (disabled)")
-        if settings.get('bridge_integration', {}).get('enabled'):
-            print_success("  + Bridge Integration")
-        else:
-            print_plain("  - Bridge Integration (disabled)")
         if settings.get('clone_hero_path'):
             print_success(f"  + Clone Hero path: {settings.get('clone_hero_path')}")
         else:
@@ -1445,10 +1330,14 @@ def get_total_notes_from_chart(chart_hash: str, instrument_id: int, difficulty_i
         inst_diff_data = chart_data.instruments[key]
 
         # v2.6.2: Return dict with total_notes and NPS
+        # v2.6.6: Also return chart_path so caller can extract song.ini metadata
         nps = chart_data.calculate_note_density(instrument, difficulty)
+        peak_nps = chart_data.calculate_peak_note_density(instrument, difficulty, window_seconds=1.0)
         return {
             'total_notes': inst_diff_data.total_notes,
-            'nps': nps
+            'nps': nps,
+            'peak_nps': peak_nps,
+            'chart_path': chart_path
         }
 
     except Exception as e:
@@ -1623,9 +1512,10 @@ def format_score_output(score, song_title, song_artist, song_charter, notes_hit,
             if api_response.get('previous_score') and api_response.get('previous_holder'):
                 prev_score = api_response['previous_score']
                 prev_holder = api_response['previous_holder']
-                days_held = 0  # TODO: Calculate from dates
                 print(f"  {Fore.CYAN}Result{Style.RESET_ALL}     {result_text}")
                 print(f"             Previous record: {prev_score:,} pts ({prev_holder})")
+            else:
+                print(f"  {Fore.CYAN}Result{Style.RESET_ALL}     {result_text}")
         elif is_new_pb:
             if improvement > 0:
                 if previous_pb:
@@ -1675,87 +1565,22 @@ def format_score_output(score, song_title, song_artist, song_charter, notes_hit,
     print("=" * 80)
 
 
-def handle_unparsed_score_warning(chart_hash):
-    """
-    Show warning when about to submit unparsed score
-
-    Returns:
-        str: "submit", "scan", or "skip" based on user choice
-    """
-    print("\n" + "="*60)
-    print_warning("WARNING: Missing Song Metadata")
-    print("="*60)
-    print()
-    print("This score cannot be matched to a song name.")
-    print(f"Chart Hash: [{chart_hash[:8]}]")
-    print()
-    print("Submitting without metadata will result in:")
-    print("  • Discord announcements showing only hash")
-    print("  • Song won't appear in searches")
-    print("  • Can't generate Enchor.us links")
-    print()
-    print("Options:")
-    print("  1. Run 'scancharts' now and retry (RECOMMENDED)")
-    print("  2. Submit anyway with abbreviated hash")
-    print("  3. Skip this score (don't submit)")
-    print()
-
-    while True:
-        choice = input("Choice [1]: ").strip() or "1"
-
-        if choice == "1":
-            print()
-            scancharts_command()
-            print()
-            return "scan"
-        elif choice == "2":
-            print_warning("  Submitting with abbreviated hash...")
-            return "submit"
-        elif choice == "3":
-            print_info("  Score skipped.")
-            return "skip"
-        else:
-            print_warning("  Invalid choice. Enter 1, 2, or 3.")
-
-
-def check_smart_prompt_for_scan():
-    """
-    Check if we should prompt user to run scancharts
-
-    Triggers after 5 unknown charts + once per session max
-    """
-    global _unknown_chart_count, _scan_prompt_shown_this_session
-
-    _unknown_chart_count += 1
-
-    # Only prompt if we've hit threshold AND haven't prompted yet this session
-    if _unknown_chart_count >= 5 and not _scan_prompt_shown_this_session:
-        print("\n" + "="*60)
-        print_warning(f"Detected {_unknown_chart_count} new charts without metadata")
-        print_info("Running 'scancharts' will enable full metadata for offline scores")
-        print()
-        response = input("Run chart scan now? (yes/no): ").strip().lower()
-
-        if response == 'yes' or response == 'y':
-            print()
-            scancharts_command()
-            print()
-
-        # Mark as shown for this session (won't prompt again)
-        _scan_prompt_shown_this_session = True
-        _unknown_chart_count = 0
-
-
 def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
     """Create a score handler with the given auth token and optional song cache"""
 
-    def on_new_score(score):
+    def on_new_score(score, silent=False):
         """
         Callback function that gets called when a new score is detected
 
         Sends the score to the Discord bot API.
         Score types: "raw" (chart hash only) or "rich" (has metadata from currentsong.txt or OCR)
+        silent=True suppresses Discord announcements (used for resync/reset backlog submissions)
         """
+        mode = "offline" if silent else "live"
+        logger.info(f"Score detected [{mode}]: [{score.chart_hash[:8]}...] "
+                    f"{score.instrument_name} {score.difficulty_name} | "
+                    f"{score.score:,}pts | {score.completion_percent:.1f}% | play #{score.play_count}")
+
         # Track score type - "raw" (chart hash only) or "rich" (has metadata)
         score_type = "raw"
 
@@ -1792,13 +1617,16 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
             song_charter = current_song['charter']
             score_type = "rich"
             currentsong_used = True
+            logger.info(f"  Metadata [currentsong.txt]: '{song_title}' | artist='{song_artist}' | charter='{song_charter}'")
+        else:
+            logger.debug("  STEP1: currentsong.txt empty or cleared")
 
         # =====================================================
         # STEP 2: Attempt OCR for additional data (notes, streak)
         # =====================================================
         ocr_result = None
 
-        if ocr_enabled:
+        if ocr_enabled and not silent:
             print_info("Attempting OCR capture of results screen...")
             _ocr_stats['attempts'] += 1
             _ocr_stats['last_attempt'] = time.time()
@@ -1807,6 +1635,9 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
             if ocr_result.success:
                 _ocr_stats['successes'] += 1
                 print_success("OCR extraction successful")
+                logger.debug(f"  STEP2 OCR success: title='{ocr_result.song_title}' "
+                             f"notes={ocr_result.notes_hit}/{ocr_result.notes_total} "
+                             f"streak={ocr_result.streak}")
 
                 # Show what OCR found
                 print(f"    OCR parsed fields:")
@@ -1836,6 +1667,7 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
                     best_streak = ocr_result.streak
             else:
                 print_warning(f"OCR extraction failed: {ocr_result.error}")
+                logger.debug(f"  STEP2 OCR failed: {ocr_result.error}")
                 if not currentsong_used:
                     print("    (Score will be 'raw' with chart hash identifier only)")
 
@@ -1863,10 +1695,13 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
                     if hasattr(cached_song, 'charter'):
                         song_charter = cached_song.charter
                     score_type = "rich"
+                    logger.info(f"  Metadata [songcache.bin]: '{song_title}' | artist='{song_artist}'")
                 else:
                     print_warning("Song not found in cache (may need to refresh songcache in Clone Hero)")
+                    logger.debug("  STEP3: not found in songcache.bin")
             except Exception as e:
                 print_warning(f"Failed to check songcache.bin: {e}")
+                logger.warning(f"  STEP3 songcache.bin error: {e}")
 
         # =====================================================
         # STEP 3.5: Try chart index for offline scores (v2.6.4)
@@ -1889,8 +1724,10 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
                 song_artist = chart_info.get('artist', '')
                 song_charter = chart_info.get('charter')
                 score_type = "rich"
+                logger.info(f"  Metadata [chart index]: '{song_title}' | artist='{song_artist}' | charter='{song_charter}'")
             else:
                 # Not in index - try on-demand scan
+                logger.debug("  STEP3.5: not in chart index, starting on-demand scan")
                 print_info("Chart not in index, attempting on-demand scan...")
                 found_path = find_chart_by_hash_on_demand(score.chart_hash, max_duration=10)
 
@@ -1904,17 +1741,22 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
                             song_charter = ini_data.get('charter', ini_data.get('frets'))
                             score_type = "rich"
                             print_success("Metadata extracted from found chart!")
+                            logger.info(f"  Metadata [on-demand scan]: '{song_title}' | "
+                                        f"artist='{song_artist}' | charter='{song_charter}' | "
+                                        f"path=.../{found_path.parent.name}")
                     except Exception as e:
                         logger.debug(f"Failed to parse found chart: {e}")
                 else:
                     print_warning("Chart not found via on-demand scan")
                     print("    (Will submit with abbreviated hash)")
+                    logger.warning(f"  STEP3.5: on-demand scan found no match for [{score.chart_hash[:8]}]")
 
         # =====================================================
         # STEP 4: Parse chart file for accurate note count (v2.6.0)
         # =====================================================
         total_notes_in_chart = None
         nps = None
+        peak_nps = None
 
         try:
             print_info("Parsing chart file for note data...")
@@ -1929,7 +1771,31 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
                 if isinstance(chart_result, dict):
                     total_notes_in_chart = chart_result.get('total_notes')
                     nps = chart_result.get('nps')
-                    print_success(f"Chart parsed! Total notes: {total_notes_in_chart:,}, NPS: {nps:.1f}")
+                    peak_nps = chart_result.get('peak_nps')
+                    chart_path_found = chart_result.get('chart_path')
+                    nps_display = f"{nps:.1f}" if nps is not None else "N/A"
+                    print_success(f"Chart parsed! Total notes: {total_notes_in_chart:,}, NPS: {nps_display}")
+                    logger.info(f"  Chart parsed: {total_notes_in_chart} notes | "
+                                f"NPS {nps_display} | peak {f'{peak_nps:.1f}' if peak_nps is not None else 'N/A'}")
+
+                    # v2.6.6: If still "raw" (all earlier metadata steps failed), extract
+                    # song.ini from the chart directory. chart_path_found is reliable here
+                    # because find_chart_file_by_hash has no timeout (unlike the on-demand scan).
+                    if score_type == "raw" and chart_path_found:
+                        try:
+                            ini_data = parse_song_ini(str(chart_path_found))
+                            if ini_data:
+                                new_title = ini_data.get('name', ini_data.get('title', ''))
+                                if new_title:
+                                    song_title = new_title
+                                    song_artist = ini_data.get('artist', '')
+                                    song_charter = ini_data.get('charter', ini_data.get('frets'))
+                                    score_type = "rich"
+                                    print_success("Song metadata resolved from chart directory!")
+                                    logger.info(f"  Metadata [STEP4 song.ini]: '{song_title}' | "
+                                                f"artist='{song_artist}' | charter='{song_charter}'")
+                        except Exception as e:
+                            logger.debug(f"Could not extract metadata from chart path: {e}")
                 else:
                     # Backwards compatibility - old int return
                     total_notes_in_chart = chart_result
@@ -1943,10 +1809,12 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
             else:
                 print_warning("Chart file not found or could not be parsed")
                 print("    (Note counts will not be available for this score)")
+                logger.warning(f"  STEP4: chart file not found for [{score.chart_hash[:8]}] "
+                               f"- note data unavailable")
                 is_fc = False
 
         except Exception as e:
-            logger.warning(f"Chart parsing failed: {e}")
+            logger.warning(f"  STEP4: chart parsing exception: {e}", exc_info=True)
             print_warning(f"Chart parsing failed: {e}")
             is_fc = False
 
@@ -1955,35 +1823,23 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
             notes_hit = int(notes_total * (score.completion_percent / 100.0))
 
         # =====================================================
-        # STEP 4.5: Pre-submission warning for unparsed scores (v2.6.4)
+        # STEP 4.5: Warning for unparsed scores (v2.6.4)
         # =====================================================
+        # NOTE: No interactive input() here. This callback runs on the watchdog
+        # observer thread while the main thread blocks on input("> ") in the
+        # command loop. Concurrent input() calls crash the process on Windows.
+        # Auto-submit with abbreviated hash; user can run 'scancharts' to resolve.
         if score_type == "raw":
-            # Track unknown chart for smart prompting
-            check_smart_prompt_for_scan()
-
-            # Show pre-submission warning
-            action = handle_unparsed_score_warning(score.chart_hash)
-
-            if action == "skip":
-                return  # Don't submit this score
-            elif action == "scan":
-                # User ran scancharts - check index again
-                chart_info = lookup_chart_in_index(score.chart_hash)
-                if chart_info:
-                    print_success("Chart now in index! Using metadata...")
-                    song_title = chart_info['title']
-                    song_artist = chart_info.get('artist', '')
-                    song_charter = chart_info.get('charter')
-                    score_type = "rich"
-                else:
-                    print_warning("Chart still not found after scan")
-                    print_info("Proceeding with abbreviated hash...")
-            # action == "submit" - continue with raw score
+            print_warning(f"Chart [{score.chart_hash[:8]}...] not found in metadata index")
+            print_info("Submitting with hash identifier. Run 'scancharts' to add song metadata.")
+            logger.warning(f"  No metadata resolved for [{score.chart_hash}] - submitting as raw hash")
 
         # Send score to bot API
         try:
             print()  # Newline for spacing
             print_info("Submitting to bot API...")
+            logger.info(f"  Submitting to API: '{song_title}' | {score_type} | "
+                        f"fc={is_fc} | notes={total_notes_in_chart} | silent={silent}")
 
             payload = {
                 "auth_token": auth_token,
@@ -2015,6 +1871,12 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
             # v2.6.2: Add NPS data
             if nps is not None:
                 payload["nps"] = nps
+            if peak_nps is not None:
+                payload["peak_nps"] = peak_nps
+
+            # v2.6.5: Flag backlog submissions so the bot can silence announcements
+            if silent:
+                payload["silent"] = True
 
             response = requests.post(
                 f"{get_bot_url()}/api/score",
@@ -2024,6 +1886,19 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
 
             if response.status_code == 200:
                 result = response.json()
+
+                # v2.6.6: Server may block historical/backlog submissions
+                if result.get('blocked'):
+                    logger.info(f"  API: historical submission blocked by server policy "
+                                f"[{score.chart_hash[:8]}] {score.instrument_name} {score.difficulty_name}")
+                    if not silent:
+                        print_warning("Server does not accept historical score submissions.")
+                    return
+
+                logger.info(f"  API OK: record={result.get('is_record_broken')} "
+                            f"pb={result.get('is_high_score')} "
+                            f"first_time={result.get('is_first_time_score')} "
+                            f"fc={result.get('is_full_combo')}")
 
                 # Track in session (v2.6.4)
                 session_tracker.add_score({
@@ -2061,15 +1936,19 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
                 )
             elif response.status_code == 401:
                 print_error("Authentication failed - you may need to re-pair")
+                logger.error(f"  API 401: authentication failed for [{score.chart_hash[:8]}]")
             else:
                 print_error(f"Error submitting score: {response.status_code}")
                 print(f"    {response.text}")
+                logger.error(f"  API {response.status_code}: {response.text[:300]}")
 
         except requests.exceptions.ConnectionError:
             print_error("Could not connect to bot API")
             print("    Make sure the bot is running!")
+            logger.error(f"  API connection failed: {get_bot_url()}")
         except Exception as e:
             print_error(f"Error sending score to API: {e}")
+            logger.error(f"  API exception: {e}", exc_info=True)
 
         # Clear the song cache after processing - next song will re-populate it
         clear_song_cache()
@@ -2277,6 +2156,57 @@ def debug_mode(auth_token):
                 print_plain(f"  OCR Enabled: {ocr_enabled}", indent=1)
                 minimize = settings.get('minimize_to_tray', False)
                 print_plain(f"  Minimize to Tray: {minimize}", indent=1)
+
+                # Clone Hero directory paths
+                print_plain("\nClone Hero Directories:")
+                ch_data_dir = find_clone_hero_directory()
+                if ch_data_dir:
+                    print_success(f"  Data Dir:  {ch_data_dir}", indent=1)
+                else:
+                    print_error("  Data Dir:  Not found", indent=1)
+
+                ch_docs_dir = get_clone_hero_documents_dir()
+                if ch_docs_dir:
+                    print_success(f"  Docs Dir:  {ch_docs_dir}", indent=1)
+                else:
+                    print_error("  Docs Dir:  Not found", indent=1)
+
+                # Song folders (read from settings.ini + tracker fallback)
+                print_plain("\nSong Folders:")
+                _status_song_folders = []
+
+                if ch_docs_dir:
+                    _settings_ini = ch_docs_dir / 'settings.ini'
+                    if _settings_ini.exists():
+                        try:
+                            _ini = configparser.ConfigParser()
+                            _ini.read(str(_settings_ini))
+                            for _sec in _ini.sections():
+                                for _key in _ini.options(_sec):
+                                    if _key.startswith('path') and _key[4:].isdigit():
+                                        _folder = _ini.get(_sec, _key)
+                                        if _folder:
+                                            _status_song_folders.append(('settings.ini', _folder))
+                        except Exception:
+                            pass
+                    else:
+                        print_warning("  settings.ini not found", indent=1)
+
+                _fallback_songs = settings.get('songs_folder')
+                if _fallback_songs:
+                    _status_song_folders.append(('tracker config', _fallback_songs))
+
+                if _status_song_folders:
+                    for _src, _folder in _status_song_folders:
+                        _exists = Path(_folder).exists()
+                        _label = f"  [{_src}] {_folder}"
+                        if _exists:
+                            print_success(_label, indent=1)
+                        else:
+                            print_error(f"{_label}  (NOT FOUND)", indent=1)
+                else:
+                    print_warning("  No song folders configured", indent=1)
+                    print_plain("  (Run 'scancharts' to configure or check Clone Hero settings)", indent=1)
 
                 # Version
                 print_plain("\nVersion:")
@@ -4916,6 +4846,10 @@ def find_chart_by_hash_on_demand(target_hash, max_duration=10):
                     print()
                     print_success(f"  Found chart in: {chart_path.parent.name}/")
 
+                    # Populate in-memory cache so STEP 4 (get_total_notes_from_chart)
+                    # finds it instantly via _chart_file_cache instead of re-walking
+                    _chart_file_cache[target_hash] = chart_path
+
                     # Parse and add to index for future use
                     try:
                         chart_data = parse_chart_file(chart_path)
@@ -6353,203 +6287,8 @@ def main():
             input("\nPress Enter to exit...")
             return
 
-        # v2.6.4: Prompt new users to run initial chart scan
-        print("\n" + "=" * 50)
-        print_header("CHART SCAN SETUP (v2.6.4)", width=50)
-        print("\nNew feature: Local chart indexing!")
-        print("\nRunning a chart scan will:")
-        print("  • Build a local index of all your charts")
-        print("  • Enable full metadata for offline scores")
-        print("  • Reduce 'mystery hashes' by 90%+")
-        print("\nThis scan may take a few minutes for large libraries.")
-        print()
-        response = input("Run initial chart scan now? (yes/no) [yes]: ").strip().lower() or "yes"
-
-        if response == 'yes' or response == 'y':
-            print()
-            scancharts_command()
-            print()
-            print_success("Chart scan complete! You're all set.")
-        else:
-            print_info("Skipped chart scan. You can run it later with 'scancharts'")
-
     else:
         print_success("Already paired (auth token found)")
-
-        # v2.6.4: Check if upgrading user needs chart index
-        chart_index_path = get_chart_index_path()
-        if not chart_index_path.exists():
-            print("\n" + "=" * 50)
-            print_header("NEW FEATURE: Chart Index (v2.6.4)", width=50)
-            print("\nChart indexing enables full metadata for offline scores!")
-            print("\nRunning a chart scan will:")
-            print("  • Build a local index of all your charts")
-            print("  • Enable full song names for offline play")
-            print("  • Reduce 'mystery hashes' by 90%+")
-            print("\nThis is a one-time setup (takes a few minutes).")
-            print()
-            response = input("Run chart scan to enable this feature? (yes/no): ").strip().lower()
-
-            if response == 'yes' or response == 'y':
-                print()
-                scancharts_command()
-                print()
-            else:
-                print_info("Skipped chart scan. You can run it later with 'scancharts'")
-
-        # Check if Bridge integration setup is needed (upgrade detection)
-        bridge_config = settings.get('bridge_integration', {})
-        bridge_prompted = bridge_config.get('prompted', False)
-
-        if not bridge_prompted:
-            # This is an existing user who hasn't been prompted about Bridge yet
-            from client.bridge_integration import is_protocol_registered
-
-            if not is_protocol_registered():
-                print("\n" + "=" * 50)
-                print_header("NEW FEATURE: Bridge Integration", width=50)
-                print("\nBridge Integration allows you to search for charts directly")
-                print("in the Bridge desktop app by clicking links in Discord.")
-                print("\nThis is a one-time setup that requires:")
-                print("  - Bridge desktop app installed (optional)")
-                print("  - Protocol registration (chbridge://)")
-                print("  - Shortcut modifications")
-                print("  - **Administrator rights**")
-
-                # Check for admin rights
-                if not is_admin():
-                    print_warning("\nWARNING: Not running as Administrator!")
-                    print("         Bridge Integration requires Administrator rights.")
-                    print()
-                    print("To enable Bridge Integration:")
-                    print("  1. Close this tracker")
-                    print("  2. Right-click the tracker exe")
-                    print("  3. Select 'Run as administrator'")
-                    print("  4. Answer 'Yes' when prompted")
-                    print()
-
-                print("\n" + "=" * 50)
-                print("\nEnable Bridge Integration now? (Y/n)")
-                print("(You can change this later in Settings)")
-
-                choice = input("> ").strip().lower()
-
-                if choice in ['y', 'yes', '']:
-                    # Run setup
-                    from client.bridge_integration import run_bridge_setup, is_bridge_installed
-                    import sys
-
-                    print_info("\nRunning Bridge integration setup...")
-
-                    # Get tracker exe path
-                    if getattr(sys, 'frozen', False):
-                        tracker_exe = sys.executable
-                    else:
-                        tracker_exe = str(Path(__file__).resolve())
-
-                    # Check if Bridge is installed
-                    is_installed, bridge_path = is_bridge_installed()
-
-                    if not is_installed:
-                        print_warning("\nBridge not found in common installation locations.")
-                        print("Please enter the full path to Bridge.exe:")
-                        print("(or press Enter to skip setup)")
-
-                        custom_path = input("> ").strip()
-
-                        if custom_path:
-                            bridge_path = Path(custom_path)
-                            if not bridge_path.exists():
-                                print_error(f"Path does not exist: {custom_path}")
-                                print_info("Skipping Bridge setup. You can enable it later in Settings.")
-                                # Mark as prompted to not ask again
-                                if 'bridge_integration' not in settings:
-                                    settings['bridge_integration'] = {}
-                                settings['bridge_integration']['prompted'] = True
-                                settings['bridge_integration']['enabled'] = False
-                                save_settings(settings)
-                            elif not bridge_path.name.lower() == 'bridge.exe':
-                                print_error("File must be Bridge.exe")
-                                print_info("Skipping Bridge setup. You can enable it later in Settings.")
-                                if 'bridge_integration' not in settings:
-                                    settings['bridge_integration'] = {}
-                                settings['bridge_integration']['prompted'] = True
-                                settings['bridge_integration']['enabled'] = False
-                                save_settings(settings)
-                            else:
-                                # Run setup with custom path
-                                try:
-                                    success, message = run_bridge_setup(tracker_exe)
-                                    if success:
-                                        if 'bridge_integration' not in settings:
-                                            settings['bridge_integration'] = {}
-                                        settings['bridge_integration']['enabled'] = True
-                                        settings['bridge_integration']['bridge_path'] = str(bridge_path)
-                                        settings['bridge_integration']['protocol_registered'] = True
-                                        settings['bridge_integration']['prompted'] = True
-                                        save_settings(settings)
-                                        print_success(f"\n{message}")
-                                        print_success("Bridge Integration enabled!")
-                                    else:
-                                        print_error(f"\nSetup failed: {message}")
-                                        print_info("You can retry from Settings menu later.")
-                                        print_info("TIP: Run tracker as Administrator for Bridge integration.")
-                                        settings['bridge_integration']['prompted'] = True
-                                        save_settings(settings)
-                                except PermissionError:
-                                    print_error("\nSetup failed: Permission denied")
-                                    print_info("Bridge Integration requires Administrator rights.")
-                                    print("You can retry from Settings menu after relaunching as admin:")
-                                    print("  1. Right-click CloneHeroScoreTracker.exe")
-                                    print("  2. Select 'Run as administrator'")
-                                    print("  3. Open Settings > Bridge Integration")
-                                    settings['bridge_integration']['prompted'] = True
-                                    save_settings(settings)
-                        else:
-                            print_info("Skipping Bridge setup. You can enable it later in Settings.")
-                            if 'bridge_integration' not in settings:
-                                settings['bridge_integration'] = {}
-                            settings['bridge_integration']['prompted'] = True
-                            settings['bridge_integration']['enabled'] = False
-                            save_settings(settings)
-                    else:
-                        # Run setup with auto-detected path
-                        try:
-                            success, message = run_bridge_setup(tracker_exe)
-                            if success:
-                                if 'bridge_integration' not in settings:
-                                    settings['bridge_integration'] = {}
-                                settings['bridge_integration']['enabled'] = True
-                                settings['bridge_integration']['bridge_path'] = str(bridge_path)
-                                settings['bridge_integration']['protocol_registered'] = True
-                                settings['bridge_integration']['prompted'] = True
-                                save_settings(settings)
-                                print_success(f"\n{message}")
-                                print_success("Bridge Integration enabled!")
-                            else:
-                                print_error(f"\nSetup failed: {message}")
-                                print_info("You can retry from Settings menu later.")
-                                print_info("TIP: Run tracker as Administrator for Bridge integration.")
-                                settings['bridge_integration']['prompted'] = True
-                                save_settings(settings)
-                        except PermissionError:
-                            print_error("\nSetup failed: Permission denied")
-                            print_info("Bridge Integration requires Administrator rights.")
-                            print("You can retry from Settings menu after relaunching as admin:")
-                            print("  1. Right-click CloneHeroScoreTracker.exe")
-                            print("  2. Select 'Run as administrator'")
-                            print("  3. Open Settings > Bridge Integration")
-                            settings['bridge_integration']['prompted'] = True
-                            save_settings(settings)
-                else:
-                    print_info("Bridge Integration skipped. You can enable it later in Settings.")
-                    if 'bridge_integration' not in settings:
-                        settings['bridge_integration'] = {}
-                    settings['bridge_integration']['prompted'] = True
-                    settings['bridge_integration']['enabled'] = False
-                    save_settings(settings)
-
-                print()
 
     # Find Clone Hero directory
     ch_dir = find_clone_hero_directory()
@@ -6587,6 +6326,13 @@ def main():
         print("=" * 50)
         print()
 
+    # --- Startup log header ---
+    logger.info(f"{'='*60}")
+    logger.info(f"Clone Hero Score Tracker v{VERSION} starting")
+    logger.info(f"  Data dir:  {ch_dir}")
+    ch_docs_dir_startup = get_clone_hero_documents_dir()
+    logger.info(f"  Docs dir:  {ch_docs_dir_startup}")
+
     # Load song cache for metadata
     song_cache = {}
     songcache_path = ch_dir / 'songcache.bin'
@@ -6595,9 +6341,12 @@ def main():
             parser = SongCacheParser(str(songcache_path))
             song_cache = parser.parse()
             print_success(f"Song cache loaded ({len(song_cache)} songs)")
+            logger.info(f"  Song cache: {len(song_cache)} songs loaded")
         except Exception as e:
             print_warning("Could not load song cache - songs will show as hashes")
             log_exception(logger, "Failed to load song cache", e)
+    else:
+        logger.info("  Song cache: not found (songcache.bin missing)")
 
     # Check OCR availability
     ocr_enabled = settings.get('ocr_enabled', False)
@@ -6605,9 +6354,13 @@ def main():
         ocr_ok, ocr_msg = check_ocr_available()
         if ocr_ok:
             print_success(f"OCR enabled: {ocr_msg}")
+            logger.info(f"  OCR: enabled ({ocr_msg})")
         else:
             print_warning(f"OCR disabled: {ocr_msg}")
+            logger.info(f"  OCR: disabled ({ocr_msg})")
             ocr_enabled = False
+    else:
+        logger.info("  OCR: disabled (user setting)")
 
     # Start system tray if enabled
     tray_enabled = settings.get('minimize_to_tray', False)
@@ -6646,14 +6399,19 @@ def main():
             print("\n[*] First run detected!")
             print_info("Initializing with existing scores...")
             print_info("Only NEW scores from this point forward will be detected.\n")
+            logger.info("  State: first run - initializing from current scoredata.bin")
             watcher.initialize_state()
         elif watcher.needs_state_migration():
             # Old format state file - re-initialize silently without submitting
             print_info("Migrating state file...")
+            logger.info("  State: migrating from old format")
             watcher.initialize_state(silent=True)
         else:
+            logger.info(f"  State: {len(watcher.state.known_scores)} known scores loaded")
             # Scan for any scores made while tracker was offline
             watcher.catch_up_scan()
+
+        logger.info(f"Tracker ready - monitoring {ch_dir}")
 
         # Start watching in background thread
         import threading

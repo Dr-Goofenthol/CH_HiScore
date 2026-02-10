@@ -635,27 +635,94 @@ Scans local song folders to populate missing charter information in the database
 
 ## Version History & Migration Notes
 
-### Current Version: v2.6.4 (Jan 19, 2026)
+### Current Version: v2.6.6 (Feb 10, 2026)
 
 **Key Features:**
+- Historical score submissions toggle (`allow_historical_submissions`) — fresh-start servers can block resync/reset backfills
+- Full metadata resolution pipeline: on-demand chart scan now populates `_chart_file_cache` so STEP 4 song.ini fallback always fires
+- Offline score catch-up no longer triggers OCR (eliminates 500ms × N delay for large backlogs)
+- Expanded client logging for remote debugging and support
+- `status` command shows all configured Clone Hero directories and song folders
+- Settings Menu → Server Admin: options to toggle suppress-resync-announcements and historical submissions
+- **CONFIG_VERSION: 9** (adds `allow_historical_submissions` flag)
+
+**v2.6.5** (Feb 2026)
+- Setup wizard improvements, `parse` command for on-demand chart indexing
+- `suppress_resync_announcements` config flag to silence Discord spam during resync/reset
+- `save_basic_chart_metadata()` for inline NPS data without a full chart scan
+- Migration 002/003 crash fixes for fresh bot installs
+- **CONFIG_VERSION: 8**
+
+**v2.6.4** (Jan 19, 2026)
 - Chart Index System (`.score_tracker_chart_index.json`) with incremental scanning
 - On-demand chart scanning for offline scores (98-99% metadata capture rate)
 - Peak Intensity tiers (Calm/Spicy/Extreme/Ridiculous) and configurable announcement fields
 - Timezone-aware activity log scheduling and display
-- Critical fixes: peak NPS calculation, /mystats embed overflow, daily activity logs
+- **CONFIG_VERSION: 7**
 
-**Important Files Added:**
-- `.score_tracker_chart_index.json` - Chart metadata cache
-- **CONFIG_VERSION: 7** (adds peak_intensity_tiers and intensity field toggles)
-- **NEW DEPENDENCY:** `tzdata` (timezone data for Windows)
+### Shelved Features (Future Consideration)
 
-### Planned: v2.6.5 (FUTURE) 🔮
+**Per-Chart Record History Page (Web Interface)**
+- **What:** A dedicated page showing the full record-break history for a specific chart/instrument/difficulty — who held the record, at what score, and when it was broken
+- **UX:** Clicking any score value anywhere on the website (leaderboard, activity feed, mystats, song search) would navigate to this chart history page
+- **Data source:** Already exists in the `record_breaks` table (`new_score`, `previous_score`, `previous_holder_id`, `broken_at`)
+- **Why shelved:** Deferred to avoid scope creep during initial web interface design; design pattern for score-click navigation needs to be consistent across all pages
+- **When to revisit:** After core web pages are built and data API is in place; relatively straightforward since the data already exists
 
-- **Progressive index building:** Background thread parses/indexes charts during gameplay (non-blocking)
-- **Automatic weekly refresh:** Prompt if index >7 days old, runs incremental scan in background
-- **Server-side retroactive resolution:** When hash resolved, automatically enrich historical records and update Discord announcements
+**Discord Username → Player Profile Linking (Web Interface)**
+- **What:** Hyperlink any displayed Discord username on the site to that player's My Stats page
+- **UX:** Username appears as a clickable link throughout the activity feed, leaderboard, song search results, etc.
+- **Decision made:** My Stats will be a single per-user public page with a URL parameter (e.g., `/mystats?user=andrew_the_amigo`), no separate "public profile" page needed
+- **When to revisit:** When implementing the web backend/routing layer
 
-**Technical considerations:** Memory-efficient indexing, opt-out-able refresh, requires storing message IDs for Discord edits, batch API updates to avoid rate limits.
+**Server Stats / Dashboard Page (Web Interface)**
+- **What:** A server-wide statistics overview page — total scores submitted, total FCs, total record breaks, most played songs, most competitive songs (most record changes), activity heatmap by day/hour, newest and most recently active players
+- **UX:** Accessible from main nav or as a new nav item; gives a bird's-eye view of server health and engagement
+- **Data source:** Aggregated queries across `scores`, `record_breaks`, `users` tables
+- **Why shelved:** No current equivalent Discord command; lower priority than per-user and per-song pages
+- **When to revisit:** After core pages (activity, leaderboard, mystats, compare, song detail) are built
+
+**Leaderboard Page Filters (Web Interface)**
+- **What:** Add instrument and difficulty filter controls to the Server Leaderboard page
+- **UX:** Filter pills or dropdowns: All Instruments / Lead / Bass / Drums / Keys; All Difficulties / Expert / Hard / Medium / Easy
+- **Data source:** `scores.instrument_id`, `scores.difficulty_id`
+- **Why shelved:** Mockup shows unfiltered view; filters require frontend JS or backend query params
+- **When to revisit:** Minor enhancement once the leaderboard page is wired to real data
+
+**My Stats Enhancements (Web Interface)**
+- **My Records tab:** Within a player's stats page, a dedicated tab/section showing all charts where they currently hold the server record (Andrew has 23)
+- **Head-to-head summary widget:** On a player's profile, show win/loss records vs each other server member ("You vs Jake: 34W / 22L across 58 shared charts") with a link to the Compare page
+- **Score progression per chart:** Timeline of a user's score history on a specific chart — how their personal best improved over time
+- **Why shelved:** Incremental improvements to the My Stats page; head-to-head widget requires compare-page logic to be built first
+- **When to revisit:** After Compare page is implemented; head-to-head summary can reuse compare query logic
+
+**Unresolved Hashes / Missing Metadata Page (Web Interface)**
+- **What:** A page showing all chart hashes with missing or incomplete metadata (no title, artist, or charter)
+- **UX:** Table of hashes with a hash-based enchor.us search link, "flag as identified" button, and admin ability to manually enter metadata
+- **Data source:** Songs with null/empty title or artist in `songs` table; hashes not in `chart_metadata`
+- **Maps to:** `missingartists` Discord command and `resolvehashes` client terminal command
+- **Why shelved:** Admin/utility feature; not visible to regular users
+- **When to revisit:** After core user-facing pages are complete; useful for server admins
+
+**Achievements / Badges Page (Web Interface)**
+- **What:** A formal achievements system showing all possible badges (Most Records, FC Master, Rising Star, Newcomer, etc.) with unlock criteria and progress bars
+- **UX:** Gallery of achievement cards; unlocked ones highlighted, locked ones grayed with progress shown (e.g., "12 / 25 records for 'Record Hoarder'")
+- **Why shelved:** Requires defining a formal achievement schema that doesn't currently exist in the database
+- **When to revisit:** Requires design work to define achievement tiers and unlock conditions first
+
+**Server Records Page (Web Interface)**
+- **What:** Dedicated page showing every song that has a server record, who holds it, their score, and when it was set — sorted by most recently broken
+- **UX:** Essentially the leaderboard filtered to only top scores per chart; can be sorted by date set, holder, or score value
+- **Data source:** `record_breaks` table joined with `songs` and `users`
+- **Why shelved:** Partially covered by the Server Leaderboard page; a pure "current records" view is a subset of the leaderboard
+- **When to revisit:** Low-effort addition once the leaderboard page is built; just a filtered query
+
+**Per-Player Activity Feed (Web Interface)**
+- **What:** When viewing a player's profile page (`/mystats?user=X`), their Recent Activity tab shows only their own submissions rather than the full server activity feed
+- **UX:** Same card-based layout as the main Recent Activity page but filtered to one user
+- **Data source:** `scores` and `record_breaks` tables filtered by `user_id`
+- **Why shelved:** The My Stats page already has a Recent Activity table section; a full card-based feed per player is an enhancement
+- **When to revisit:** After the My Stats page is wired to real data with the user parameter
 
 ### Recent Releases
 

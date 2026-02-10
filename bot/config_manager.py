@@ -15,8 +15,8 @@ from shared.console import print_success, print_info, print_warning, print_error
 class ConfigManager:
     """Manages bot configuration with version tracking and migrations"""
 
-    CONFIG_VERSION = 7  # Current config version for v2.6.5
-    BOT_VERSION = "2.6.5"
+    CONFIG_VERSION = 9  # Current config version for v2.6.6
+    BOT_VERSION = "2.6.6"
 
     def __init__(self, config_path: Optional[Path] = None):
         """
@@ -370,7 +370,9 @@ class ConfigManager:
                 "formatting": {
                     "include_thumbnail": False,
                     "footer_style": "full"
-                }
+                },
+                "suppress_resync_announcements": True,
+                "allow_historical_submissions": True
             },
 
             "difficulty_tiers": {
@@ -476,6 +478,14 @@ class ConfigManager:
         if from_version < 7:
             self._migrate_v6_to_v7()
 
+        # Migration v7 -> v8 (v2.6.5)
+        if from_version < 8:
+            self._migrate_v7_to_v8()
+
+        # Migration v8 -> v9 (v2.6.6)
+        if from_version < 9:
+            self._migrate_v8_to_v9()
+
         print_success(f"[Config] Migration complete!")
 
     def _migrate_v1_to_v2(self):
@@ -579,6 +589,30 @@ class ConfigManager:
         # Update config version
         self.config['config_version'] = 7
         print_success("[Config] v2.6.4 migration complete - all existing settings preserved!")
+
+    def _migrate_v7_to_v8(self):
+        """Migrate from v7 to v8 (add v2.6.5 suppress_resync_announcements setting)"""
+        print_info("[Config] Adding v2.6.5 features (suppress resync/reset announcements)")
+
+        if 'announcements' in self.config:
+            if 'suppress_resync_announcements' not in self.config['announcements']:
+                self.config['announcements']['suppress_resync_announcements'] = True
+                print_success("[Config] Added suppress_resync_announcements (default: enabled)")
+
+        self.config['config_version'] = 8
+        print_success("[Config] v2.6.5 migration complete - all existing settings preserved!")
+
+    def _migrate_v8_to_v9(self):
+        """Migrate from v8 to v9 (add v2.6.6 allow_historical_submissions setting)"""
+        print_info("[Config] Adding v2.6.6 features (historical score submissions control)")
+
+        if 'announcements' in self.config:
+            if 'allow_historical_submissions' not in self.config['announcements']:
+                self.config['announcements']['allow_historical_submissions'] = True
+                print_success("[Config] Added allow_historical_submissions (default: enabled - existing behavior preserved)")
+
+        self.config['config_version'] = 9
+        print_success("[Config] v2.6.6 migration complete - all existing settings preserved!")
 
     def _deep_merge_config(self, user_config: dict, default_config: dict) -> dict:
         """

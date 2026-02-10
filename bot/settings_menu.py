@@ -335,16 +335,33 @@ class SettingsMenu:
             dal_time = self.config.get('daily_activity_log.generation_time', '00:00')
             dal_keep_days = self.config.get('daily_activity_log.keep_days', 30)
             print(f"  Daily Activity Log:")
-            print(f"    Enabled:        {dal_enabled}")
+            print(f"    Enabled:         {dal_enabled}")
             print(f"    Generation Time: {dal_time} (local time)")
-            print(f"    Keep Days:      {dal_keep_days}")
+            print(f"    Keep Days:       {dal_keep_days}")
+            print()
+
+            # Score submission policy
+            suppress_resync = self.config.get('announcements.suppress_resync_announcements', True)
+            allow_historical = self.config.get('announcements.allow_historical_submissions', True)
+            print(f"  Score Submission Policy:")
+            print(f"    Suppress resync/reset announcements: {suppress_resync}")
+            print(f"      (Prevents Discord spam when players run 'resync' or 'reset')")
+            print(f"    Allow historical score submissions:  {allow_historical}")
+            print(f"      (Controls whether 'resync' / 'reset' scores are stored at all)")
             print()
 
             print("Options:")
             print()
-            print("  1. Toggle Daily Activity Log (Enabled/Disabled)")
-            print("  2. Set Generation Time")
-            print("  3. Set Number of Days to Keep Logs")
+            print("  Daily Activity Log:")
+            print("    1. Toggle Daily Activity Log (Enabled/Disabled)")
+            print("    2. Set Generation Time")
+            print("    3. Set Number of Days to Keep Logs")
+            print()
+            print("  Score Submission Policy:")
+            print("    4. Toggle Suppress Resync/Reset Announcements")
+            print("       (Recommended ON - avoids Discord spam during batch uploads)")
+            print("    5. Toggle Allow Historical Score Submissions")
+            print("       (Disable on fresh-start servers to reject resync/reset backfills)")
             print()
             print("  0. Back to Main Menu")
             print()
@@ -389,6 +406,25 @@ class SettingsMenu:
                         print_warning("[Settings] Days must be greater than 0")
                 else:
                     print_warning("[Settings] Invalid number")
+            elif choice == "4":
+                current = self.config.get('announcements.suppress_resync_announcements', True)
+                self.config.set('announcements.suppress_resync_announcements', not current)
+                self.changes_made = True
+                status = "ON (announcements suppressed)" if not current else "OFF (announcements will be posted)"
+                print_success(f"[Settings] Suppress resync/reset announcements: {status}")
+                if current:  # was ON, just turned OFF
+                    print_warning("[Settings] Warning: turning this OFF may spam your Discord channel during resync/reset")
+            elif choice == "5":
+                current = self.config.get('announcements.allow_historical_submissions', True)
+                self.config.set('announcements.allow_historical_submissions', not current)
+                self.changes_made = True
+                if not current:
+                    # Was False, now True
+                    print_success("[Settings] Historical submissions: ALLOWED - resync/reset scores will be stored")
+                else:
+                    # Was True, now False
+                    print_success("[Settings] Historical submissions: DENIED - only live scores will be stored")
+                    print_info("[Info] Players' 'resync' and 'reset' commands will be silently rejected by the server")
             else:
                 print_warning("[Settings] Invalid selection")
 
@@ -1385,6 +1421,8 @@ class SettingsMenu:
         print(f"  Record Breaks:             {self.config.get('announcements.record_breaks.enabled', True)}")
         print(f"  First-Time Scores:         {self.config.get('announcements.first_time_scores.enabled', True)}")
         print(f"  Personal Bests:            {self.config.get('announcements.personal_bests.enabled', False)}")
+        print(f"  Suppress Resync Annc:      {self.config.get('announcements.suppress_resync_announcements', True)}")
+        print(f"  Allow Historical Submits:  {self.config.get('announcements.allow_historical_submissions', True)}")
         print()
         print(f"CONFIG VERSION:              {self.config.get('config_version', 1)}")
         print(f"BOT VERSION:                 {self.config.get('bot_version', 'Unknown')}")

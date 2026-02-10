@@ -115,19 +115,32 @@ def migration_002_complete_chart_hash_rename(cursor):
                 logger.info("  [OK] record_breaks.chart_hash already exists")
 
         # Now recreate indexes with correct column names
+        # Only if the tables exist (skip on fresh install - tables created later by create_tables())
         logger.info("  [*] Recreating indexes...")
         cursor.execute("DROP INDEX IF EXISTS idx_scores_chart")
         cursor.execute("DROP INDEX IF EXISTS idx_songs_md5")
 
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_scores_chart
-            ON scores(chart_hash, instrument_id, difficulty_id)
-        """)
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_songs_hash
-            ON songs(chart_hash)
-        """)
-        logger.info("  [OK] Indexes recreated")
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='scores'")
+        if cursor.fetchone():
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_scores_chart
+                ON scores(chart_hash, instrument_id, difficulty_id)
+            """)
+            logger.info("  [OK] idx_scores_chart created")
+        else:
+            logger.info("  [SKIP] scores table not yet created, indexes will be created on first use")
+
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='songs'")
+        if cursor.fetchone():
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_songs_hash
+                ON songs(chart_hash)
+            """)
+            logger.info("  [OK] idx_songs_hash created")
+        else:
+            logger.info("  [SKIP] songs table not yet created, indexes will be created on first use")
+
+        logger.info("  [OK] Indexes step complete")
 
         logger.info("Migration 002 complete")
 
@@ -198,21 +211,25 @@ def migration_003_chart_metadata_and_fc_tracking(cursor):
         # Add FC tracking columns to scores table
         logger.info("  [*] Adding FC tracking to scores table...")
 
-        # Check if columns already exist
-        cursor.execute("PRAGMA table_info(scores)")
-        columns = {row[1] for row in cursor.fetchall()}
+        # Check if scores table exists (skip ALTER on fresh install - columns are in base schema)
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='scores'")
+        if cursor.fetchone():
+            cursor.execute("PRAGMA table_info(scores)")
+            columns = {row[1] for row in cursor.fetchall()}
 
-        if 'is_full_combo' not in columns:
-            cursor.execute("ALTER TABLE scores ADD COLUMN is_full_combo INTEGER DEFAULT 0")
-            logger.info("  [OK] Added scores.is_full_combo column")
-        else:
-            logger.info("  [OK] scores.is_full_combo already exists")
+            if 'is_full_combo' not in columns:
+                cursor.execute("ALTER TABLE scores ADD COLUMN is_full_combo INTEGER DEFAULT 0")
+                logger.info("  [OK] Added scores.is_full_combo column")
+            else:
+                logger.info("  [OK] scores.is_full_combo already exists")
 
-        if 'notes_total' not in columns:
-            cursor.execute("ALTER TABLE scores ADD COLUMN notes_total INTEGER DEFAULT 0")
-            logger.info("  [OK] Added scores.notes_total column")
+            if 'notes_total' not in columns:
+                cursor.execute("ALTER TABLE scores ADD COLUMN notes_total INTEGER DEFAULT 0")
+                logger.info("  [OK] Added scores.notes_total column")
+            else:
+                logger.info("  [OK] scores.notes_total already exists")
         else:
-            logger.info("  [OK] scores.notes_total already exists")
+            logger.info("  [SKIP] scores table not yet created, columns included in base schema")
 
         logger.info("Migration 003 complete")
 

@@ -189,6 +189,16 @@ class ScoreAPI:
                     'error': f'Missing required fields: {", ".join(missing)}'
                 }, status=400)
 
+            # v2.6.6: Gate historical/backlog submissions if server admin has disabled them
+            if data.get('silent', False):
+                allow_historical = self.config.config.get('announcements', {}).get('allow_historical_submissions', True) if self.config else True
+                if not allow_historical:
+                    return web.json_response({
+                        'success': False,
+                        'blocked': True,
+                        'reason': 'Historical score submissions are disabled on this server'
+                    })
+
             # Submit score to database
             result = self.bot.db.submit_score(
                 auth_token=data['auth_token'],
@@ -319,6 +329,34 @@ class ScoreAPI:
             status_line = f"{Fore.GREEN}[+]{Style.RESET_ALL} Saved to database"
 
             print("=" * 80)
+
+            # v2.6.5: Save basic chart metadata (NPS) from the submission so that
+            # Chart Intensity / Peak Intensity fields work without a chart index scan.
+            # INSERT OR IGNORE means a full chart-index entry is never overwritten.
+            nps = data.get('nps')
+            peak_nps = data.get('peak_nps')
+            total_notes_submitted = data.get('total_notes_in_chart')
+            if nps is not None and total_notes_submitted is not None:
+                self.bot.db.save_basic_chart_metadata(
+                    chart_hash=data['chart_hash'],
+                    instrument_id=data['instrument_id'],
+                    difficulty_id=data['difficulty_id'],
+                    total_notes=total_notes_submitted,
+                    note_density=float(nps),
+                    peak_note_density=float(peak_nps) if peak_nps is not None else 0.0
+                )
+
+            # v2.6.5: Suppress announcements for backlog submissions (resync/reset)
+            suppress_resync = self.config.config.get('announcements', {}).get('suppress_resync_announcements', True) if self.config else True
+            if data.get('silent', False) and suppress_resync:
+                return web.json_response({
+                    'success': True,
+                    'is_high_score': result.get('is_high_score', False),
+                    'is_record_broken': result.get('is_record_broken', False),
+                    'is_first_time_score': result.get('is_first_time_score', False),
+                    'is_full_combo': result.get('is_full_combo', False),
+                    'silent': True
+                })
 
             # Post announcements based on achievement type
             # Check if each announcement type is enabled in config

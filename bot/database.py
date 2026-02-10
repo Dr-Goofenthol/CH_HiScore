@@ -100,6 +100,8 @@ class Database:
                 completion_percent REAL NOT NULL,
                 stars INTEGER NOT NULL,
                 submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                is_full_combo INTEGER DEFAULT 0,
+                notes_total INTEGER DEFAULT 0,
                 FOREIGN KEY (user_id) REFERENCES users(id),
                 UNIQUE(chart_hash, instrument_id, difficulty_id, user_id)
             )
@@ -896,6 +898,31 @@ class Database:
             'updated': updated,
             'failed': failed
         }
+
+    def save_basic_chart_metadata(self, chart_hash: str, instrument_id: int, difficulty_id: int,
+                                   total_notes: int, note_density: float, peak_note_density: float) -> bool:
+        """
+        Save minimal chart metadata (NPS values) from a live score submission.
+
+        Uses INSERT OR IGNORE so it never overwrites a fully-scanned entry from the
+        chart index system — only fills in the row if it doesn't exist yet.
+
+        Returns True if a new row was inserted, False if one already existed.
+        """
+        try:
+            self.cursor.execute("""
+                INSERT OR IGNORE INTO chart_metadata (
+                    chart_hash, instrument_id, difficulty_id,
+                    total_notes, note_density, peak_note_density,
+                    parsed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """, (chart_hash, instrument_id, difficulty_id,
+                  total_notes, note_density, peak_note_density))
+            self.conn.commit()
+            return self.cursor.rowcount > 0
+        except Exception as e:
+            logger.debug(f"[DB] save_basic_chart_metadata failed: {e}")
+            return False
 
     def scan_historical_fcs(self, announce_to_discord: bool = False) -> Dict:
         """

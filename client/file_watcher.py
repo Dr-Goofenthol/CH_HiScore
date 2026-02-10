@@ -5,11 +5,14 @@ Monitors the scoredata.bin file for changes and detects new scores.
 """
 
 import json
+import logging
 import time
 from pathlib import Path
 from typing import Dict, List, Callable
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileModifiedEvent
+
+logger = logging.getLogger('client')
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
@@ -260,6 +263,7 @@ class CloneHeroWatcher:
         new or improved scores.
         """
         print("[*] Scanning for scores made while tracker was offline...")
+        logger.info("Catch-up scan started")
         try:
             parser = ScoreDataParser(str(self.scoredata_path))
             scores = parser.parse()
@@ -274,13 +278,19 @@ class CloneHeroWatcher:
 
             if new_scores:
                 print(f"[+] Found {len(new_scores)} score(s) from offline play!")
+                logger.info(f"Catch-up scan: {len(new_scores)} offline score(s) to submit")
                 for score in new_scores:
-                    self.on_new_score(score)
+                    logger.info(f"  Offline score queued: [{score.chart_hash[:8]}] "
+                                f"{score.instrument_name} {score.difficulty_name} "
+                                f"{score.score:,}pts")
+                    self.on_new_score(score, silent=True)
             else:
                 print("[+] All scores up to date (no offline plays detected)")
+                logger.info("Catch-up scan: no offline scores found")
 
         except Exception as e:
             print(f"[!] Error during catch-up scan: {e}")
+            logger.error(f"Catch-up scan failed: {e}", exc_info=True)
 
     def start(self):
         """Start watching for score changes"""
