@@ -4,7 +4,7 @@ Clone Hero High Score Client
 Monitors your Clone Hero scores and submits them to the Discord scoreboard.
 """
 
-VERSION = "2.6.4"
+VERSION = "2.6.5"
 
 # GitHub repository for auto-updates
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
@@ -4211,6 +4211,188 @@ def compare_command(user2_discord_id):
     print()
 
 
+def parse_command(query):
+    """
+    Parse a chart file and display comprehensive metadata
+
+    Args:
+        query: Search query (song title, artist, or hash)
+
+    This command searches the local chart index and displays all available
+    metadata for a chart including notes, NPS, difficulty, etc.
+    """
+    print()
+    print_header("PARSE CHART", width=70)
+    print()
+
+    if not query:
+        print_error("No search query provided!")
+        print_info("Usage: parse <search query>")
+        print_info("Example: parse through the fire")
+        print_info("Example: parse 3dfe89a1")
+        print()
+        return
+
+    # Load chart index
+    chart_index = load_chart_index()
+    charts = chart_index.get('charts', {})
+
+    if not charts:
+        print_warning("Chart index is empty!")
+        print()
+        print_info("Run 'scancharts' first to build the chart index.")
+        print_info("This will scan your Clone Hero songs and cache metadata.")
+        print()
+        return
+
+    # Search for matches (fuzzy search on title, artist, charter, and hash)
+    query_lower = query.lower()
+    matches = []
+
+    for chart_hash, chart_info in charts.items():
+        title = chart_info.get('title', '').lower()
+        artist = chart_info.get('artist', '').lower()
+        charter = chart_info.get('charter', '').lower()
+
+        # Match on hash (full or partial)
+        if query_lower in chart_hash.lower():
+            matches.append((chart_hash, chart_info, 'hash'))
+            continue
+
+        # Match on title, artist, or charter
+        if query_lower in title or query_lower in artist or query_lower in charter:
+            matches.append((chart_hash, chart_info, 'metadata'))
+
+    # Handle results
+    if len(matches) == 0:
+        print_warning(f"No charts found matching: {query}")
+        print()
+        print_info("Try a different search term or run 'scancharts' to update the index.")
+        print()
+        return
+
+    elif len(matches) == 1:
+        # Auto-select single match
+        chart_hash, chart_info, match_type = matches[0]
+        print_success(f"Found 1 match!")
+        print()
+        _display_chart_metadata(chart_hash, chart_info)
+
+    else:
+        # Multiple matches - show selection menu
+        print_info(f"Found {len(matches)} matching charts:")
+        print()
+
+        for i, (chart_hash, chart_info, match_type) in enumerate(matches, 1):
+            title = chart_info.get('title', 'Unknown')
+            artist = chart_info.get('artist', 'Unknown')
+            charter = chart_info.get('charter', 'Unknown')
+            print(f"  [{i:2}] {title}")
+            print(f"      Artist: {artist} | Charter: {charter}")
+            print(f"      Hash: [{chart_hash[:8]}]")
+            print()
+
+        # Limit to first 20 matches
+        if len(matches) > 20:
+            print_warning(f"Showing first 20 of {len(matches)} matches. Refine your search for better results.")
+            matches = matches[:20]
+            print()
+
+        while True:
+            try:
+                choice = input("Select chart number (or 'cancel'): ").strip()
+
+                if choice.lower() in ['cancel', 'c', 'q', 'quit']:
+                    print_info("Cancelled.")
+                    print()
+                    return
+
+                choice_num = int(choice)
+                if 1 <= choice_num <= len(matches):
+                    chart_hash, chart_info, match_type = matches[choice_num - 1]
+                    print()
+                    _display_chart_metadata(chart_hash, chart_info)
+                    break
+                else:
+                    print_warning(f"Invalid choice. Enter 1-{len(matches)}")
+            except ValueError:
+                print_warning("Invalid input. Enter a number or 'cancel'")
+
+    print()
+
+
+def _display_chart_metadata(chart_hash, chart_info):
+    """
+    Display comprehensive chart metadata in a formatted output
+
+    Args:
+        chart_hash: The chart hash
+        chart_info: Dict containing chart metadata from index
+    """
+    # Extract metadata
+    title = chart_info.get('title', 'Unknown Title')
+    artist = chart_info.get('artist', 'Unknown Artist')
+    charter = chart_info.get('charter', 'Unknown Charter')
+    file_path = chart_info.get('file_path', 'Unknown Path')
+
+    # Header
+    print("=" * 70)
+    print(f"  📊 CHART ANALYSIS:")
+    print("=" * 70)
+
+    # Song Info Section
+    print()
+    print(f"{Fore.CYAN}SONG INFORMATION:{Style.RESET_ALL}")
+    print(f"  🎵 Title:   {title}")
+    print(f"  🎤 Artist:  {artist}")
+    print(f"  👤 Charter: {charter}")
+
+    # Chart Statistics (if available)
+    total_notes = chart_info.get('total_notes')
+    note_density = chart_info.get('note_density')
+    peak_note_density = chart_info.get('peak_note_density')
+
+    if total_notes is not None or note_density is not None:
+        print()
+        print(f"{Fore.CYAN}CHART STATISTICS:{Style.RESET_ALL}")
+
+        if total_notes is not None:
+            print(f"  🎵 Total Notes: {total_notes:,}")
+
+        if note_density is not None:
+            print(f"  📈 Average NPS: {note_density:.2f}")
+
+        if peak_note_density is not None:
+            print(f"  🔥 Peak NPS:    {peak_note_density:.2f}")
+
+    # Chart Hash
+    print()
+    print(f"{Fore.CYAN}IDENTIFICATION:{Style.RESET_ALL}")
+    print(f"  🔖 Hash (Full):        {chart_hash}")
+    print(f"  🔖 Hash (Abbreviated): [{chart_hash[:8]}]")
+
+    # File Location
+    print()
+    print(f"{Fore.CYAN}FILE LOCATION:{Style.RESET_ALL}")
+    print(f"  📁 Path: {file_path}")
+
+    # Check if file still exists
+    from pathlib import Path
+    if Path(file_path).exists():
+        print(f"  ✅ Status: File exists")
+    else:
+        print(f"  ⚠️  Status: File not found (may have been moved)")
+
+    # Scan timestamp
+    scanned_at = chart_info.get('scanned_at')
+    if scanned_at:
+        print()
+        print(f"{Fore.CYAN}INDEX INFO:{Style.RESET_ALL}")
+        print(f"  🕐 Scanned: {scanned_at}")
+
+    print("=" * 70)
+
+
 def resolve_hashes_command():
     """
     Resolve chart hashes by scanning local songs folder
@@ -5317,6 +5499,7 @@ def bridge_status_command():
 def show_command_help(command):
     """Display detailed help for a specific command"""
     help_functions = {
+        'parse': show_parse_help,
         'resolvehashes': show_resolvehashes_help,
         'scancharts': show_scancharts_help,
         'resync': show_resync_help,
@@ -5345,6 +5528,60 @@ def show_command_help(command):
         print_info("Type 'help' to see all available commands")
         print()
         return False
+
+
+def show_parse_help():
+    print_header("COMMAND: parse", width=60)
+    print()
+    print(f"{Fore.CYAN}PURPOSE:{Style.RESET_ALL}")
+    print("  Manually parse and inspect a chart file to view all available")
+    print("  metadata including notes, NPS, difficulty, and intensity.")
+    print()
+    print(f"{Fore.CYAN}HOW IT WORKS:{Style.RESET_ALL}")
+    print("  1. Searches local chart index for matching charts")
+    print("  2. Uses fuzzy search on title, artist, charter, or hash")
+    print("  3. Displays comprehensive metadata for selected chart")
+    print("  4. Shows multiple matches if found (you select one)")
+    print()
+    print(f"{Fore.CYAN}WHEN TO USE:{Style.RESET_ALL}")
+    print("  • Want to inspect chart difficulty before playing")
+    print("  • Check NPS and intensity ratings")
+    print("  • Verify chart metadata is correct")
+    print("  • Debugging chart information")
+    print("  • Find chart file location on disk")
+    print()
+    print(f"{Fore.CYAN}DATA DISPLAYED:{Style.RESET_ALL}")
+    print("  • Song title, artist, charter")
+    print("  • Chart hash (full and abbreviated)")
+    print("  • Total notes, average NPS, peak NPS")
+    print("  • File path and existence status")
+    print("  • Scan timestamp")
+    print()
+    print(f"{Fore.CYAN}REQUIREMENTS:{Style.RESET_ALL}")
+    print("  • Chart index must exist (run 'scancharts' first)")
+    print("  • Chart must be in your library")
+    print()
+    print(f"{Fore.CYAN}USAGE:{Style.RESET_ALL}")
+    print("  > parse <search query>")
+    print()
+    print(f"{Fore.CYAN}EXAMPLES:{Style.RESET_ALL}")
+    print("  > parse through the fire")
+    print("    Search by song title")
+    print()
+    print("  > parse dragonforce")
+    print("    Search by artist")
+    print()
+    print("  > parse 3dfe89a1")
+    print("    Search by chart hash (partial or full)")
+    print()
+    print("  > parse frosted")
+    print("    Search by charter name")
+    print()
+    print(f"{Fore.CYAN}NOTE:{Style.RESET_ALL}")
+    print("  This command does NOT submit scores or modify anything.")
+    print("  It only displays metadata from the local chart index.")
+    print("  Data shown is read-only for inspection purposes.")
+    print()
 
 
 def show_resolvehashes_help():
@@ -6381,6 +6618,7 @@ def main():
                     print_plain("  reset          Clear state and re-submit ALL scores to server")
 
                     print(f"\n{Fore.CYAN}Chart Metadata:{Style.RESET_ALL}")
+                    print_plain("  parse          Manually parse a chart and display all metadata")
                     print_plain("  resolvehashes  Fix old mystery hashes with song names (past scores)")
                     print_plain("  scancharts     Upload chart data for future offline scores")
                     print_plain("  refreshcache   Reload song metadata from Clone Hero")
@@ -6479,6 +6717,18 @@ def main():
                     # v2.6.4: Support --full flag
                     force_full = "--full" in cmd
                     scancharts_command(force_full=force_full)
+
+                elif cmd == "parse" or cmd.startswith("parse "):
+                    # Extract search query
+                    if cmd == "parse":
+                        print_error("No search query provided!")
+                        print_info("Usage: parse <search query>")
+                        print_info("Example: parse through the fire")
+                        print()
+                    else:
+                        # Extract query after "parse "
+                        query = cmd[6:].strip()
+                        parse_command(query)
 
                 elif cmd == "reset":
                     print("\n" + "=" * 50)

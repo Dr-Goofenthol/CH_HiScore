@@ -4,7 +4,7 @@ Clone Hero High Score Bot Launcher
 Standalone executable for the Discord bot with first-time setup.
 """
 
-VERSION = "2.6.4"
+VERSION = "2.6.5"
 
 # GitHub repository for auto-updates
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
@@ -28,6 +28,23 @@ if sys.platform == 'win32':
 import warnings
 warnings.filterwarnings('ignore', message='Unclosed connector')
 warnings.filterwarnings('ignore', message='Unclosed client session')
+
+# v2.6.4: Suppress aiohttp port scan / malformed HTTP request errors
+import logging
+
+class AiohttpPortScanFilter(logging.Filter):
+    """Filter out aiohttp protocol errors from port scans and malformed requests"""
+    def filter(self, record):
+        # Suppress "Error handling request" from port scans
+        if record.name == 'aiohttp.server' and 'Error handling request' in record.getMessage():
+            return False
+        # Suppress BadHttpMessage errors (HTTP/2 upgrade attempts, etc.)
+        if 'BadHttpMessage' in record.getMessage():
+            return False
+        return True
+
+# Apply filter to aiohttp's server logger
+logging.getLogger('aiohttp.server').addFilter(AiohttpPortScanFilter())
 
 try:
     import requests
@@ -362,15 +379,38 @@ You'll need:
 3. Your Discord Server ID (Guild ID) - OPTIONAL but recommended
 4. The Channel ID where scores should be announced
 
-If you don't have these yet:
+RECOMMENDATION: Open a notepad/text file and copy all values there as you
+collect them. This makes it easier to paste them into the wizard steps.
+
+If you don't have these yet, follow these steps:
+
+CREATING THE DISCORD BOT:
 1. Go to https://discord.com/developers/applications
 2. Create a new application (or use existing)
+   - Give it a name like "Clone Hero Score Tracker"
 3. Go to "Bot" section and create a bot
-4. Copy the bot token
-5. Copy the Application ID from "General Information"
-6. In Discord, enable Developer Mode (Settings > Advanced > Developer Mode)
-7. Right-click your server icon and "Copy Server ID"
-8. Right-click your announcement channel and "Copy Channel ID"
+4. Copy the bot token (you'll enter it in Step 1)
+5. Copy the Application ID from "General Information" (you'll enter it in Step 2)
+
+ENABLE REQUIRED INTENTS (CRITICAL):
+6. Still in "Bot" section, scroll to "Privileged Gateway Intents"
+7. Toggle ON both of these intents:
+   - [x] SERVER MEMBERS INTENT
+   - [x] MESSAGE CONTENT INTENT
+8. Click "Save Changes"
+
+   WITHOUT THESE INTENTS, THE BOT WILL NOT WORK!
+
+INVITE BOT TO YOUR SERVER:
+9. Go to "OAuth2 > URL Generator"
+10. Select scopes: "bot" and "applications.commands"
+11. Select permissions: "Send Messages", "Embed Links", "Use Slash Commands"
+12. Copy the generated URL, paste in browser, and invite bot to your server
+
+GET DISCORD IDs:
+13. In Discord, enable Developer Mode (Settings > Advanced > Developer Mode)
+14. Right-click your server icon and "Copy Server ID" (you'll enter it in Step 3)
+15. Right-click your announcement channel and "Copy Channel ID" (you'll enter it in Step 4)
 """)
     print("=" * 60)
     input("\nPress Enter to continue...")
@@ -476,21 +516,134 @@ If you don't have these yet:
     print("Configure how timestamps and dates appear in Discord embeds.")
     print("")
 
-    # Timezone
-    print("Timezone options:")
-    print("  - UTC (default)")
-    print("  - US/Eastern")
-    print("  - US/Central")
-    print("  - US/Mountain")
-    print("  - US/Pacific")
-    print("  - Europe/London")
-    print("  - Or any other IANA timezone (e.g., America/New_York)")
-    timezone = input("\nEnter timezone [UTC]: ").strip()
-    if timezone:
-        config['display']['timezone'] = timezone
-        print(f"[+] Timezone set to: {timezone}")
-    else:
-        print("[*] Using default timezone: UTC")
+    # Timezone selection with numeric options
+    TIMEZONES_SHORT = {
+        1: ("UTC", "Coordinated Universal Time"),
+        2: ("US/Eastern", "EST/EDT - New York, Toronto, Miami"),
+        3: ("US/Central", "CST/CDT - Chicago, Dallas, Mexico City"),
+        4: ("US/Mountain", "MST/MDT - Denver, Phoenix, Calgary"),
+        5: ("US/Pacific", "PST/PDT - Los Angeles, Seattle, Vancouver"),
+        6: ("US/Alaska", "AKST/AKDT - Anchorage"),
+        7: ("US/Hawaii", "HST - Honolulu"),
+        8: ("Canada/Atlantic", "AST/ADT - Halifax"),
+    }
+
+    TIMEZONES_FULL = {
+        1: ("UTC", "Coordinated Universal Time"),
+        2: ("US/Eastern", "America/New_York"),
+        3: ("US/Central", "America/Chicago"),
+        4: ("US/Mountain", "America/Denver"),
+        5: ("US/Pacific", "America/Los_Angeles"),
+        6: ("US/Alaska", "America/Anchorage"),
+        7: ("US/Hawaii", "Pacific/Honolulu"),
+        8: ("Canada/Atlantic", "America/Halifax"),
+        9: ("Canada/Pacific", "America/Vancouver"),
+        10: ("America/Argentina/Buenos_Aires", "Buenos Aires, Argentina"),
+        11: ("America/Sao_Paulo", "Brazil"),
+        12: ("Europe/London", "GMT/BST"),
+        13: ("Europe/Paris", "CET/CEST - France, Spain, Italy"),
+        14: ("Europe/Berlin", "Germany, Netherlands, Poland"),
+        15: ("Europe/Moscow", "MSK - Russia"),
+        16: ("Asia/Dubai", "UAE"),
+        17: ("Asia/Kolkata", "India"),
+        18: ("Asia/Shanghai", "China"),
+        19: ("Asia/Tokyo", "Japan"),
+        20: ("Asia/Seoul", "South Korea"),
+        21: ("Asia/Singapore", "Singapore"),
+        22: ("Australia/Sydney", "AEST/AEDT"),
+        23: ("Pacific/Auckland", "New Zealand"),
+    }
+
+    def show_timezone_menu(full_list=False):
+        """Display timezone selection menu"""
+        print("\nSelect your timezone:")
+        print()
+
+        if full_list:
+            print("  AMERICAS:")
+            for i in range(1, 12):
+                tz, desc = TIMEZONES_FULL[i]
+                print(f"  [{i:2}] {tz} ({desc})")
+
+            print("\n  EUROPE:")
+            for i in range(12, 16):
+                tz, desc = TIMEZONES_FULL[i]
+                print(f"  [{i:2}] {tz} ({desc})")
+
+            print("\n  ASIA:")
+            for i in range(16, 22):
+                tz, desc = TIMEZONES_FULL[i]
+                print(f"  [{i:2}] {tz} ({desc})")
+
+            print("\n  PACIFIC:")
+            for i in range(22, 24):
+                tz, desc = TIMEZONES_FULL[i]
+                print(f"  [{i:2}] {tz} ({desc})")
+        else:
+            print("  NORTH AMERICAN TIMEZONES:")
+            for num, (tz, desc) in TIMEZONES_SHORT.items():
+                print(f"  [{num}] {tz} ({desc})")
+            print()
+            print("  [9] See all world timezones (23 options)")
+
+        print("  [0] Enter custom timezone manually")
+        print()
+
+    # Show initial menu
+    show_timezone_menu(full_list=False)
+
+    while True:
+        choice = input("Enter timezone choice [1]: ").strip()
+
+        # Default to UTC
+        if not choice:
+            choice = "1"
+
+        # Validate numeric input
+        if not choice.isdigit():
+            print("[!] Please enter a number")
+            continue
+
+        choice_num = int(choice)
+
+        # Show full list
+        if choice_num == 9:
+            show_timezone_menu(full_list=True)
+            continue
+
+        # Manual entry
+        if choice_num == 0:
+            custom_tz = input("\nEnter custom IANA timezone (e.g., America/New_York): ").strip()
+            if custom_tz:
+                # Basic validation - just check if it looks like a timezone format
+                if '/' in custom_tz or custom_tz.upper() == 'UTC':
+                    config['display']['timezone'] = custom_tz
+                    print(f"[+] Timezone set to: {custom_tz}")
+                    break
+                else:
+                    print("[!] Invalid timezone format. Using default: UTC")
+                    print("[*] Timezone should be in format: Region/City (e.g., America/New_York)")
+                    config['display']['timezone'] = 'UTC'
+                    break
+            else:
+                print("[!] No timezone entered. Using default: UTC")
+                config['display']['timezone'] = 'UTC'
+                break
+
+        # Select from list
+        if choice_num in TIMEZONES_SHORT:
+            tz, desc = TIMEZONES_SHORT[choice_num]
+            config['display']['timezone'] = tz
+            print(f"[+] Timezone set to: {tz}")
+            break
+        elif choice_num in TIMEZONES_FULL:
+            tz, desc = TIMEZONES_FULL[choice_num]
+            config['display']['timezone'] = tz
+            print(f"[+] Timezone set to: {tz}")
+            break
+        else:
+            print("[!] Invalid choice. Please try again.")
+            continue
 
     # Time format
     print("\nTime format:")

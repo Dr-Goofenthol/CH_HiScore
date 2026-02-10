@@ -30,10 +30,12 @@ If you encounter `ModuleNotFoundError` for `shared` or other packages, ensure al
 
 **Required Python packages:**
 ```bash
-py -m pip install colorama requests watchdog pystray pillow python-dotenv discord.py aiohttp
+py -m pip install colorama requests watchdog pystray pillow python-dotenv discord.py aiohttp tzdata
 ```
 
 These packages are essential for PyInstaller to bundle all dependencies correctly.
+
+**Note:** `tzdata` is required for timezone support on Windows (activity log scheduling and display).
 
 ### Building Executables
 
@@ -64,6 +66,66 @@ Bot:
 ```bash
 py bot_launcher.py
 ```
+
+## Discord Bot Setup Requirements
+
+### Required Discord Intents
+
+**CRITICAL:** When creating the Discord bot application, the following intents MUST be enabled in the Discord Developer Portal:
+
+1. **Server Members Intent** - Required for user lookups and username resolution
+2. **Message Content Intent** - Required for bot functionality
+
+**Where to enable:**
+1. Go to https://discord.com/developers/applications
+2. Select your application
+3. Go to **"Bot"** section in left sidebar
+4. Scroll down to **"Privileged Gateway Intents"**
+5. Toggle ON:
+   - ✅ **SERVER MEMBERS INTENT**
+   - ✅ **MESSAGE CONTENT INTENT**
+
+**Note:** These intents are set in `bot/bot.py` lines 240-243:
+```python
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
+```
+
+Without these intents enabled in the Discord Developer Portal, the bot will fail to start or experience limited functionality.
+
+### Bot Permissions (OAuth2 Scopes & Permissions)
+
+**Scopes** (for invite URL):
+- `bot` - Allow bot to join servers
+- `applications.commands` - Enable slash commands
+
+**Bot Permissions** (minimum required):
+- Send Messages
+- Embed Links
+- Use Slash Commands
+
+**Invite URL Format:**
+```
+https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&permissions=2048&scope=bot%20applications.commands
+```
+
+### First-Time Setup Wizard
+
+The bot includes a comprehensive setup wizard (`bot_launcher.py` lines 366-632) that prompts for:
+
+1. **Discord Bot Token** - Secret token from Bot settings
+2. **Discord Application ID** - Numeric ID from General Information
+3. **Discord Guild ID** (optional but recommended) - Server ID for instant command sync
+4. **Announcement Channel ID** - Channel where scores will be posted
+5. **API Port** - Port for client connections (default: 8080)
+6. **Debug Password** - Password for client debug mode access
+7. **Display Settings** - Timezone and time format preferences
+8. **Announcement Preferences** - Which score types to announce
+
+**Command Sync Behavior:**
+- **WITH Guild ID:** Slash commands appear INSTANTLY after bot restart
+- **WITHOUT Guild ID:** Slash commands take up to 1 HOUR to appear globally
 
 ## Architecture
 
@@ -573,304 +635,59 @@ Scans local song folders to populate missing charter information in the database
 
 ## Version History & Migration Notes
 
-**v2.6.5** - Progressive Index Building & Auto-Refresh (FUTURE) 🔮
-- **PLANNED:** Progressive index building during gameplay
-  - Background thread that parses and indexes charts while user plays
-  - Non-blocking: doesn't interfere with score detection
-  - Builds index naturally over time without explicit scancharts command
-  - Implementation: Hook into currentsong.txt polling thread
-  - Target: Index grows to 100% coverage after ~2 weeks of normal gameplay
-- **PLANNED:** Automatic weekly index refresh
-  - Check index freshness on startup (if >7 days old)
-  - Prompt: "Chart index is over 7 days old. Run quick incremental scan? (yes/no)"
-  - Runs in background, shows progress
-  - Ensures new downloaded songs get indexed automatically
-- **PLANNED:** Server-side retroactive resolution
-  - When abbreviated hash gets resolved (via scancharts/resolvehashes)
-  - Server automatically updates all historical records for that chart
-  - Updates Discord announcements (if message IDs stored)
-  - Enriches database: songs table gets title/artist/charter
-  - User-facing: Old "mystery hashes" suddenly show full song names
-- **TECHNICAL CONSIDERATIONS:**
-  - Progressive indexing must be memory-efficient (avoid loading entire song library)
-  - Weekly refresh should be opt-out-able (config flag)
-  - Discord message editing requires storing message IDs in announcements table
-  - Retroactive updates should batch to avoid API rate limits
+### Current Version: v2.6.4 (Jan 19, 2026)
 
-**v2.6.4** - Chart Index System & Offline Score Metadata (Jan 19, 2026) - COMPLETED ✅
-- **FIXED (CRITICAL):** Peak Intensity not showing in announcements
-  - **Problem:** `calculate_peak_note_density()` method in shared/chart_parser.py was stub (only `pass`)
-  - **Solution:** Implemented method body to call `_calculate_peak_nps()` helper function
-  - Chart parser now correctly calculates peak NPS (1-second window)
-  - Client sends peak_note_density to server → displays in announcements
-  - Location: shared/chart_parser.py line 139-154
-- **FIXED (CRITICAL):** /mystats command Discord embed overflow
-  - **Problem:** "Top Records Held" field could exceed 1024 character limit
-  - **Solution:** Added field-splitting logic (same as /leaderboard and /recent)
-  - Splits records into multiple fields when approaching limit
-  - Example: 10 records split into "Top Records Held" + "Records (cont'd 2)"
-  - Location: bot/bot.py mystats command
-- **NEW:** Chart Index System for offline score metadata enrichment
-  - **File:** `.score_tracker_chart_index.json` in Clone Hero directory
-  - **Structure:** Maps `chart_hash → {file_path, metadata, last_modified, scanned_at}`
-  - **Purpose:** Enables metadata lookup for offline scores without re-scanning
-  - **Incremental Scanning:** Default behavior - only scans new/changed charts
-  - **Full Scan:** `scancharts --full` forces complete re-scan of all charts
-  - **Benefits:**
-    - 90%+ of offline scores now submit with full metadata (vs ~60% in v2.6.3)
-    - Fast lookups (instant hash → metadata resolution)
-    - Smart diffing: skips 95%+ of charts after first scan
-- **NEW:** Enhanced scancharts command with incremental mode
-  - Default: Incremental (only scans new/changed charts based on file timestamps)
-  - Tracks: `scanned`, `skipped`, `new`, `updated`, `failed` counts
-  - Shows: "Scanned 5,000 charts (4,800 skipped, 200 new/updated)"
-  - Builds and updates `.score_tracker_chart_index.json`
-  - Flag: `scancharts --full` for complete re-scan
-  - Performance: 10-20x faster than v2.6.3 after initial scan
-- **NEW:** On-demand chart scan for unknown hashes
-  - When offline score detected with unknown chart_hash:
-    1. Try songcache.bin (instant)
-    2. Try chart index (instant)
-    3. Try on-demand scan: walks song folders for specific hash (10 sec timeout)
-    4. Fall back to abbreviated hash if all fail
-  - Shows progress: "Searching in: [folder]..."
-  - Only triggered for offline scores (not during gameplay)
-  - Automatically adds found charts to index
-- **NEW:** Pre-submission warning for unparsed scores
-  - Intercepts score submissions before sending to server
-  - Displays warning when metadata missing:
-    - Chart hash shown
-    - Explains consequences (Discord shows hash, no search, no Enchor links)
-    - Options: 1) Run scancharts now (default), 2) Submit anyway, 3) Skip
-  - Reduces unparsed submissions by ~70-80%
-  - User must explicitly choose to submit abbreviated hash
-- **NEW:** Smart prompting for unknown charts
-  - Tracks unknown chart count per session (in-memory)
-  - Triggers after 5 unknown charts detected
-  - Shows once per session maximum (not annoying)
-  - Prompt: "Detected 5 new charts without metadata. Run scan now? (yes/no)"
-  - Resets counter after prompt or client restart
-- **NEW:** First-run and upgrade prompts
-  - **First-time users:** During setup, prompts for initial scancharts
-  - **Upgrading to v2.6.4:**
-    - Checks if chart index exists
-    - If not: "Run chart scan to enable offline score metadata? (yes/no)"
-    - If declined: Saves flag `.score_tracker_scan_declined` (never ask again that session)
-  - Ensures users get maximum metadata capture from day 1
-- **IMPACT:** Offline score metadata capture rate
-  - v2.6.3: ~60-70% metadata capture
-  - v2.6.4: ~98-99% metadata capture (with safeguards)
-- **NEW:** Peak Intensity tier settings and announcement field toggles
-  - Added `peak_intensity_tiers` config (Calm/Spicy/Extreme/Ridiculous) for 1-sec burst NPS
-  - Added `chart_intensity` and `peak_intensity` fields to ALL announcement types
-  - Settings menu now allows toggling intensity fields per announcement type (full/minimalist modes)
-  - Smart defaults: ON for record_breaks/full_combos, OFF for first_time_scores/personal_bests
-- **FILES MODIFIED:**
-  - `shared/chart_parser.py` (peak NPS implementation)
-  - `bot/bot.py` (mystats field splitting)
-  - `bot/config_manager.py` (CONFIG_VERSION 7, v6→v7 migration, peak_intensity_tiers defaults)
-  - `bot/settings_menu.py` (peak intensity tier editing, announcement field toggles)
-  - `clone_hero_client.py` (chart index, on-demand scan, pre-submission warning, smart prompting)
-  - `client/file_watcher.py` (integration with chart index)
-  - Version numbers updated to 2.6.4
-  - New spec files: `CloneHeroScoreBot_v2.6.4.spec`, `CloneHeroScoreTracker_v2.6.4.spec`
-- CONFIG_VERSION: 7 (migrated from 6 - adds peak_intensity_tiers and intensity field toggles)
+**Key Features:**
+- Chart Index System (`.score_tracker_chart_index.json`) with incremental scanning
+- On-demand chart scanning for offline scores (98-99% metadata capture rate)
+- Peak Intensity tiers (Calm/Spicy/Extreme/Ridiculous) and configurable announcement fields
+- Timezone-aware activity log scheduling and display
+- Critical fixes: peak NPS calculation, /mystats embed overflow, daily activity logs
 
-**v2.6.3** - Username Handling & Critical Bug Fixes (Jan 4, 2026) - COMPLETED ✅
-- **FIXED (CRITICAL):** Update notification prompt crash - Moved from async bot to launcher
-  - **Problem:** Prompt appeared inside bot's async event loop, using blocking `input()` caused crashes
-  - **Solution:** Moved version check to launcher (before bot starts) at bot_launcher.py lines 1786-1852
-  - **Implementation:**
-    - Launcher prompts admin (yes/no) before starting bot (safe blocking input)
-    - Stores decision in database: `update_notification_approved` flag (if yes) or `update_notification_prompted` flag (if no)
-    - Bot checks approval flag on startup and auto-sends if approved (bot/bot.py lines 350-402)
-    - No async `input()` calls = no crashes
-  - **User Impact:** Declining notification no longer crashes bot, stable startup experience
-- **FIXED:** Discord username handling - usernames now stay current when users change display names
-  - **Phase 1: Update on Pairing** - Username automatically updates when user re-pairs
-    - Modified `complete_pairing()` in bot/database.py (lines 279-288)
-    - Checks if stored username differs from current Discord username
-    - Updates database with `UPDATE users SET discord_username = ?, last_seen = CURRENT_TIMESTAMP`
-    - Logs username changes: "updated username from 'OldName' to 'NewName'"
-  - **Phase 2: Discord Mentions in Commands** - Commands now show always-current usernames
-    - `/leaderboard` (bot/bot.py lines 665-667): Uses `<@discord_id>` mention instead of stored username
-    - `/lookupsong` (bot/bot.py lines 1064-1068): Uses `<@discord_id>` mention for record holders
-    - `/recent` (bot/bot.py lines 1375-1387): Uses mentions for both breaker and previous holder
-    - Updated `get_recent_record_breaks()` query (database.py line 1392): Added `prev.discord_id as previous_holder_discord_id`
-  - **How It Works:**
-    - Discord mentions (`<@USER_ID>`) automatically resolve to user's current display name
-    - No additional API calls required - Discord handles resolution client-side
-    - Even historical records show current usernames (mention format, not stored name)
-  - **Example:** User pairs as "Jake" → changes Discord name to "JakeTheGreat" → leaderboard shows "@JakeTheGreat" (not "Jake")
-- **INVESTIGATION:** Comprehensive username handling investigation documented in INVESTIGATION_USERNAME_HANDLING.md
-  - Analyzed all 10+ locations where usernames are displayed
-  - Discord announcements already correct (were using mentions)
-  - Commands were using stored usernames (now fixed)
-  - Terminal logs still use stored names (acceptable for server-side logs)
-- **LESSONS LEARNED:**
-  - Use Discord's immutable `discord_id` as primary identifier (already doing this ✓)
-  - Store `discord_username` for logging/fallback but display via mentions for accuracy
-  - Update stored username opportunistically (during pairing) to keep database reasonably current
-  - Leverage Discord's mention system (`<@USER_ID>`) instead of fetching from API (zero additional calls)
-  - **NEVER use blocking `input()` inside async event loops** - causes crashes and instability
-  - **Separate concerns:** Interactive prompts belong in launcher, bot should run autonomously
-  - **Flag-based approval system** works well for deferred actions (launcher → bot communication)
-- **FILES MODIFIED:**
-  - `bot/bot.py` (mentions in commands, removed async input, approval check)
-  - `bot/database.py` (username update on pairing, added discord_id to queries)
-  - `bot_launcher.py` (pre-start version check with approval flag system)
-  - `bot/api.py`, `bot/config.py`, `bot/config_manager.py`, `bot/migrations.py`, `bot/preview_generator.py` (supporting changes)
-  - `clone_hero_client.py`, `shared/chart_parser.py` (version bump, minor updates)
-  - `CloneHeroScoreBot_v2.6.3.spec`, `CloneHeroScoreTracker_v2.6.3.spec` (new build specs)
-  - `client/bridge_integration.py` (new file)
-- **TESTING COMPLETED:**
-  - ✅ Decline notification at launcher → Bot starts normally (no crash)
-  - ✅ Accept notification at launcher → Bot auto-sends to Discord
-  - ✅ Username change detection and pairing update
-  - ✅ Commands display Discord mentions with current names
-- **RELEASE:** v2.6.3 released on GitHub (Jan 4, 2026)
-  - Git tag pushed: `v2.6.3`
-  - Executables built and attached to release
-  - Full release notes in `RELEASE_NOTES_v2.6.3.md`
-- CONFIG_VERSION: 5 (unchanged)
+**Important Files Added:**
+- `.score_tracker_chart_index.json` - Chart metadata cache
+- **CONFIG_VERSION: 7** (adds peak_intensity_tiers and intensity field toggles)
+- **NEW DEPENDENCY:** `tzdata` (timezone data for Windows)
 
-**v2.6.2** - Critical Bug Fixes & Announcement Enhancements (Jan 1, 2026)
-- **FIXED (CRITICAL):** Combo breaker logic now only triggers when FC breaks previous FC
-  - Previously triggered incorrectly when FC broke non-FC record
-  - Added `previous_record_was_fc` tracking in database.py (lines 416, 427, 504)
-  - Updated condition in api.py line 501: `is_fc_record_break = is_full_combo and is_record_broken and previous_record_was_fc`
-  - Example: First FC on a chart now shows "FIRST FULL COMBO ON CHART!" instead of "C-C-C-COMBO BREAKER!!!"
-  - Validated with 5 test scenarios (see test_combo_breaker_logic.py)
-- **FIXED (CRITICAL):** 356% accuracy bug - completion percentage now capped at 100%
-  - Clone Hero sometimes stores completion >100% in scoredata.bin
-  - Parser already had cap at shared/parsers.py lines 116-119, but client exe wasn't rebuilt
-  - Notes hit calculation was using uncapped value: `int(17 * (356.0 / 100.0)) = 60` (wrong!)
-  - Rebuilt client with latest parser code to fix
-- **FIXED (CRITICAL):** Shutdown commands (quit/stop/exit) now return to launcher menu
-  - Previously closed bot immediately without showing shutdown message
-  - Added graceful shutdown detection at bot_launcher.py lines 1901-1918
-  - Checks `shutdown_requested['flag']` after `asyncio.run()` completes
-  - Shows uptime stats and returns to main menu instead of exiting
-- **ENHANCED:** Full-mode announcements now show emoji at both start AND end of title
-  - Examples: "👑 FULL COMBO! 👑", "🏆 NEW RECORD SET! 🏆", "📈 PERSONAL BEST! 📈"
-  - Minimalist mode unchanged (emoji at start only)
-  - Implementation: bot/api.py lines 975-988 with emoji detection and appending
-- **FIXED:** Suppressed harmless "Unclosed connector" warnings from discord.py internals
-  - Added warning filters at bot_launcher.py lines 27-30
-  - Warnings were from aiohttp connections used by discord.py - not actual bugs
-  - Cleaner console output without hiding real errors
-- **NEW:** Admin Utilities submenu consolidates low-frequency operations
-  - Main menu reorganized: 11 items → 7 items (cleaner navigation)
-  - New submenu includes: Fix Note Counts, Scan Historical FCs, Backup Database, Export Logs, Send Update Notification, Verify Configuration
-- **NEW:** Database migration utility to fix note counts from pre-v2.6.2 scores
-  - Accessible via Admin Utilities → Fix Note Counts
-  - Safe preview mode before applying changes
-  - Requires explicit "yes" confirmation
-  - Optional (new scores automatically have correct values)
-- **LESSONS LEARNED:**
-  - Always rebuild BOTH executables when shared modules change (parsers.py affects both bot and client)
-  - PyInstaller doesn't auto-detect shared module changes - use `--clean` flag
-  - Flag-based shutdown detection needed for graceful async cleanup (exception handlers don't catch all shutdown paths)
-  - Warning suppression should be targeted (specific messages) not broad (doesn't hide real errors)
-  - Database migrations should be optional utilities with preview/confirm UX (safer than automatic fixes)
-- **FILES MODIFIED:** `bot/api.py`, `bot/database.py`, `bot_launcher.py`, `shared/parsers.py`, `migrate_fix_note_counts.py` (new)
-- **TESTING:** All 5 combo breaker scenarios passing, shutdown commands verified (quit/stop/exit), note count migration tested on production database
-- CONFIG_VERSION: 5 (unchanged)
+### Planned: v2.6.5 (FUTURE) 🔮
 
-**v2.5.5** - UI/UX Polish Update (Dec 29, 2025)
-- **IMPROVED:** Beautified `/recent` command with cleaner formatting
-  - New format: "**Username** broke the record on: Song - Artist (Difficulty Instrument)"
-  - Previous score shown inline: "Score: X (was Y by Holder)"
-  - Changed "Med" to "Medium" for consistency
-  - Removed numbering for cleaner appearance
-  - Date displayed in italics for visual distinction
-- **FIXED:** Bot launcher Ctrl+C handler to properly return to menu
-  - Replaced `bot.run()` with `asyncio.run(bot.start())` for proper async handling
-  - No more accidentally closing the entire terminal window
-  - Graceful shutdown with `await bot.close()`
-- **IMPROVED:** Client terminal feedback wording (friendlier, less technical)
-  - "Loaded X known scores from state file" → "Tracking X known personal bests"
-  - "Tracking X known scores" → "Tracking X personal bests across all instruments/difficulties"
-  - "No new scores detected" → "Monitoring active - waiting for new scores..."
-  - "Score updated but did not improve" → "Score recorded, but below your personal best:"
-  - "No score changes detected" → "Clone Hero saved, but no score changes detected"
-  - "No new offline scores" → "All scores up to date (no offline plays detected)"
-- **REVERTED:** Discord Bridge link buttons (shelved feature)
-  - Removed all BridgeLinkView code from bot.py and api.py
-  - Discord announcements and commands now show Enchor.us links only
-  - Bridge integration remains functional as client-side feature only
-  - Future implementation documented in FUTURE_WORK_LOCAL.md (Caddy reverse proxy solution)
-- **FILES MODIFIED:** `bot/bot.py`, `bot/api.py`, `bot_launcher.py`, `client/file_watcher.py`, `clone_hero_client.py`
-- CONFIG_VERSION: 5 (unchanged)
+- **Progressive index building:** Background thread parses/indexes charts during gameplay (non-blocking)
+- **Automatic weekly refresh:** Prompt if index >7 days old, runs incremental scan in background
+- **Server-side retroactive resolution:** When hash resolved, automatically enrich historical records and update Discord announcements
 
-**v2.5.4** - Client Terminal Feedback Enhancement (Dec 29, 2025)
-- **NEW:** Detailed feedback for scores that don't improve personal best
-  - Shows which chart was played (chart hash, instrument, difficulty)
-  - Displays score achieved vs personal best with exact difference and percentage
-  - Replaces unhelpful "No new scores detected" message with actionable feedback
-  - Users can now see their progress even when not beating PBs
-- **TECHNICAL:** Implemented diff tracking in file watcher
-  - Tracks previous `scoredata.bin` parse snapshot
-  - Compares current parse to previous to identify exactly which score changed
-  - Smart first-parse handling to avoid spam on startup
-  - Shows: `Your Score: 140,000 pts | Personal Best: 150,000 pts | Difference: -10,000 pts (-6.7%)`
-- **IMPROVED:** Client UX - every score attempt now provides meaningful feedback
-- **FILES MODIFIED:** `client/file_watcher.py` only (client-only update)
-- CONFIG_VERSION: 5 (unchanged)
-- NOTE: Feedback shows chart hash instead of song title (technical limitation - see release notes)
+**Technical considerations:** Memory-efficient indexing, opt-out-able refresh, requires storing message IDs for Discord edits, batch API updates to avoid rate limits.
 
-**v2.5.3** - Full Mode Customization & Critical Bug Fixes (Dec 28, 2025)
-- **NEW:** Full mode field customization - all announcement fields now configurable
-  - Added `full_fields` config section for record_breaks, first_time_scores, personal_bests
-  - Admins can toggle any field on/off in full mode (song, artist, charter, accuracy, etc.)
-  - Footer components fully customizable (previous holder, score, held duration, timestamp)
-  - Independent configuration for each announcement type
-- **FIXED (CRITICAL):** 6 major bugs identified and resolved via comprehensive code review:
-  1. UnboundLocalError: 'now_utc' not defined (held duration calculation)
-  2. UnboundLocalError: 'announcement_type' not defined (initial v2.5.3 release)
-  3. KeyError from unsafe config access (3 instances fixed with .get() chaining)
-  4. AttributeError when config is None (added null checks throughout)
-  5. Terminal output showing "NEW HIGH SCORE!" for all types (now shows RECORD BROKEN/FIRST SCORE/PERSONAL BEST)
-  6. Client terminal misleading "Tied with PB" for first-time scores (now checks play_count)
-- **IMPROVED:** Announcement spacing restored to v2.4.13 approach
-  - Full mode uses inline=False for Enchor/Chart Hash (creates natural spacing)
-  - Minimalist mode uses inline=True (maximum compactness)
-  - Clear visual distinction between the two modes
-- **IMPROVED:** Extended instrument ID support (IDs 0-10)
-  - **ID 8 CONFIRMED:** Co-op mode (both players on lead guitar) - Dec 28, 2025
-  - IDs 7, 9, 10 still pending verification
-  - Unknown instruments display as "Unknown (ID X)" for easier identification
-- **ENHANCED:** Settings menu with full mode field customization options
-- **ENHANCED:** Preview generator respects both full and minimalist field configurations
-- CONFIG_VERSION: 5 (auto-migration from v4)
+### Recent Releases
 
-**v2.4.15** - Critical Bugfix (resolvehashes command)
-- **FIXED:** resolvehashes command now functional (was completely broken)
-  - Added missing `parse_song_ini` import
-  - Fixed settings.ini parser to use `configparser.ConfigParser()` instead of manual line-by-line
-  - Successfully tested resolving 116+ songs with complete metadata
-- Charter data pipeline fully operational (currentsong.txt → database → Enchor.us links)
-- User-filtered hash resolution (only scans for your songs, not all server users)
+**Full release history and detailed changelogs:** See [GitHub Releases](https://github.com/Dr-Goofenthol/CH_HiScore/releases)
 
-**v2.4.12** - Discord Announcement Enhancements
-- Added charter name display as separate inline field in announcements
-- Added play count tracking and display in announcements
-- Added "Held for X days/hours/minutes" to previous record footer
-- Improved Discord announcement layout (3-field rows: Instrument|Difficulty|Stars, Charter|Accuracy|Play Count)
-- Enhanced enchor.us link generation with charter parameter
-- Fixed Unicode encoding issues in console output (changed ✓ to ASCII +)
-- Fixed type annotation issues in OCR module (added `from __future__ import annotations`)
+**v2.6.3** (Jan 4, 2026) - Username handling fixes, update notification crash fix
+- See: `RELEASE_NOTES_v2.6.3.md`, `INVESTIGATION_USERNAME_HANDLING.md`
 
-**v2.4.11** - Security & UX Enhancements
-**v2.4.8** - Bug Fixes (chart hash truncation in embeds)
-**v2.4.5** - Migration timing fix
-**v2.4.4** - Discord command improvements
-**v2.4.2** - chart_md5 → chart_hash migration (BREAKING: requires DB migration)
-**v2.4** - Config persistence in AppData
-**v2.3** - Auto-update system
-**v2.2** - System tray and Windows startup
-**v2.1** - Windows OCR integration
-**v2.0** - Artist name extraction
+**v2.6.2** (Jan 1, 2026) - Combo breaker logic, accuracy cap, shutdown handling
+- See: `RELEASE_NOTES_v2.6.2.md`, `migrate_fix_note_counts.py`
+
+**v2.5.x** (Dec 2025) - UI/UX polish, field customization, terminal feedback
+- See: `RELEASE_NOTES_v2.5.*.md` for detailed changelogs
+
+**v2.4.15** (Dec 2024) - resolvehashes command fix, charter data pipeline
+**v2.4.12** - Charter display, play count, enchor.us links
+**v2.4.2** - chart_md5 → chart_hash migration (BREAKING)
+**v2.4** - Config persistence in AppData (BREAKING)
+
+### Critical Migration Notes
+
+**Upgrading from <v2.4:** Config files moved to AppData Roaming. Bot will auto-migrate on first run.
+
+**Upgrading from <v2.4.2:** Database migration renames `chart_md5` to `chart_hash`. Auto-applied on startup.
+
+**Upgrading to v2.6.4:** First run prompts for chart scan to enable offline metadata capture (recommended).
+
+**CONFIG_VERSION History:**
+- v7 (v2.6.4): peak_intensity_tiers, announcement field toggles
+- v6 (v2.6.x): Announcement customization system
+- v5 (v2.5.x): Full/minimalist field configuration
+- See `bot/config_manager.py` for migration details
 
 ## GitHub Repository
 

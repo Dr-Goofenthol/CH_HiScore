@@ -147,14 +147,62 @@ Get the latest release from [Releases](https://github.com/Dr-Goofenthol/CH_HiSco
 
 #### Step 2: Bot Setup (Server Admin)
 
-1. Run `CloneHeroScoreBot_vX.X.X.exe`
-2. Follow the setup wizard:
-   - Create Discord bot at [discord.com/developers](https://discord.com/developers)
-   - Enter your bot token
-   - Enter your Discord server ID
-   - Choose announcement channel
+**A. Create Discord Bot Application**
 
-The bot will start automatically and connect to Discord.
+1. Go to **https://discord.com/developers/applications**
+2. Click **"New Application"**
+3. Name it (e.g., "Clone Hero Score Tracker")
+4. Go to **"Bot"** section in left sidebar
+5. Click **"Add Bot"** → Confirm
+6. Click **"Reset Token"** → **Copy and save the token** (you'll need this later!)
+
+**B. Configure Bot Intents (CRITICAL)**
+
+Still in the **"Bot"** section:
+1. Scroll down to **"Privileged Gateway Intents"**
+2. Toggle **ON** these two intents:
+   - ✅ **SERVER MEMBERS INTENT**
+   - ✅ **MESSAGE CONTENT INTENT**
+3. Click **"Save Changes"**
+
+**C. Configure Bot Permissions**
+
+1. Go to **"OAuth2 → URL Generator"**
+2. Select **Scopes:**
+   - ✅ `bot`
+   - ✅ `applications.commands`
+3. Select **Bot Permissions:**
+   - ✅ Send Messages
+   - ✅ Embed Links
+   - ✅ Use Slash Commands
+4. **Copy the generated URL** at the bottom
+5. **Paste URL in browser** → Select your Discord server → **Authorize**
+
+**D. Get Required IDs**
+
+1. In Discord, enable **Developer Mode**:
+   - User Settings → Advanced → ✅ Developer Mode
+2. **Copy Application ID:**
+   - In Discord Developer Portal → "General Information" → Copy Application ID
+3. **Copy Server ID (Guild ID):**
+   - Right-click your server icon in Discord → Copy Server ID
+4. **Copy Channel ID:**
+   - Right-click the channel where scores should be posted → Copy Channel ID
+
+**E. Run Bot Setup Wizard**
+
+1. Run `CloneHeroScoreBot_vX.X.X.exe`
+2. The wizard will prompt you for:
+   - Bot Token (from step A)
+   - Application ID (from step D)
+   - Guild ID (from step D - **recommended for instant command sync**)
+   - Channel ID (from step D)
+   - API Port (default: 8080)
+   - Debug password (default: admin123 - **change if publicly accessible!**)
+   - Timezone & time format preferences
+   - Announcement preferences (what to announce)
+
+The bot will start automatically and connect to Discord. Slash commands will appear in your server (instantly if you provided Guild ID, or within 1 hour if not).
 
 #### Step 3: Client Setup (Players)
 
