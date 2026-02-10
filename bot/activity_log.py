@@ -6,24 +6,59 @@ Generates human-readable daily activity reports for server admins.
 
 from datetime import datetime
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 
 INSTRUMENTS = {0: "Lead", 1: "Bass", 2: "Rhythm", 3: "Keys", 4: "Drums", 7: "GHLGuitar", 8: "GHLBass", 9: "Vocals", 10: "CoDrums"}
 DIFFICULTIES = {0: "Easy", 1: "Medium", 2: "Hard", 3: "Expert"}
 
 
-def generate_daily_log(activity_data: Dict, date_str: str) -> str:
+def _convert_utc_to_local(utc_timestamp: str, timezone_str: str) -> str:
+    """
+    Convert UTC timestamp string to local timezone string for display
+
+    Args:
+        utc_timestamp: UTC timestamp string (e.g., "2026-01-19 04:30:15")
+        timezone_str: Target timezone (e.g., "America/New_York")
+
+    Returns:
+        Time string in local timezone (e.g., "23:30:15" for 11:30 PM ET)
+    """
+    try:
+        from zoneinfo import ZoneInfo
+
+        # Parse UTC timestamp (assume UTC if no timezone info)
+        dt_utc = datetime.fromisoformat(utc_timestamp.replace(' ', 'T'))
+        if dt_utc.tzinfo is None:
+            dt_utc = dt_utc.replace(tzinfo=ZoneInfo('UTC'))
+
+        # Convert to local timezone
+        local_tz = ZoneInfo(timezone_str)
+        dt_local = dt_utc.astimezone(local_tz)
+
+        # Return just the time portion
+        return dt_local.strftime('%H:%M:%S')
+    except Exception:
+        # Fallback: return original time portion
+        return utc_timestamp.split(' ')[1][:8] if ' ' in utc_timestamp else "??:??:??"
+
+
+def generate_daily_log(activity_data: Dict, date_str: str, timezone_str: Optional[str] = None) -> str:
     """
     Generate formatted daily activity log text
 
     Args:
         activity_data: Dictionary from database.get_daily_activity()
         date_str: Date string for the report (e.g., "2025-12-29")
+        timezone_str: Optional timezone for time display (e.g., "America/New_York")
+                     If None, displays UTC times
 
     Returns:
         Formatted log text
     """
+    # Default to UTC if no timezone provided
+    if timezone_str is None:
+        timezone_str = 'UTC'
     summary = activity_data['summary']
     user_activity = activity_data['user_activity']
     record_breaks = activity_data['record_breaks']
@@ -43,6 +78,7 @@ def generate_daily_log(activity_data: Dict, date_str: str) -> str:
     lines.append("CLONE HERO SCORE TRACKER - DAILY ACTIVITY LOG")
     lines.append(f"Date: {date_display}")
     lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append(f"Timezone: {timezone_str}")
     lines.append("=" * 50)
     lines.append("")
 
@@ -126,9 +162,9 @@ def generate_daily_log(activity_data: Dict, date_str: str) -> str:
         lines.append("RECORDS BROKEN TODAY")
         lines.append("-" * 20)
         for rec in record_breaks:
-            # Parse time
+            # Parse time and convert to local timezone
             timestamp = rec['broken_at']
-            time_str = timestamp.split(' ')[1][:8] if ' ' in timestamp else "??:??:??"
+            time_str = _convert_utc_to_local(timestamp, timezone_str)
 
             # Song info
             song_title = rec.get('song_title', '[unknown]')
@@ -164,7 +200,7 @@ def generate_daily_log(activity_data: Dict, date_str: str) -> str:
                 held_duration_str = ""
                 if rec.get('previous_record_set_at'):
                     try:
-                        from datetime import datetime
+                        # datetime already imported at module level
                         broken_time = datetime.fromisoformat(timestamp)
                         set_time = datetime.fromisoformat(rec['previous_record_set_at'])
                         held_duration = broken_time - set_time
@@ -205,9 +241,9 @@ def generate_daily_log(activity_data: Dict, date_str: str) -> str:
         lines.append("-" * 36)
 
         for sub in all_submissions:
-            # Parse time
+            # Parse time and convert to local timezone
             timestamp = sub['submitted_at']
-            time_str = timestamp.split(' ')[1][:8] if ' ' in timestamp else "??:??:??"
+            time_str = _convert_utc_to_local(timestamp, timezone_str)
 
             # Song info
             song_title = sub.get('song_title', '[unknown]')

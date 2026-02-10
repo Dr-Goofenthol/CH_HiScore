@@ -36,7 +36,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='CloneHeroScoreBot_v2.6.4',
+    name='CloneHeroScoreBot_v2.6.5',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

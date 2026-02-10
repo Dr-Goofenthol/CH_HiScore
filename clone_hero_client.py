@@ -4323,17 +4323,45 @@ def parse_command(query):
 
 def _display_chart_metadata(chart_hash, chart_info):
     """
-    Display comprehensive chart metadata in a formatted output
+    Parse and display comprehensive chart metadata in real-time
 
     Args:
         chart_hash: The chart hash
-        chart_info: Dict containing chart metadata from index
+        chart_info: Dict containing chart metadata from index (used for file path)
     """
+    from pathlib import Path
+    from shared.chart_parser import parse_chart_file, Instrument, Difficulty
+
+    # Get file path from index
+    file_path = chart_info.get('file_path', '')
+
+    if not file_path:
+        print_error("Chart file path not found in index!")
+        return
+
+    chart_path = Path(file_path)
+
+    # Check if file exists
+    if not chart_path.exists():
+        print_error(f"Chart file not found: {file_path}")
+        print_warning("File may have been moved or deleted since last scan.")
+        return
+
+    # Parse the chart file
+    print_info(f"Parsing chart file: {chart_path.name}")
+    print()
+
+    chart_data = parse_chart_file(chart_path)
+
+    if not chart_data:
+        print_error("Failed to parse chart file!")
+        print_info("The file may be corrupted or in an unsupported format.")
+        return
+
     # Extract metadata
-    title = chart_info.get('title', 'Unknown Title')
-    artist = chart_info.get('artist', 'Unknown Artist')
-    charter = chart_info.get('charter', 'Unknown Charter')
-    file_path = chart_info.get('file_path', 'Unknown Path')
+    title = chart_data.song_name or chart_info.get('title', 'Unknown Title')
+    artist = chart_data.artist or chart_info.get('artist', 'Unknown Artist')
+    charter = chart_data.charter or chart_info.get('charter', 'Unknown Charter')
 
     # Header
     print("=" * 70)
@@ -4347,23 +4375,99 @@ def _display_chart_metadata(chart_hash, chart_info):
     print(f"  🎤 Artist:  {artist}")
     print(f"  👤 Charter: {charter}")
 
-    # Chart Statistics (if available)
-    total_notes = chart_info.get('total_notes')
-    note_density = chart_info.get('note_density')
-    peak_note_density = chart_info.get('peak_note_density')
+    if chart_data.genre:
+        print(f"  🎸 Genre:   {chart_data.genre}")
 
-    if total_notes is not None or note_density is not None:
-        print()
-        print(f"{Fore.CYAN}CHART STATISTICS:{Style.RESET_ALL}")
+    if chart_data.song_length_ms > 0:
+        length_seconds = chart_data.song_length_ms / 1000
+        minutes = int(length_seconds // 60)
+        seconds = int(length_seconds % 60)
+        print(f"  ⏱️  Length:  {minutes}:{seconds:02d}")
 
-        if total_notes is not None:
-            print(f"  🎵 Total Notes: {total_notes:,}")
+    # Available Charts Section
+    print()
+    print(f"{Fore.CYAN}AVAILABLE CHARTS:{Style.RESET_ALL}")
 
-        if note_density is not None:
-            print(f"  📈 Average NPS: {note_density:.2f}")
+    instrument_names = {
+        Instrument.LEAD: "Lead Guitar",
+        Instrument.BASS: "Bass",
+        Instrument.RHYTHM: "Rhythm Guitar",
+        Instrument.KEYS: "Keys",
+        Instrument.DRUMS: "Drums",
+        Instrument.GHL_LEAD: "GHL Guitar",
+        Instrument.GHL_BASS: "GHL Bass",
+    }
 
-        if peak_note_density is not None:
-            print(f"  🔥 Peak NPS:    {peak_note_density:.2f}")
+    difficulty_names = {
+        Difficulty.EASY: "Easy",
+        Difficulty.MEDIUM: "Medium",
+        Difficulty.HARD: "Hard",
+        Difficulty.EXPERT: "Expert",
+    }
+
+    # Group by instrument
+    instruments_found = {}
+    for (instrument, difficulty), inst_data in chart_data.instruments.items():
+        if instrument not in instruments_found:
+            instruments_found[instrument] = []
+        instruments_found[instrument].append((difficulty, inst_data))
+
+    if not instruments_found:
+        print(f"  ⚠️  No chart data found")
+    else:
+        for instrument in sorted(instruments_found.keys(), key=lambda x: x.value):
+            inst_name = instrument_names.get(instrument, f"Unknown ({instrument})")
+            difficulties = sorted(instruments_found[instrument], key=lambda x: x[0].value, reverse=True)
+            diff_list = ", ".join(difficulty_names.get(d, f"Unknown") for d, _ in difficulties)
+            print(f"  🎸 {inst_name}: {diff_list}")
+
+    # Chart Statistics Section - Show Expert Lead/Bass if available
+    print()
+    print(f"{Fore.CYAN}CHART STATISTICS (Expert Lead):{Style.RESET_ALL}")
+
+    # Try to find Expert Lead, fall back to other instruments/difficulties
+    stat_data = None
+    stat_instrument = None
+    stat_difficulty = None
+
+    # Priority order: Expert Lead > Expert Bass > any Expert > any chart
+    priority_order = [
+        (Instrument.LEAD, Difficulty.EXPERT),
+        (Instrument.BASS, Difficulty.EXPERT),
+        (Instrument.RHYTHM, Difficulty.EXPERT),
+    ]
+
+    for inst, diff in priority_order:
+        stat_data = chart_data.get_instrument_data(inst, diff)
+        if stat_data:
+            stat_instrument = inst
+            stat_difficulty = diff
+            break
+
+    # If still nothing, grab any available chart
+    if not stat_data and chart_data.instruments:
+        (stat_instrument, stat_difficulty), stat_data = next(iter(chart_data.instruments.items()))
+
+    if stat_data:
+        # Update header if not Expert Lead
+        if stat_instrument != Instrument.LEAD or stat_difficulty != Difficulty.EXPERT:
+            inst_name = instrument_names.get(stat_instrument, "Unknown")
+            diff_name = difficulty_names.get(stat_difficulty, "Unknown")
+            print(f"{Fore.YELLOW}  (Showing {diff_name} {inst_name} - Expert Lead not available){Style.RESET_ALL}")
+
+        print(f"  🎵 Total Notes: {stat_data.total_notes:,}")
+
+        # Calculate NPS for this specific chart
+        note_density = chart_data.calculate_note_density(stat_instrument, stat_difficulty)
+        print(f"  📈 Average NPS: {note_density:.2f}")
+
+        peak_note_density = chart_data.calculate_peak_note_density(stat_instrument, stat_difficulty, window_seconds=1.0)
+        print(f"  🔥 Peak NPS:    {peak_note_density:.2f}")
+
+        if stat_data.star_power_phrases:
+            print(f"  ⭐ Star Power:  {len(stat_data.star_power_phrases)} phrases")
+    else:
+        print(f"  ⚠️  No chart statistics available")
 
     # Chart Hash
     print()
@@ -4375,20 +4479,7 @@ def _display_chart_metadata(chart_hash, chart_info):
     print()
     print(f"{Fore.CYAN}FILE LOCATION:{Style.RESET_ALL}")
     print(f"  📁 Path: {file_path}")
-
-    # Check if file still exists
-    from pathlib import Path
-    if Path(file_path).exists():
-        print(f"  ✅ Status: File exists")
-    else:
-        print(f"  ⚠️  Status: File not found (may have been moved)")
-
-    # Scan timestamp
-    scanned_at = chart_info.get('scanned_at')
-    if scanned_at:
-        print()
-        print(f"{Fore.CYAN}INDEX INFO:{Style.RESET_ALL}")
-        print(f"  🕐 Scanned: {scanned_at}")
+    print(f"  ✅ Status: File exists and parsed successfully")
 
     print("=" * 70)
 

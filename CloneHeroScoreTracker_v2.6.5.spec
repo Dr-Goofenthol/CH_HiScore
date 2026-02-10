@@ -61,7 +61,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='CloneHeroScoreTracker_v2.6.4',
+    name='CloneHeroScoreTracker_v2.6.5',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

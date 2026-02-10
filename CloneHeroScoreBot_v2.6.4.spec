@@ -18,6 +18,8 @@ a = Analysis(
         'aiohttp.web',
         'sqlite3',
         'pytz',
+        'zoneinfo',
+        'tzdata',
     ],
     hookspath=[],
     hooksconfig={},

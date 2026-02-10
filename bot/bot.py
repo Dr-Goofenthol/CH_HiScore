@@ -476,51 +476,68 @@ class CloneHeroBot(commands.Bot):
             if not enabled:
                 return
 
-            # Get configured generation time (default: midnight)
+            # Get configured timezone and generation time
+            from zoneinfo import ZoneInfo
+            user_tz_str = self.config_manager.get('display.timezone', 'UTC')
+            try:
+                user_tz = ZoneInfo(user_tz_str)
+            except Exception:
+                print_warning(f"[Activity Log] Invalid timezone '{user_tz_str}', using UTC")
+                user_tz = ZoneInfo('UTC')
+
             target_time = self.config_manager.get('daily_activity_log.generation_time', '00:00')
             target_hour, target_minute = map(int, target_time.split(':'))
 
-            # Check if it's time to generate the log (use UTC to match score timestamps)
-            now = datetime.utcnow()
-            current_hour = now.hour
-            current_minute = now.minute
+            # Get current time in BOTH timezones
+            now_utc = datetime.utcnow().replace(tzinfo=ZoneInfo('UTC'))
+            now_local = now_utc.astimezone(user_tz)
 
-            # Only generate if we're within the 30-minute window and haven't generated today yet
-            time_match = (current_hour == target_hour and abs(current_minute - target_minute) < 30)
+            # Check if it's time to generate (using LOCAL time for scheduling)
+            time_match = (now_local.hour == target_hour and abs(now_local.minute - target_minute) < 30)
 
             if not time_match:
                 return
 
-            # Check if we've already generated a log today
+            # Check if we've already generated a log today (use LOCAL date to avoid double-generation)
             last_generated = self.db.get_metadata('last_activity_log_date')
-            today_str = now.strftime('%Y-%m-%d')
+            today_local_str = now_local.strftime('%Y-%m-%d')
 
-            if last_generated == today_str:
+            if last_generated == today_local_str:
                 return  # Already generated today
 
-            # Generate the log
-            print_info(f"[Activity Log] Generating daily activity log for {today_str}")
+            # Calculate yesterday in LOCAL timezone (for user-friendly reporting)
+            yesterday_local = now_local - timedelta(days=1)
+            log_date_str = yesterday_local.strftime('%Y-%m-%d')
 
-            # Get yesterday's date range in UTC (the day we're logging)
-            yesterday = now - timedelta(days=1)
-            start_time = yesterday.strftime('%Y-%m-%d 00:00:00')
-            end_time = today_str + ' 00:00:00'
+            print_info(f"[Activity Log] Generating daily activity log for {log_date_str} ({user_tz_str})")
+
+            # Query range in UTC (to match database timestamps)
+            # We want all scores from yesterday 00:00 local to today 00:00 local, converted to UTC
+            yesterday_start_local = yesterday_local.replace(hour=0, minute=0, second=0, microsecond=0)
+            today_start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+
+            # Convert to UTC for database query
+            yesterday_start_utc = yesterday_start_local.astimezone(ZoneInfo('UTC'))
+            today_start_utc = today_start_local.astimezone(ZoneInfo('UTC'))
+
+            start_time = yesterday_start_utc.strftime('%Y-%m-%d %H:%M:%S')
+            end_time = today_start_utc.strftime('%Y-%m-%d %H:%M:%S')
 
             # Get activity data from database
             activity_data = self.db.get_daily_activity(start_time, end_time)
 
-            # Generate log text
+            # Generate log text (pass timezone for local time display)
             from .activity_log import generate_daily_log, save_daily_log
-            log_text = generate_daily_log(activity_data, yesterday.strftime('%Y-%m-%d'))
+            log_text = generate_daily_log(activity_data, log_date_str, user_tz_str)
 
             # Save to file
             log_dir = Path(self.db.db_path).parent / 'logs'
-            log_path = save_daily_log(log_text, log_dir, yesterday.strftime('%Y-%m-%d'))
+            log_path = save_daily_log(log_text, log_dir, log_date_str)
 
             print_success(f"[Activity Log] Generated: {log_path}")
 
-            # Update last generated date
-            self.db.set_metadata('last_activity_log_date', today_str)
+            # Update last generated date (use local date)
+            self.db.set_metadata('last_activity_log_date', today_local_str)
 
             # Cleanup old logs
             keep_days = self.config_manager.get('daily_activity_log.keep_days', 30)
