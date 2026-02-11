@@ -66,13 +66,32 @@ def log_exception(logger: logging.Logger, message: str, exc: Exception):
     logger.error(f"{message}: {exc}", exc_info=True)
 
 
+def _get_windows_documents_dir() -> Path:
+    """
+    Resolve the user's actual Documents folder on Windows using the registry.
+    This handles cases where Documents has been redirected (OneDrive, custom path).
+    Falls back to Path.home() / 'Documents' if registry lookup fails.
+    """
+    try:
+        import winreg
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r'Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders'
+        ) as key:
+            docs_path, _ = winreg.QueryValueEx(key, 'Personal')
+            return Path(docs_path)
+    except Exception:
+        return Path.home() / 'Documents'
+
+
 def get_client_logger() -> logging.Logger:
     """Get logger for client application"""
     # Log to Clone Hero directory for easy access
     try:
-        import os
         if sys.platform == 'win32':
-            ch_docs = Path.home() / 'Documents' / 'Clone Hero'
+            # Use registry to find actual Documents path (handles OneDrive redirection etc.)
+            documents = _get_windows_documents_dir()
+            ch_docs = documents / 'Clone Hero'
         else:
             ch_docs = Path.home() / '.clone_hero'
 

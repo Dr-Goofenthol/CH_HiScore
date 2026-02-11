@@ -4,7 +4,7 @@ Clone Hero High Score Client
 Monitors your Clone Hero scores and submits them to the Discord scoreboard.
 """
 
-VERSION = "2.6.6"
+VERSION = "2.6.7"
 
 # GitHub repository for auto-updates
 GITHUB_REPO = "Dr-Goofenthol/CH_HiScore"
@@ -1100,6 +1100,20 @@ def find_clone_hero_directory():
 def get_clone_hero_documents_dir():
     """Get the Clone Hero Documents directory (for settings.ini, currentsong.txt, etc.)"""
     if sys.platform == 'win32':
+        # Try Windows registry first to handle OneDrive/redirected Documents folders
+        try:
+            import winreg
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r'Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders'
+            ) as key:
+                docs_str, _ = winreg.QueryValueEx(key, 'Personal')
+                docs_path = Path(docs_str) / 'Clone Hero'
+                if docs_path.exists():
+                    return docs_path
+        except Exception:
+            pass
+        # Fallback to standard path
         docs_path = Path.home() / 'Documents' / 'Clone Hero'
         if docs_path.exists():
             return docs_path
@@ -1228,12 +1242,11 @@ def find_chart_file_by_hash(chart_hash: str):
         return _chart_file_cache[chart_hash]
 
     # Get Clone Hero song folders from settings.ini
-    ch_dir = Path.home() / 'Documents' / 'Clone Hero'
-    settings_path = ch_dir / "settings.ini"
-
     song_folders = []
+    ch_docs = get_clone_hero_documents_dir()
+    settings_path = (ch_docs / "settings.ini") if ch_docs else None
 
-    if settings_path.exists():
+    if settings_path and settings_path.exists():
         try:
             # Parse settings.ini using configparser to handle sections properly
             config = configparser.ConfigParser()
@@ -1249,7 +1262,18 @@ def find_chart_file_by_hash(chart_hash: str):
         except Exception as e:
             logger.debug(f"Could not parse Clone Hero settings: {e}")
 
+    # Fallback to tracker's configured folder (consistent with scancharts / on-demand scan)
     if not song_folders:
+        try:
+            fallback_folder = load_settings().get('songs_folder')
+            if fallback_folder and Path(fallback_folder).exists():
+                song_folders.append(Path(fallback_folder))
+                logger.debug(f"find_chart_file_by_hash: using tracker fallback folder: {fallback_folder}")
+        except Exception:
+            pass
+
+    if not song_folders:
+        logger.debug(f"find_chart_file_by_hash: no song folders found for [{chart_hash[:8]}]")
         # Cache negative result
         _chart_file_cache[chart_hash] = None
         return None
@@ -1729,7 +1753,7 @@ def create_score_handler(auth_token, song_cache=None, ocr_enabled=True):
                 # Not in index - try on-demand scan
                 logger.debug("  STEP3.5: not in chart index, starting on-demand scan")
                 print_info("Chart not in index, attempting on-demand scan...")
-                found_path = find_chart_by_hash_on_demand(score.chart_hash, max_duration=10)
+                found_path = find_chart_by_hash_on_demand(score.chart_hash, max_duration=60)
 
                 if found_path:
                     # Parse found chart
@@ -4473,33 +4497,54 @@ def resolve_hashes_command():
     print("[*] Looking for Clone Hero's settings...")
 
     # Try to find Clone Hero's settings.ini
-    ch_dir = Path.home() / 'Documents' / 'Clone Hero'
-    settings_path = ch_dir / "settings.ini"
+    ch_docs = get_clone_hero_documents_dir()
+    settings_path = (ch_docs / "settings.ini") if ch_docs else None
 
     song_folders = []
 
-    if settings_path.exists():
+    if not settings_path:
+        print_warning("Could not locate Clone Hero documents directory")
+        logger.warning("scancharts: Clone Hero documents directory not found")
+    elif not settings_path.exists():
+        print_warning(f"settings.ini not found at: {settings_path}")
+        logger.warning(f"scancharts: settings.ini not found at {settings_path}")
+    else:
+        print_info(f"  Reading: {settings_path}")
+        logger.info(f"scancharts: reading settings.ini from {settings_path}")
         try:
             # Parse settings.ini using configparser to handle sections properly
             config = configparser.ConfigParser()
             config.read(str(settings_path))
 
+            path_entries_found = 0
             # Look for path entries in all sections
             for section in config.sections():
                 for key in config.options(section):
                     if key.startswith('path') and key[4:].isdigit():
                         folder = config.get(section, key)
+                        path_entries_found += 1
+                        if folder:
+                            if Path(folder).exists():
+                                song_folders.append(Path(folder))
+                                print_success(f"  Found song folder: {folder}")
+                                logger.info(f"scancharts: folder added: {folder}")
+                            else:
+                                print_warning(f"  Path in settings.ini not found on disk: {folder}")
+                                logger.warning(f"scancharts: settings.ini path does not exist: {folder}")
 
-                        if folder and Path(folder).exists():
-                            song_folders.append(Path(folder))
-                            print_success(f"  Found song folder: {folder}")
+            if path_entries_found == 0:
+                print_warning("No song path entries found in settings.ini")
+                print_info("  (Clone Hero may not have a songs folder configured yet)")
+                logger.warning("scancharts: settings.ini has no path0/path1/... entries")
+
         except Exception as e:
             print_warning(f"Could not parse Clone Hero settings: {e}")
+            logger.error(f"scancharts: failed to parse settings.ini: {e}")
 
     # Fallback: Use tracker's configured songs folder
     if not song_folders:
-        print_warning("Could not find folders in Clone Hero settings.ini")
         print_info("Trying tracker's configured songs folder...")
+        logger.info("scancharts: falling back to tracker's configured songs_folder")
 
         settings = load_settings()
         fallback_folder = settings.get('songs_folder')
@@ -4507,9 +4552,14 @@ def resolve_hashes_command():
         if fallback_folder and Path(fallback_folder).exists():
             song_folders.append(Path(fallback_folder))
             print_success(f"  Using tracker folder: {fallback_folder}")
+            logger.info(f"scancharts: using tracker fallback folder: {fallback_folder}")
+        elif fallback_folder:
+            print_warning(f"  Tracker songs folder configured but not found: {fallback_folder}")
+            logger.warning(f"scancharts: tracker songs_folder does not exist: {fallback_folder}")
 
     if not song_folders:
         print_error("No song folders found!")
+        logger.error("scancharts: no song folders found - aborting")
         print_info("")
         print_info("You can either:")
         print_info("  1. Configure a songs folder in Clone Hero's settings")
@@ -4774,13 +4824,15 @@ def add_chart_to_index(chart_hash, chart_info):
     save_chart_index(index)
 
 
-def find_chart_by_hash_on_demand(target_hash, max_duration=10):
+def find_chart_by_hash_on_demand(target_hash, max_duration=60):
     """
     Search for a specific chart hash in song folders (on-demand scan)
 
     Args:
         target_hash: The chart hash to find
-        max_duration: Maximum search time in seconds (default 10)
+        max_duration: Maximum search time in seconds (default 60)
+                      Large libraries (35k+ songs) may need 60-120s on SSD,
+                      longer on HDD. Run 'scancharts' for instant lookups.
 
     Returns:
         Path or None: Path to chart file if found, None otherwise
@@ -4790,12 +4842,14 @@ def find_chart_by_hash_on_demand(target_hash, max_duration=10):
 
     start_time = time.time()
 
-    # Get song folders from settings
-    ch_dir = Path.home() / 'Documents' / 'Clone Hero'
-    settings_path = ch_dir / "settings.ini"
+    # Get song folders from settings using the documented helper
+    ch_docs = get_clone_hero_documents_dir()
+    settings_path = (ch_docs / "settings.ini") if ch_docs else None
     song_folders = []
 
-    if settings_path.exists():
+    if not settings_path or not settings_path.exists():
+        logger.debug(f"  On-demand scan: settings.ini not found, will try tracker fallback")
+    else:
         try:
             config = configparser.ConfigParser()
             config.read(str(settings_path))
@@ -4806,34 +4860,54 @@ def find_chart_by_hash_on_demand(target_hash, max_duration=10):
                         folder = config.get(section, key)
                         if folder and Path(folder).exists():
                             song_folders.append(Path(folder))
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"  On-demand scan: failed to parse settings.ini: {e}")
 
     # Fallback to tracker's configured folder
     if not song_folders:
-        settings = load_settings()
-        fallback_folder = settings.get('songs_folder')
-        if fallback_folder and Path(fallback_folder).exists():
-            song_folders.append(Path(fallback_folder))
+        try:
+            fallback_folder = load_settings().get('songs_folder')
+            if fallback_folder and Path(fallback_folder).exists():
+                song_folders.append(Path(fallback_folder))
+                logger.debug(f"  On-demand scan: using tracker fallback folder: {fallback_folder}")
+        except Exception:
+            pass
 
     if not song_folders:
+        logger.warning(f"  On-demand scan: no song folders found for [{target_hash[:8]}]")
         return None
 
     print_info(f"Searching for chart [{target_hash[:8]}]...")
+    logger.info(f"  On-demand scan started for [{target_hash[:8]}] across {len(song_folders)} folder(s), timeout={max_duration}s")
+
+    charts_checked = 0
 
     for folder in song_folders:
-        print(f"  Searching in: {folder.name}...", end='\r')
+        logger.info(f"  On-demand scan: searching in {str(folder)}")
+        print(f"  Searching in: {str(folder)}...    ", end='\r')
 
         for root, dirs, files in os.walk(folder):
             # Check timeout
             if time.time() - start_time > max_duration:
+                elapsed = time.time() - start_time
                 print()
-                print_warning(f"  Search timeout after {max_duration}s")
+                logger.warning(
+                    f"  On-demand scan timeout after {elapsed:.0f}s — "
+                    f"{charts_checked:,} charts checked in {str(folder)}"
+                )
+                print_warning(f"  Scan timeout after {elapsed:.0f}s ({charts_checked:,} charts scanned)")
+                if charts_checked > 5000:
+                    print_info("  Your library is very large. Run 'scancharts' to build a full index for instant lookups.")
                 return None
 
             chart_files = [f for f in files if f.lower() in ['notes.chart', 'notes.mid', 'notes.midi']]
             if not chart_files:
                 continue
+
+            charts_checked += 1
+            if charts_checked % 100 == 0:
+                elapsed = time.time() - start_time
+                print(f"  Searching: {str(folder)} ({charts_checked:,} charts, {elapsed:.0f}s)...    ", end='\r')
 
             chart_path = Path(root) / chart_files[0]
 
@@ -4887,7 +4961,8 @@ def find_chart_by_hash_on_demand(target_hash, max_duration=10):
                 continue
 
     print()
-    print_warning(f"  Chart not found in {len(song_folders)} song folder(s)")
+    logger.info(f"  On-demand scan: [{target_hash[:8]}] not found after checking {charts_checked:,} charts")
+    print_warning(f"  Chart not found in {len(song_folders)} song folder(s) ({charts_checked:,} charts scanned)")
     return None
 
 
@@ -5470,6 +5545,191 @@ def export_logs_command():
 
     except Exception as e:
         print_error(f"Export failed: {e}")
+
+
+def bugreport_command():
+    """Generate a self-contained bug report file and guide user to GitHub Issues."""
+    import platform
+    from datetime import datetime
+
+    print_info("Collecting diagnostics...")
+    now = datetime.now()
+    timestamp = now.strftime('%Y%m%d_%H%M%S')
+
+    lines = []
+    lines.append("=" * 60)
+    lines.append("Clone Hero Score Tracker - Bug Report")
+    lines.append(f"Generated: {now.strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append("=" * 60)
+    lines.append("")
+
+    # --- Version & System ---
+    lines.append("[VERSION & SYSTEM]")
+    lines.append(f"Tracker Version: {VERSION}")
+    lines.append(f"OS: {platform.system()} {platform.release()} (build {platform.version()})")
+    lines.append(f"Architecture: {platform.machine()}")
+    lines.append(f"Python: {platform.python_version()} ({platform.python_implementation()})")
+    lines.append("")
+
+    # --- Paths ---
+    lines.append("[PATHS]")
+
+    ch_dir = find_clone_hero_directory()
+    if ch_dir:
+        lines.append(f"Data dir:   {ch_dir} [EXISTS]")
+    else:
+        lines.append("Data dir:   NOT FOUND")
+
+    ch_docs = get_clone_hero_documents_dir()
+    if ch_docs:
+        lines.append(f"Docs dir:   {ch_docs} [EXISTS]")
+    else:
+        lines.append(f"Docs dir:   NOT FOUND")
+
+    log_path = None
+    for _h in logger.handlers:
+        if hasattr(_h, 'baseFilename'):
+            log_path = Path(_h.baseFilename)
+            break
+
+    if log_path and log_path.exists():
+        size_kb = log_path.stat().st_size / 1024
+        lines.append(f"Log file:   {log_path} [EXISTS, {size_kb:.1f} KB]")
+    elif log_path:
+        lines.append(f"Log file:   {log_path} [MISSING]")
+    else:
+        lines.append("Log file:   UNKNOWN")
+
+    if ch_dir:
+        state_file = ch_dir / '.score_tracker_state.json'
+        if state_file.exists():
+            try:
+                with open(state_file, 'r') as f:
+                    state = json.load(f)
+                score_count = len(state.get('known_scores', {}))
+                lines.append(f"State file: {state_file} [EXISTS, {score_count:,} scores tracked]")
+            except Exception:
+                lines.append(f"State file: {state_file} [EXISTS, unreadable]")
+        else:
+            lines.append(f"State file: {state_file} [MISSING]")
+
+        songcache = ch_dir / 'songcache.bin'
+        if songcache.exists():
+            size_mb = songcache.stat().st_size / (1024 * 1024)
+            lines.append(f"Song cache: {songcache} [EXISTS, {size_mb:.1f} MB]")
+        else:
+            lines.append(f"Song cache: {ch_dir / 'songcache.bin'} [MISSING]")
+
+    index_path = get_chart_index_path()
+    if index_path.exists():
+        try:
+            index = load_chart_index()
+            lines.append(f"Chart idx:  {index_path} [EXISTS, {len(index):,} entries]")
+        except Exception:
+            lines.append(f"Chart idx:  {index_path} [EXISTS, unreadable]")
+    else:
+        lines.append(f"Chart idx:  {index_path} [MISSING]")
+
+    lines.append("")
+
+    # --- Settings (sanitized) ---
+    lines.append("[SETTINGS]")
+    settings = load_settings()
+    safe_keys = [
+        'bot_url', 'ocr_enabled', 'start_with_windows', 'minimize_to_tray',
+        'songs_folder', 'auto_update', 'bridge_integration'
+    ]
+    for key in safe_keys:
+        if key in settings:
+            lines.append(f"  {key}: {settings[key]}")
+    lines.append("")
+
+    # --- Config (sanitized, no tokens) ---
+    lines.append("[CONFIG]")
+    config = load_config()
+    client_id = config.get('client_id', '')
+    lines.append(f"  paired:    {'yes' if config.get('auth_token') else 'no'}")
+    if client_id:
+        lines.append(f"  client_id: {client_id[:8]}... (truncated for security)")
+    lines.append("")
+
+    # --- Recent Log ---
+    lines.append("[RECENT LOG (last 200 lines)]")
+    if log_path and log_path.exists():
+        try:
+            with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
+                log_lines = f.readlines()
+            recent = log_lines[-200:]
+            lines.extend(ln.rstrip() for ln in recent)
+            if len(log_lines) > 200:
+                lines.insert(-len(recent), f"  ... ({len(log_lines) - 200} earlier lines omitted) ...")
+        except Exception as e:
+            lines.append(f"  (Could not read log file: {e})")
+    else:
+        lines.append("  (No log file found - have you played a score yet?)")
+
+    lines.append("")
+    lines.append("=" * 60)
+    lines.append("END OF REPORT")
+    lines.append("=" * 60)
+
+    content = "\n".join(lines)
+    filename = f"CH_BugReport_{timestamp}.txt"
+
+    # Try Desktop first (registry-based for OneDrive users), then Clone Hero docs, then cwd
+    output_path = None
+    try:
+        if sys.platform == 'win32':
+            import winreg
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r'Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders'
+            ) as key:
+                desktop_str, _ = winreg.QueryValueEx(key, 'Desktop')
+                desktop = Path(desktop_str)
+            if desktop.exists():
+                output_path = desktop / filename
+        else:
+            desktop = Path.home() / 'Desktop'
+            if desktop.exists():
+                output_path = desktop / filename
+    except Exception:
+        pass
+
+    if not output_path:
+        if ch_docs:
+            output_path = ch_docs / filename
+        elif ch_dir:
+            output_path = ch_dir / filename
+        else:
+            output_path = Path(filename)
+
+    try:
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        print_success(f"Bug report saved to:")
+        print(f"  {output_path}")
+    except Exception as e:
+        print_error(f"Could not save report: {e}")
+        return
+
+    print()
+    print_header("HOW TO REPORT A BUG", width=50)
+    print("  1. Go to: https://github.com/Dr-Goofenthol/CH_HiScore/issues/new")
+    print("  2. Describe what happened and what you expected")
+    print("  3. Drag and drop the bug report file into the issue")
+    print("  4. Add a screenshot of this console window if relevant")
+    print("=" * 50)
+    print()
+
+    try:
+        open_browser = input("Open GitHub issues page now? [Y/n]: ").strip().lower()
+        if open_browser != 'n':
+            import webbrowser
+            webbrowser.open("https://github.com/Dr-Goofenthol/CH_HiScore/issues/new")
+            print_info("Opened in browser.")
+    except Exception:
+        pass
 
 
 def bridge_status_command():
@@ -6333,6 +6593,12 @@ def main():
     ch_docs_dir_startup = get_clone_hero_documents_dir()
     logger.info(f"  Docs dir:  {ch_docs_dir_startup}")
 
+    # Print the log file path so users can always find it
+    for _handler in logger.handlers:
+        if hasattr(_handler, 'baseFilename'):
+            print_info(f"Debug log: {_handler.baseFilename}")
+            break
+
     # Load song cache for metadata
     song_cache = {}
     songcache_path = ch_dir / 'songcache.bin'
@@ -6488,6 +6754,7 @@ def main():
                     print(f"\n{Fore.CYAN}Utilities:{Style.RESET_ALL}")
                     print_plain("  bridgestatus   Check Bridge integration status")
                     print_plain("  exportlogs     Export debug logs to zip file")
+                    print_plain("  bugreport      Generate a bug report file for GitHub Issues")
                     print_plain("  unpair         Disconnect from Discord account")
                     if tray_enabled:
                         print_plain("  minimize       Minimize to system tray (if enabled)")
@@ -6680,6 +6947,11 @@ def main():
                 elif cmd == "exportlogs":
                     print()
                     export_logs_command()
+                    print()
+
+                elif cmd == "bugreport":
+                    print()
+                    bugreport_command()
                     print()
 
                 elif cmd == "bridgestatus":

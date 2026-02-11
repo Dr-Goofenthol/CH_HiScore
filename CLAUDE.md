@@ -635,9 +635,16 @@ Scans local song folders to populate missing charter information in the database
 
 ## Version History & Migration Notes
 
-### Current Version: v2.6.6 (Feb 10, 2026)
+### Current Version: v2.6.7 (Feb 10, 2026)
 
 **Key Features:**
+- `bugreport` command: one-shot diagnostic file generator — collects version, paths, settings, last 200 log lines into a single timestamped `.txt` file on the Desktop; offers to open GitHub Issues in browser
+- `find_chart_by_hash_on_demand` — 60s timeout (was 10s), live progress counter, full folder path display, large-library tip on timeout
+- `get_clone_hero_documents_dir` — Windows registry-based Documents path detection (handles OneDrive/redirected folders)
+- `shared/logger.py` — same registry fix so `score_tracker.log` always lands in the user's actual Clone Hero docs folder
+- Startup console print: `Debug log: <full path>` so users always know where the log file is
+
+**v2.6.6** (Feb 10, 2026)
 - Historical score submissions toggle (`allow_historical_submissions`) — fresh-start servers can block resync/reset backfills
 - Full metadata resolution pipeline: on-demand chart scan now populates `_chart_file_cache` so STEP 4 song.ini fallback always fires
 - Offline score catch-up no longer triggers OCR (eliminates 500ms × N delay for large backlogs)

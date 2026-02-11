@@ -16,7 +16,7 @@ class ConfigManager:
     """Manages bot configuration with version tracking and migrations"""
 
     CONFIG_VERSION = 9  # Current config version for v2.6.6
-    BOT_VERSION = "2.6.6"
+    BOT_VERSION = "2.6.7"
 
     def __init__(self, config_path: Optional[Path] = None):
         """
