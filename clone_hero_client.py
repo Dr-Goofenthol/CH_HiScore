@@ -1098,9 +1098,22 @@ def find_clone_hero_directory():
 
 
 def get_clone_hero_documents_dir():
-    """Get the Clone Hero Documents directory (for settings.ini, currentsong.txt, etc.)"""
+    """Get the Clone Hero Documents directory (for settings.ini, currentsong.txt, etc.)
+
+    Checks multiple candidate paths to find where Clone Hero actually wrote its files,
+    rather than blindly trusting any single path. This handles:
+    - Standard local Documents (most users)
+    - OneDrive with Known Folder Move (junction at C:\\Users\\...\\Documents)
+    - OneDrive sync without KFM (registry points to OneDrive, local Documents separate)
+    - Manually relocated Documents folders
+    """
     if sys.platform == 'win32':
-        # Try Windows registry first to handle OneDrive/redirected Documents folders
+        candidates = []
+
+        # Standard path first — Clone Hero (Unity) typically uses USERPROFILE\Documents
+        candidates.append(Path.home() / 'Documents' / 'Clone Hero')
+
+        # Registry-based path as secondary candidate (handles some OneDrive configurations)
         try:
             import winreg
             with winreg.OpenKey(
@@ -1108,15 +1121,21 @@ def get_clone_hero_documents_dir():
                 r'Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders'
             ) as key:
                 docs_str, _ = winreg.QueryValueEx(key, 'Personal')
-                docs_path = Path(docs_str) / 'Clone Hero'
-                if docs_path.exists():
-                    return docs_path
+                reg_path = Path(docs_str) / 'Clone Hero'
+                if reg_path not in candidates:
+                    candidates.append(reg_path)
         except Exception:
             pass
-        # Fallback to standard path
-        docs_path = Path.home() / 'Documents' / 'Clone Hero'
-        if docs_path.exists():
-            return docs_path
+
+        # Pass 1: find a path where Clone Hero has actually run (settings.ini present)
+        for path in candidates:
+            if path.exists() and (path / 'settings.ini').exists():
+                return path
+
+        # Pass 2: any existing Clone Hero directory (Clone Hero ran but no settings.ini yet)
+        for path in candidates:
+            if path.exists():
+                return path
     elif sys.platform == 'darwin':
         # Mac - same as data directory
         mac_path = Path.home() / 'Library' / 'Application Support' / 'com.srylain.CloneHero'
