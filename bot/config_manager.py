@@ -15,7 +15,7 @@ from shared.console import print_success, print_info, print_warning, print_error
 class ConfigManager:
     """Manages bot configuration with version tracking and migrations"""
 
-    CONFIG_VERSION = 9  # Current config version for v2.6.6
+    CONFIG_VERSION = 9  # Current config version (no change in v2.6.7)
     BOT_VERSION = "2.6.7"
 
     def __init__(self, config_path: Optional[Path] = None):
