@@ -5695,23 +5695,15 @@ def bugreport_command():
     content = "\n".join(lines)
     filename = f"CH_BugReport_{timestamp}.txt"
 
-    # Try Desktop first (registry-based for OneDrive users), then Clone Hero docs, then cwd
+    # Try Desktop first, then Clone Hero docs, then cwd.
+    # Use Path.home() / 'Desktop' — this follows any OS-level filesystem junction
+    # (e.g. OneDrive KFM) automatically without reading the registry, which on some
+    # systems points to a OneDrive path that differs from the user's actual Desktop.
     output_path = None
     try:
-        if sys.platform == 'win32':
-            import winreg
-            with winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                r'Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders'
-            ) as key:
-                desktop_str, _ = winreg.QueryValueEx(key, 'Desktop')
-                desktop = Path(desktop_str)
-            if desktop.exists():
-                output_path = desktop / filename
-        else:
-            desktop = Path.home() / 'Desktop'
-            if desktop.exists():
-                output_path = desktop / filename
+        desktop = Path.home() / 'Desktop'
+        if desktop.exists():
+            output_path = desktop / filename
     except Exception:
         pass
 
